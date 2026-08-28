@@ -25,14 +25,14 @@ jobs:
       - name: Checkout repository
         id: checkout
         # Pinned to actions/checkout@v7.0.1
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Setup shfmt
         # AIRTIGHT FIX: Pinned via the full-length commit SHA mapping to v4.0.1
-        uses: mfinelli/setup-shfmt@a25fda497b79c316719bca029c29cc3f28cf00d4 # v4.0.0
+        uses: mfinelli/setup-shfmt@a25fda4c1fe115aec0f85e04126610841bc3141d # v4.0.1
         with:
           architecture: amd64
 
@@ -81,7 +81,7 @@ jobs:
       - name: Upload ShellCheck results to GitHub Security
         if: always() && steps.checkout.outcome == 'success'
         # AIRTIGHT FIX: Pinned via the full-length commit SHA mapping to v4.37.9
-        uses: github/codeql-action/upload-sarif@cdf488fe644917637841c9676e6be6d2a4fc018a # v4.37.0
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           sarif_file: shellcheck-results.sarif
 
