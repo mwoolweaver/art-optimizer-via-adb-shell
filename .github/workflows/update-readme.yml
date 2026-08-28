@@ -95,7 +95,10 @@ jobs:
               print
               print "```bash"
               print "cat << \x27EOF\x27 > /sdcard/monthly/maintenance.sh"
-              while ((getline line < "maintenance.sh") > 0) print line
+              while ((getline line < "maintenance.sh") > 0) {
+                sub(/\r$/, "", line)
+                print line
+              }
               close("maintenance.sh")
               print "EOF"
               print "```"
