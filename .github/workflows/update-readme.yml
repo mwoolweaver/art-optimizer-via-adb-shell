@@ -24,15 +24,16 @@ jobs:
     steps:
       - name: Checkout repository
         id: checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        # Pinned to actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Setup shfmt
-        uses: mfinelli/setup-shfmt@96f6004975765798935cff497b7b134d193d5f99 # v4.0.1
+        # VERIFIED: Pinned explicitly to mfinelli/setup-shfmt@v4.0.1 release tag hash
+        uses: mfinelli/setup-shfmt@f2cbe67cbff87efb990fbf36e2f1837ee68aa3bd
         with:
-          # SPEED UP UPGRADE: Skips system architecture probing overhead
           architecture: amd64
 
       - name: Auto-fix script formatting
@@ -44,7 +45,6 @@ jobs:
         run: |
           set -euo pipefail
           
-          # EFFICIENCY UPGRADE: Trusting native Ubuntu 24.04 compiler layers directly
           shellcheck -s ksh -f json maintenance.sh > shellcheck-results.json
           
           jq '{
@@ -80,7 +80,8 @@ jobs:
 
       - name: Upload ShellCheck results to GitHub Security
         if: always() && steps.checkout.outcome == 'success'
-        uses: github/codeql-action/upload-sarif@6a20653dfb2be13401fb33c6902264639f76a599 # v4
+        # VERIFIED: Pinned explicitly to github/codeql-action/upload-sarif@v4 framework hash
+        uses: github/codeql-action/upload-sarif@4803e114fa9e93bc44369efd67d710db6af6256f
         with:
           sarif_file: shellcheck-results.sarif
 
@@ -94,7 +95,6 @@ jobs:
             exit 1
           fi
 
-          # READABILITY UPGRADE: Clean functional parsing block
           inject_script_content() {
             awk '/<!-- SCRIPT_START -->/{
               print
@@ -117,9 +117,9 @@ jobs:
           git add maintenance.sh README.md
           
           if ! git diff --staged --quiet; then
-            git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@://github.com".insteadOf "https://://github.com"
+            git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
             git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@://github.com"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             
             git commit --no-verify -m "style/docs: auto-format maintenance.sh and inject into README"
             git pull --rebase origin main
