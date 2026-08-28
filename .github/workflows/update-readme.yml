@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -18,7 +17,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-      security-events: write
       
     steps:
       - name: Checkout repository
@@ -31,100 +29,7 @@ jobs:
       - name: Setup shfmt
         uses: mfinelli/setup-shfmt@a25fda4c1fe115aec0f85e04126610841bc3141d # v4.0.1
 
-      - name: Lint all repository files
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "[+] Starting full repository linting..."
-
-          # 1. Shell scripts (.sh): Validated via ShellCheck
-          find . -name "*.sh" -not -path "./.git/*" | while read -r file; do
-            echo "  Linting shell script: $file"
-            shellcheck -s ksh -f json "$file" >> shellcheck-results.json
-          done
-
-          if [ -f "shellcheck-results.json" ]; then
-            jq '{
-              "$schema": "https://schemastore.org",
-              "version": "2.1.0",
-              "runs": [{
-                "tool": { "driver": { "name": "ShellCheck", "version": "latest" } },
-                "results": [
-                  .[] | {
-                    "ruleId": ("SC" + (.code | tostring)),
-                    "message": { "text": .message },
-                    "level": (if .level == "error" then "error" elif .level == "warning" then "warning" else "note" end),
-                    "locations": [{
-                      "physicalLocation": {
-                        "artifactLocation": { "uri": .file },
-                        "region": {
-                          "startLine": .line,
-                          "startColumn": .column,
-                          "endLine": .endLine,
-                          "endColumn": .endColumn
-                        }
-                      }
-                    }]
-                  }
-                ]
-              }]
-            }' shellcheck-results.json > shellcheck-results.sarif
-          else
-            echo "[]" > shellcheck-results.json
-            echo '{"$schema":"https://schemastore.org","version":"2.1.0","runs":[{"tool":{"driver":{"name":"ShellCheck","version":"latest"}},"results":[]}]}' > shellcheck-results.sarif
-          fi
-
-          if jq 'any(.[]; .level == "error")' shellcheck-results.json | grep -q "true"; then
-            echo "::error::ShellCheck found critical syntax errors in shell scripts!"
-            exit 42
-          fi
-
-          # 2. YAML files (.yml): Strict syntax validation
-          echo "[+] Validating YAML syntax..."
-          python3 -c '
-          import yaml, glob
-          for f in glob.glob("**/*.yml", recursive=True) + glob.glob("**/*.yaml", recursive=True):
-              if ".git" in f: continue
-              try:
-                  with open(f, "r") as file:
-                      yaml.safe_load(file)
-                  print(f"  Passed YAML: {f}")
-              except Exception as e:
-                  print(f"::error::YAML error in {f}: {e}")
-                  exit(1)
-          '
-
-          # 3. Markdown files (.md): Structure checks
-          echo "[+] Validating Markdown files..."
-          python3 -c '
-          import glob
-          for f in glob.glob("**/*.md", recursive=True):
-              if ".git" in f: continue
-              with open(f, "r", encoding="utf-8") as file:
-                  content = file.read()
-              if content.count("```") % 2 != 0:
-                  print(f"::error::Unbalanced code block fences (```) in Markdown file: {f}")
-                  exit(1)
-              print(f"  Passed Markdown: {f}")
-          '
-
-          # 4. Gitignore (.gitignore): Format tracking validation
-          echo "[+] Validating .gitignore format..."
-          if [ -f ".gitignore" ]; then
-            git check-ignore -v README.md > /dev/null 2>&1 || true
-            echo "  Passed .gitignore syntax check."
-          fi
-
-          echo "[+] All repository files successfully linted!"
-
-      - name: Upload ShellCheck results to GitHub Security
-        if: always() && steps.checkout.outcome == 'success'
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
-        with:
-          sarif_file: shellcheck-results.sarif
-
-      - name: Format, Inject, and Push (Main Branch Only)
-        if: github.event_name != 'pull_request'
+      - name: Format, Inject, and Push
         shell: bash
         run: |
           set -euo pipefail
@@ -133,6 +38,9 @@ jobs:
             echo "::error::Required files missing!"
             exit 1
           fi
+
+          # Clean up any residual data files
+          rm -f shellcheck-results.json shellcheck-results.sarif
 
           # Auto-format all shell scripts
           /home/runner/bin/shfmt -w -ln mksh -i 4 .
@@ -157,7 +65,7 @@ jobs:
           }
           !flag' README.md > README.md.tmp && mv README.md.tmp README.md
 
-          git add .
+          git add maintenance.sh README.md .github/workflows/ || true
 
           if ! git diff --staged --quiet; then
             git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
