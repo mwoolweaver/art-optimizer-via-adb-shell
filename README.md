@@ -1,3 +1,5 @@
+[![Auto-Inject Script into README](https://github.com)](https://github.com)
+
 # art-optimizer-via-adb-shell
 
 A shell script to somewhat automate Android ART cache trimming and package optimization, written directly to the device via a heredoc from ADB shell.
