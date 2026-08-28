@@ -14,9 +14,8 @@ updates:
     labels:
       - "dependencies"
       - "github-actions"
-    # CRITICAL: Forces Dependabot to pull strict commit SHAs instead of version tags
+    # Groups dependencies together so updates pull consistent digests automatically
     groups:
       github-actions-dependencies:
         patterns:
           - "*"
-    pin-digests: true
