@@ -38,7 +38,7 @@ jobs:
 
       - name: Auto-fix script formatting
         shell: bash
-        run: /usr/local/bin/shfmt -w -ln mksh -i 4 maintenance.sh
+        run: /home/runner/bin/shfmt -w -ln mksh -i 4 maintenance.sh
 
       - name: Lint shell script for mksh
         shell: bash
