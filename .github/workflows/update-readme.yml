@@ -3,7 +3,10 @@ name: Auto-Inject Script into README
 on:
   push:
     branches:
-      - main
+      - '**'
+    paths:
+      - 'maintenance.sh'
+  pull_request:
     paths:
       - 'maintenance.sh'
   workflow_dispatch:
@@ -114,6 +117,16 @@ jobs:
           inject_script_content > README.md.tmp && mv README.md.tmp README.md
           git add maintenance.sh README.md
           
+          # Only attempt to commit and push if this is NOT a pull request
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "[+] Pull request detected. Skipping auto-commit/push step."
+            if ! git diff --staged --quiet; then
+              echo "::error::Formatting or injection changes detected. Please run the workflow locally or commit the updates."
+              exit 1
+            fi
+            exit 0
+          fi
+
           if ! git diff --staged --quiet; then
             git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
             git config user.name "github-actions[bot]"
