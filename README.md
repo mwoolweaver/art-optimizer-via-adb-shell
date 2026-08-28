@@ -51,7 +51,7 @@ mkdir -p /sdcard/monthly/
 Expand the section below, paste the entire block into your terminal, and hit **Enter** to save the script directly to your device.
 
 <details>
-<summary><b>Click to Expand Heredoc Block</b></summary>
+<summary><b>Click to Expand Heredoc</b></summary>
 
 <!-- SCRIPT_START -->
 ```bash
