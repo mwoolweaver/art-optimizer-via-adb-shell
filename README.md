@@ -120,7 +120,7 @@ done
 
 debug_print() {
     if [ "$DEBUG" -eq 1 ]; then
-        printf '[DEBUG] %s\n' "$1" >&2
+        echo "[DEBUG] $1" >&2
     fi
 }
 
