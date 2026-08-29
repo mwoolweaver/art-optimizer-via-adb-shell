@@ -83,8 +83,9 @@ Expand the section below, paste the block into your terminal, and press **Enter*
 <details>
 <summary><b>Click to Expand Heredoc</b></summary>
 
-<!-- START_MINIFIED -->
+<!-- SCRIPT_START -->
 ```bash
+cat << 'EOF' > /sdcard/monthly/minification-maintenance.sh
 #!/system/bin/sh
 set -u # Exit immediately if any variable is unset
 umask 077
@@ -493,9 +494,9 @@ printf '    - Packages Skipped (Cached): %d\n' "$TOTAL_SKIPPED"
 printf '==========================================\n'
 print_system_status "FINAL STATUS"
 printf '==========================================\n'
-
+EOF
 ```
-<!-- END_MINIFIED -->
+<!-- SCRIPT_END -->
 
 </details>
 
