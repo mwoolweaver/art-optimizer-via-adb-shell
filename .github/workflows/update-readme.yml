@@ -59,8 +59,29 @@ jobs:
           '
 
           echo "[+] 3. Checking maintenance.sh for script re-injection..."
-          if ! git diff --quiet maintenance.sh || (git rev-parse HEAD~1 &>/dev/null && git diff --name-only HEAD~1 HEAD | grep -q "^maintenance.sh$"); then
-            echo "[+] Changes detected in maintenance.sh. Re-injecting script into README.md..."
+
+          # Check 1: Modified by shfmt during this run (uncommitted working tree diff)
+          WAS_FORMATTED=false
+          if ! git diff --quiet maintenance.sh; then
+            WAS_FORMATTED=true
+          fi
+
+          # Check 2: Modified in the commit itself (HEAD~1 vs HEAD)
+          WAS_IN_COMMIT=false
+          if git rev-parse HEAD~1 &>/dev/null && git diff --name-only HEAD~1 HEAD | grep -q "^maintenance.sh$"; then
+            WAS_IN_COMMIT=true
+          fi
+
+          if [ "$WAS_IN_COMMIT" = true ] || [ "$WAS_FORMATTED" = true ]; then
+            COMMIT_INFO=$(git log -1 --format="%h ('%s' by %an)" 2>/dev/null || echo "${GITHUB_SHA:-unknown}")
+
+            if [ "$WAS_IN_COMMIT" = true ] && [ "$WAS_FORMATTED" = true ]; then
+              echo "[+] Changes detected in maintenance.sh from commit $COMMIT_INFO AND automated shfmt formatting. Injecting new script version into README.md..."
+            elif [ "$WAS_IN_COMMIT" = true ]; then
+              echo "[+] Changes detected in maintenance.sh from commit $COMMIT_INFO. Injecting new script version into README.md..."
+            else
+              echo "[+] Changes detected in maintenance.sh via automated shfmt formatting. Injecting new script version into README.md..."
+            fi
 
             awk '/<!-- SCRIPT_START -->/{
               print
