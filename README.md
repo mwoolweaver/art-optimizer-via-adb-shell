@@ -93,7 +93,7 @@ export LC_ALL=C
 DEBUG="${DEBUG:-0}"
 for arg in "$@"; do
     case "$arg" in
-        -d|--debug|-v|--verbose) DEBUG=1 ;;
+    -d | --debug | -v | --verbose) DEBUG=1 ;;
     esac
 done
 debug_print() {
