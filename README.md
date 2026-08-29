@@ -84,7 +84,7 @@ Expand the section below, paste the block into your terminal, and press **Enter*
 <summary><b>Click to Expand Heredoc</b></summary>
 
 <!-- START_MINIFIED -->
-```sh
+```bash
 #!/system/bin/sh
 set -u # Exit immediately if any variable is unset
 umask 077
