@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      pull-requests: write
       
     steps:
       - name: Checkout repository
@@ -29,7 +30,7 @@ jobs:
       - name: Setup shfmt
         uses: mfinelli/setup-shfmt@a25fda4c1fe115aec0f85e04126610841bc3141d # v4.0.1
 
-      - name: Format, Inject, and Push
+      - name: Format and Inject Script
         shell: bash
         run: |
           set -euo pipefail
@@ -65,14 +66,11 @@ jobs:
           }
           !flag' README.md > README.md.tmp && mv README.md.tmp README.md
 
-          git add maintenance.sh README.md .github/workflows/ || true
-
-          if ! git diff --staged --quiet; then
-            git config --global url."https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/".insteadOf "https://github.com/"
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            
-            git commit --no-verify -m "style/docs: auto-format, lint, and sync repository files"
-            git pull --rebase origin main
-            git push
-          fi
+      - name: Create Pull Request for README Sync
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "style/docs: auto-format, lint, and sync repository files"
+          title: "style/docs: auto-format and sync README.md"
+          branch: "auto-update-readme"
+          base: "main"
+          delete-branch: true
