@@ -1,4 +1,4 @@
-name: Auto-Minify Maintenance Script
+name: Auto-Minify Maintenance Script & README
 
 on:
   push:
@@ -6,23 +6,30 @@ on:
       - main
     paths:
       - "maintenance.sh"
+      - "README.md"
   workflow_dispatch:
 
 jobs:
-  minify:
+  minify-and-inject:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout repository
+      - name: Checkout minification branch
         uses: actions/checkout@v4
         with:
+          ref: minification
           fetch-depth: 0
 
       - name: Configure Git User
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch latest maintenance.sh from main
+        run: |
+          git fetch origin main
+          git checkout origin/main -- maintenance.sh
 
       - name: Minify maintenance.sh
         run: |
@@ -61,9 +68,12 @@ jobs:
                   f.write(new_readme)
           '
 
-      - name: Push to minification branch
+      - name: Update minification-maintenance.sh
         run: |
-          git checkout -b minification
-          git add maintenance.sh README.md
-          git commit -m "Auto-minify maintenance.sh and update README [skip ci]" || echo "No changes to commit"
-          git push origin minification --force
+          mv maintenance.sh minification-maintenance.sh
+
+      - name: Commit and push changes
+        run: |
+          git add minification-maintenance.sh README.md
+          git commit -m "Auto-minify, update minification-maintenance.sh, and sync README [skip ci]" || echo "No changes to commit"
+          git push origin minification
