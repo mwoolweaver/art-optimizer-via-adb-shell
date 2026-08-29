@@ -3,8 +3,10 @@ name: Repository Linter & Gatekeeper
 on:
   push:
     branches:
-      - '**'
+      - main
   pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 concurrency:
@@ -18,7 +20,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      security-events: write
       
     steps:
       - name: Checkout repository
@@ -42,38 +43,7 @@ jobs:
             shellcheck -s ksh -f json "$file" >> shellcheck-results.json
           done
 
-          if [ -f "shellcheck-results.json" ]; then
-            jq '{
-              "$schema": "https://schemastore.org",
-              "version": "2.1.0",
-              "runs": [{
-                "tool": { "driver": { "name": "ShellCheck", "version": "latest" } },
-                "results": [
-                  .[] | {
-                    "ruleId": ("SC" + (.code | tostring)),
-                    "message": { "text": .message },
-                    "level": (if .level == "error" then "error" elif .level == "warning" then "warning" else "note" end),
-                    "locations": [{
-                      "physicalLocation": {
-                        "artifactLocation": { "uri": .file },
-                        "region": {
-                          "startLine": .line,
-                          "startColumn": .column,
-                          "endLine": .endLine,
-                          "endColumn": .endColumn
-                        }
-                      }
-                    }]
-                  }
-                ]
-              }]
-            }' shellcheck-results.json > shellcheck-results.sarif
-          else
-            echo "[]" > shellcheck-results.json
-            echo '{"$schema":"https://schemastore.org","version":"2.1.0","runs":[{"tool":{"driver":{"name":"ShellCheck","version":"latest"}},"results":[]}]}' > shellcheck-results.sarif
-          fi
-
-          if jq 'any(.[]; .level == "error")' shellcheck-results.json | grep -q "true"; then
+          if [ -f "shellcheck-results.json" ] && jq 'any(.[]; .level == "error")' shellcheck-results.json | grep -q "true"; then
             echo "::error::ShellCheck found critical syntax errors in shell scripts!"
             exit 42
           fi
@@ -115,9 +85,3 @@ jobs:
           fi
 
           echo "[+] All repository files successfully linted!"
-
-      - name: Upload ShellCheck results to GitHub Security
-        if: always() && steps.checkout.outcome == 'success'
-        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
-        with:
-          sarif_file: shellcheck-results.sarif
