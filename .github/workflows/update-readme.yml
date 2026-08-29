@@ -55,8 +55,8 @@ jobs:
           echo "[+] 1. Auto-formatting all Shell scripts (.sh)..."
           /home/runner/bin/shfmt -w -ln mksh -i 4 .
 
-          echo "[+] 1.1. Auto-formatting all YAML files (.yml/.yaml)..."
-          npx --yes prettier --write "**/*.yml" "**/*.yaml"
+          echo "[+] 1.1. Auto-formatting all YAML files (.yml)..."
+          npx --yes prettier --write "**/*.yml"
 
           # Check if shfmt modified maintenance.sh during this run
           SH_AFTER_HASH=$(git hash-object maintenance.sh)
