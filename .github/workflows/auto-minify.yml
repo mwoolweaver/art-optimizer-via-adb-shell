@@ -26,10 +26,10 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Fetch latest maintenance.sh from main
+      - name: Fetch latest maintenance.sh and README.md from main
         run: |
           git fetch origin main
-          git checkout origin/main -- maintenance.sh
+          git checkout origin/main -- maintenance.sh README.md
 
       - name: Minify maintenance.sh
         run: |
@@ -59,11 +59,12 @@ jobs:
               code = f.read()
           with open("README.md", "r") as f:
               readme = f.read()
-          start, end = "<!-- START_MINIFIED -->", "<!-- END_MINIFIED -->"
+          start, end = "<!-- SCRIPT_START -->", "<!-- SCRIPT_END -->"
           if start in readme and end in readme:
               pre = readme.split(start)[0]
               post = readme.split(end)[1]
-              new_readme = f"{pre}{start}\n```bash\n{code}\n```\n{end}{post}"
+              heredoc_block = "cat << '\''EOF'\'' > /sdcard/monthly/minification-maintenance.sh\n" + code + "EOF"
+              new_readme = f"{pre}{start}\n```bash\n{heredoc_block}\n```\n{end}{post}"
               with open("README.md", "w") as f:
                   f.write(new_readme)
           '
@@ -75,5 +76,5 @@ jobs:
       - name: Commit and push changes
         run: |
           git add minification-maintenance.sh README.md
-          git commit -m "Auto-minify, update minification-maintenance.sh, and sync README [skip ci]" || echo "No changes to commit"
+          git commit -m "Sync latest README and minified script from main [skip ci]" || echo "No changes to commit"
           git push origin minification
