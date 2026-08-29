@@ -20,10 +20,30 @@ umask 077
 export LC_ALL=C
 
 # ============================================================================
+# DEBUG & VERBOSE CONFIGURATION
+# Purpose: Enable verbose logging via environment variable (DEBUG=1) or flags
+# ============================================================================
+DEBUG="${DEBUG:-0}"
+for arg in "$@"; do
+    case "$arg" in
+        -d|--debug|-v|--verbose) DEBUG=1 ;;
+    esac
+done
+
+debug_print() {
+    if [ "$DEBUG" -eq 1 ]; then
+        printf '[DEBUG] %s\n' "$1" >&2
+    fi
+}
+
+debug_print "Debug/Verbose mode initialized."
+
+# ============================================================================
 # EARLY PRIVILEGE GUARD
 # Purpose: Abort immediately if not running as root (UID 0) or Shell (UID 2000)
 # ============================================================================
 USER_ID=$(id -u 2>/dev/null || printf '9999')
+debug_print "Checked user ID: $USER_ID"
 if [ "$USER_ID" -ne 0 ] && [ "$USER_ID" -ne 2000 ]; then
     printf '[!] FATAL: Elevated privileges required (root or adb shell). Aborting.\n' >&2
     exit 1
@@ -39,6 +59,7 @@ while [ $BOOT_WAIT_ELAPSED -lt 300 ]; do
     [ "$(getprop sys.boot_completed)" = "1" ] && break
     sleep 2
     BOOT_WAIT_ELAPSED=$((BOOT_WAIT_ELAPSED + 2))
+    debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
 done
 
 # ============================================================================
@@ -53,6 +74,7 @@ check_deps() {
     for req in awk cmd cmp cp date df dirname dumpsys getprop mkdir mktemp mv pm printf rm rmdir sed service sleep stat xargs; do
         if ! command -v "$req" >/dev/null 2>&1; then
             missing="${missing}$req "
+            debug_print "Missing required dependency: $req"
         fi
     done
     if [ -n "$missing" ]; then
@@ -85,6 +107,7 @@ sdk_version=$(getprop ro.build.version.sdk 2>/dev/null)
 # Safe fallback assignments
 android_version="${android_version:-Unknown}"
 sdk_version="${sdk_version:-0}"
+debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
 
 # ============================================================================
 # API LEVEL GUARD
@@ -105,6 +128,7 @@ printf '[+] Starting ART Smart Maintenance on Android %s (SDK %s)...\n' "$androi
 
 # Android systems have /data/local/tmp available; ensures temp files go to writable location
 export TMPDIR=/data/local/tmp
+debug_print "Set TMPDIR to $TMPDIR"
 
 # Validate that TMPDIR exists and is actually writable
 if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
@@ -115,6 +139,7 @@ fi
 # Absolute path to this script's directory (locked with readonly to prevent tampering)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 readonly SCRIPT_DIR
+debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
 
 # Validate that SCRIPT_DIR is writable for persistent state files
 if ! [ -w "$SCRIPT_DIR" ]; then
@@ -135,6 +160,7 @@ readonly ERROR_LOG
 # SIGNAL HANDLERS & CLEANUP
 # ============================================================================
 cleanup() {
+    debug_print "Executing cleanup handler (SUCCESSFUL_RUN=$SUCCESSFUL_RUN)..."
     # If the script exits before reaching the end, save an early exit snapshot
     if [ "$SUCCESSFUL_RUN" -eq 0 ] && [ -n "${CURRENT_RUN_STATE:-}" ] && [ -f "$CURRENT_RUN_STATE" ] && [ -s "$CURRENT_RUN_STATE" ]; then
         cp "$CURRENT_RUN_STATE" "${SCRIPT_DIR}/.early_exit" 2>/dev/null || true
@@ -149,6 +175,7 @@ cleanup() {
     for tmpfile in "${CURRENT_RUN_STATE:-}" "${STAGE_STATS:-}" "${STAGE_MERGED:-}" "${ERROR_TMPFILE:-}"; do
         # Skip empty variable strings or files that have already been moved/removed
         if [ -n "$tmpfile" ] && [ -e "$tmpfile" ]; then
+            debug_print "Cleaning up temporary file: $tmpfile"
             if ! rm -f "$tmpfile" 2>/dev/null; then
                 printf '    [!] Warning: Failed to clean up %s\n' "$tmpfile" >&2
             fi
@@ -166,6 +193,7 @@ trap 'printf "\n    [!] Terminated by system (SIGTERM). Cleaning up...\n"; exit 
 # CONCURRENCY GUARD
 # ============================================================================
 LOCK_DIR="${TMPDIR}/art_maintenance.lock"
+debug_print "Acquiring lock directory at $LOCK_DIR"
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n' >&2
@@ -197,6 +225,7 @@ get_thermal_status() {
     if command -v dumpsys >/dev/null 2>&1; then
         out=$(dumpsys hardware_properties 2>/dev/null || true)
         if [ -n "$out" ]; then
+            debug_print "Parsed thermal status from hardware_properties dumpsys."
             temp=$(printf "%s\n" "$out" | awk '
                 /CPU temperatures:/ {
                     if (match($0, /\[[^]]*\]/)) {
@@ -232,6 +261,7 @@ get_thermal_status() {
         # Battery temperature is in tenths of a degree (e.g. 350 = 35.0 C)
         bat_temp=$(dumpsys battery 2>/dev/null | awk '/temperature:/ {print int($2 / 10); exit}')
         if [ -n "$bat_temp" ] && [ "$bat_temp" -gt 0 ]; then
+            debug_print "Parsed battery thermal reading: ${bat_temp}°C"
             printf '%s\n' "$bat_temp"
             return 0
         fi
@@ -245,6 +275,7 @@ get_thermal_status() {
         [ -z "$val" ] && continue
         case "$val" in *[!0-9]*) continue ;; esac
 
+        debug_print "Read thermal zone from sysfs: $f = $val"
         if [ "$val" -gt 1000 ]; then
             printf '%d\n' $((val / 1000))
         else
@@ -253,6 +284,7 @@ get_thermal_status() {
         return 0
     done
 
+    debug_print "Thermal sensors unavailable, returning N/A."
     printf 'N/A\n'
 }
 
@@ -264,6 +296,7 @@ get_thermal_status() {
 get_memory_pressure() {
     # Memory info is available in /proc/meminfo on all Linux systems
     if [ -r /proc/meminfo ]; then
+        debug_print "Reading memory pressure statistics from /proc/meminfo."
         # Extract MemAvailable and MemTotal, calculate percentage, and print directly
         awk '
             /^MemAvailable:/ { a = $2 }
@@ -277,6 +310,7 @@ get_memory_pressure() {
             }
         ' /proc/meminfo 2>/dev/null
     else
+        debug_print "/proc/meminfo not readable."
         printf 'N/A\n'
     fi
 }
@@ -354,7 +388,10 @@ process_packages() {
     default_mode="$2"
 
     # Exit early if package list is empty
-    [ -z "$pkg_list" ] && return 0
+    [ -z "$pkg_list" ] && {
+        debug_print "Package list for mode '$default_mode' is empty."
+        return 0
+    }
 
     # Count total packages for progress reporting
     total_pkgs=0
@@ -369,11 +406,13 @@ process_packages() {
     done
     IFS="$OLD_IFS"
     set +f # Re-enable glob expansion
+    debug_print "Total packages parsed for '$default_mode': $total_pkgs"
 
     # ========================================================================
     # STAGE 1: Extract file paths and get stat metadata
     # ========================================================================
     # Parse package list, extract file paths/dirs, deduplicate inline, and run stat
+    debug_print "Running STAGE 1: Extracting file paths and stat metadata..."
     printf '%s\n' "$pkg_list" | awk '{
         line = $0
         idx = 0
@@ -418,6 +457,7 @@ process_packages() {
     # ========================================================================
 
     # Read the stat data into memory and merge with package information
+    debug_print "Running STAGE 2: Matching packages to stat metadata..."
     printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" '
         BEGIN {
             # Load stat cache into memory for fast lookups
@@ -472,6 +512,7 @@ process_packages() {
     # ========================================================================
     # STAGE 3: Process each package (with change detection)
     # ========================================================================
+    debug_print "Running STAGE 3: Processing package compilation sequence..."
     current=0 # Progress counter
 
     # Read the merged data line by line
@@ -503,6 +544,7 @@ process_packages() {
         # Create a fingerprint to detect if this package has changed since last run
         fingerprint="${pkg_name}:${apk_path}:${file_meta}"
         echo "$fingerprint" >>"$CURRENT_RUN_STATE"
+        debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
 
         # Check if this exact package was already processed in a previous run
         # PREV_STATE contains all fingerprints from the last successful run
@@ -534,6 +576,7 @@ $fingerprint
         fi
 
         # Attempt compilation and capture output/exit status safely in one clean step
+        debug_print "Executing command: cmd package compile -m $actual_mode -f $pkg_name"
         err_output=$(cmd package compile -m "$actual_mode" -f "$pkg_name" 2>&1)
         compile_exit=$?
 
@@ -555,6 +598,7 @@ $fingerprint
         USER_PKGS_COUNT="$total_pkgs"
     fi
 }
+
 # MAIN EXECUTION !!!!!!!!!! MAIN EXECUTION !!!!!!!!! MAIN EXECUTION !!!!!!!!!!
 # ============================================================================
 # MAIN EXECUTION !!!!!!!!!! MAIN EXECUTION !!!!!!!!! MAIN EXECUTION !!!!!!!!!!
@@ -571,6 +615,7 @@ print_system_status "PRE-FLIGHT CHECK" || exit 1
 
 # Validate available storage on /data (minimum 500MB required for compilation buffers)
 FREE_KB=$(df -k /data 2>/dev/null | awk '/\/data/ {print $(NF-2)}')
+debug_print "Available storage on /data: ${FREE_KB:-0} KB"
 if [ -n "$FREE_KB" ] && [ "$FREE_KB" -lt 512000 ]; then
     printf '[!] FATAL: Insufficient storage on /data (%d MB available, 500 MB required). Aborting.\n' "$((FREE_KB / 1024))" >&2
     exit 1
@@ -585,6 +630,7 @@ CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
 STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
 STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
 ERROR_TMPFILE=$(mktemp "${TMPDIR}/errors.$$.XXXXXX")
+debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
 
 # Verify all temporary files were successfully created (safety check)
 if [ -z "$CURRENT_RUN_STATE" ] || [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ] || [ -z "$ERROR_TMPFILE" ]; then
@@ -605,9 +651,12 @@ PREV_STATE=""
 # This guarantees that our 'case' statement later matches exact whole lines,
 # preventing partial string collisions (e.g., matching "app" inside "app.pro").
 if [ -r "$STATE_FILE" ]; then
+    debug_print "Loading persistent state file from $STATE_FILE"
     PREV_STATE="
 $(<"$STATE_FILE")
 "
+else
+    debug_print "No existing state file found at $STATE_FILE. Full optimization run expected."
 fi
 
 # ============================================================================
@@ -632,6 +681,7 @@ STEP2_START=$(date +%s)
 
 # List all system packages (-s flag) with full paths (-f flag)
 # Added 2>/dev/null to catch command errors silently
+debug_print "Querying system packages via pm list packages -f -s..."
 system_package_list=$(pm list packages -f -s 2>/dev/null | sed -e 's/^package://' -e 's/\r$//')
 
 # Validate that we actually got a package list before processing
@@ -652,6 +702,7 @@ fi
 printf '[+] Step 3: Smart-optimizing user apps...\n'
 STEP3_START=$(date +%s)
 
+debug_print "Querying user packages via pm list packages -f -3..."
 user_package_list=$(pm list packages -f -3 2>/dev/null | sed -e 's/^package://' -e 's/\r$//')
 
 if [ -z "$user_package_list" ]; then
