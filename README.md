@@ -12,10 +12,10 @@ A shell script to somewhat automate Android ART cache trimming and package optim
 
 Keeping your Android runtime (ART) cache optimized ensures faster app launches, smoother performance, and better battery life. This README provides a heredoc block that can be used over ADB to write the script directly to your device. This bypasses the need to download files or use `adb push`, allowing you to save and execute the script entirely from your computer's terminal.
 
-*   **No File Transfers:** Use the heredoc provided below to create the script directly on the device via ADB Shell.
-*   **Ultra-Lean Execution:** Built with strict POSIX compliance and zero-fork caching logic, bypassing heavy external binaries to run instantly natively.
-*   **Smart Compilation:** Reads existing ART cache states and skips unchanged packages, saving massive amounts of CPU cycles and preventing thermal throttling.
-*   **System Safeguards:** Actively monitors battery levels, available memory, and device temperatures before and during execution to ensure device safety.
+* **No File Transfers:** Use the heredoc provided below to create the script directly on the device via ADB Shell.
+* **Ultra-Lean Execution:** Built with strict POSIX compliance and zero-fork caching logic, bypassing heavy external binaries to run instantly natively.
+* **Smart Compilation:** Reads existing ART cache states and skips unchanged packages, saving massive amounts of CPU cycles and preventing thermal throttling.
+* **System Safeguards:** Actively monitors battery levels, available memory, and device temperatures before and during execution to ensure device safety.
 
 ## Prerequisites
 
@@ -24,13 +24,14 @@ Before running the script, ensure your environment meets the following requireme
 1. **Android Device Requirements:**
    * **Android Version:** Android 7.0 (API Level 24) or higher (required for `cmd package compile` support).
    * **Developer Options:** Enable **USB Debugging** (or **Wireless Debugging** for Android 11+).
-   * **Available Storage:** At least **500 MB** of free space on `/data` for compilation state files and temporary execution buffers.
+   * **Available Storage:** At least **500 MB** of free space on `/data` (for compiled DEX/OAT runtime caches and temporary state execution in `/data/local/tmp`).
 2. **Host Machine Setup:**
    * **Terminal Access:** Command-line terminal on macOS, Linux, or Windows (PowerShell/WSL).
-   * **ADB (Android Debug Bridge):** Platform tools installed and accessible via your system `$PATH` (e.g., via Homebrew on macOS, package manager on Linux, or Standalone SDK Platform-Tools on Windows).
+   * **ADB (Android Debug Bridge):** Platform tools installed and accessible via your system `$PATH`.
 3. **Execution Environment:**
    * **Shell Privileges:** Access to standard `adb shell` (UID 2000) or `root` (UID 0).
-   * **Target Directory:** Write access to `/data/local/tmp/` on the device (avoids `noexec` restrictions common on `/sdcard/`).
+   * **Target Directories:** Write access to `/sdcard/monthly/` (script persistence across OTAs) and `/data/local/tmp/` (temporary cache handling via `TMPDIR`).
+
 ## Usage
 
 ### 1. Connect to your device
@@ -61,19 +62,19 @@ Connect your host machine to your Android device depending on your Android versi
 
 ### 2. Open Shell & Make Directory
 
-* Open an interactive ADB shell and create the script directory inside `/sdcard/`:
+Open an interactive ADB shell and create the script directory inside `/sdcard/`:
 
-  ```bash
-  adb shell
-  mkdir -p /sdcard/monthly/
-  ```
+```bash
+adb shell
+mkdir -p /sdcard/monthly/
+```
 
-  > **Why `/sdcard/`?**
+> **Why `/sdcard/`?**
 > Storing the script in internal storage (`/sdcard/monthly/`) ensures it persists across system OS updates (OTAs), whereas files in `/data/local/tmp/` are often wiped during system updates or reboots.
 
 ### 3. Write the script using a heredoc
 
-* Expand the section below, paste the block into your terminal, and press **Enter** to save `maintenance.sh` directly to your device.
+Expand the section below, paste the block into your terminal, and press **Enter** to save `maintenance.sh` directly to your device.
 
 <!-- NOTE: Do not remove SCRIPT_START and SCRIPT_END comments below. 
      They are used by update-readme.yml to auto-inject maintenance.sh -->
@@ -94,11 +95,11 @@ EOF
 
 ### 4. Run the script
 
-* Execute the script by passing it explicitly to `sh`:
+Execute the script by passing it explicitly to `sh`:
 
-  ```bash
-  sh /sdcard/monthly/maintenance.sh
-  ```
+```bash
+sh /sdcard/monthly/maintenance.sh
+```
 
 > **Note:** Executing via `sh /sdcard/monthly/maintenance.sh` allows the shell interpreter to read and run the script directly, cleanly bypassing the `noexec` mount restriction enforced on `/sdcard/`.
 
@@ -130,7 +131,6 @@ EOF
 
 ==========================================
 ```
-
 
 ## 💡 Pro-Tip: Automation
 
