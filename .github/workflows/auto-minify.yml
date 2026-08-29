@@ -55,7 +55,7 @@ jobs:
       - name: Inject minified script into README.md
         run: |
           python3 -c '
-          with open("maintenance.sh", "r") as f:
+          with open("minification-maintenance.sh", "r") as f:
               code = f.read()
           with open("README.md", "r") as f:
               readme = f.read()
@@ -63,7 +63,9 @@ jobs:
           if start in readme and end in readme:
               pre = readme.split(start)[0]
               post = readme.split(end)[1]
-              new_readme = f"{pre}{start}\n```bash\n{code}\n```\n{end}{post}"
+              # Wrap in heredoc ONLY for the README display block
+              heredoc_block = "cat << '\''EOF'\'' > /sdcard/monthly/minification-maintenance.sh\n" + code + "EOF"
+              new_readme = f"{pre}{start}\n```bash\n{heredoc_block}\n```\n{end}{post}"
               with open("README.md", "w") as f:
                   f.write(new_readme)
           '
