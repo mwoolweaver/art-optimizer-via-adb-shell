@@ -85,7 +85,7 @@ jobs:
           fi
 
       - name: Create Pull Request for File Sync
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@22a90891d4e410f1350a4170881bc3ee0b753f29 # v7.0.11
         with:
           commit-message: "style/docs: auto-format, lint, and sync repository files"
           title: "style/docs: auto-format and sync repository files"
