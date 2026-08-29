@@ -1,9 +1,6 @@
 name: Repository Linter & Gatekeeper
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
     branches:
       - main
