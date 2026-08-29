@@ -30,7 +30,7 @@ jobs:
       - name: Setup shfmt
         uses: mfinelli/setup-shfmt@a25fda4c1fe115aec0f85e04126610841bc3141d # v4.0.1
 
-      - name: Format and Inject Script
+      - name: Auto-Format All Repository Files & Inject Script
         shell: bash
         run: |
           set -euo pipefail
@@ -43,34 +43,52 @@ jobs:
           # Clean up any residual data files
           rm -f shellcheck-results.json shellcheck-results.sarif
 
-          # Auto-format all shell scripts
+          echo "[+] 1. Auto-formatting all Shell scripts (.sh)..."
           /home/runner/bin/shfmt -w -ln mksh -i 4 .
 
-          # Re-inject script into README
-          awk '/<!-- SCRIPT_START -->/{
-            print
-            print "```bash"
-            print "cat << \x27EOF\x27 > /sdcard/monthly/maintenance.sh"
-            while ((getline line < "maintenance.sh") > 0) {
-              sub(/\r$/, "", line)
-              print line
-            }
-            close("maintenance.sh")
-            print "EOF"
-            print "```"
-            flag=1
-            next
-          }
-          /<!-- SCRIPT_END -->/{
-            flag=0
-          }
-          !flag' README.md > README.md.tmp && mv README.md.tmp README.md
+          echo "[+] 2. Normalizing all Markdown files (.md)..."
+          python3 -c '
+          import glob
+          for f in glob.glob("**/*.md", recursive=True, include_hidden=True):
+              if ".git/" in f or "/.git" in f: continue
+              with open(f, "r", encoding="utf-8") as file:
+                  lines = [line.rstrip() for line in file.readlines()]
+              content = "\n".join(lines).strip() + "\n"
+              with open(f, "w", encoding="utf-8") as file:
+                  file.write(content)
+          '
 
-      - name: Create Pull Request for README Sync
+          echo "[+] 3. Checking maintenance.sh for script re-injection..."
+          if ! git diff --quiet maintenance.sh || (git rev-parse HEAD~1 &>/dev/null && git diff --name-only HEAD~1 HEAD | grep -q "^maintenance.sh$"); then
+            echo "[+] Changes detected in maintenance.sh. Re-injecting script into README.md..."
+
+            awk '/<!-- SCRIPT_START -->/{
+              print
+              print "```bash"
+              print "cat << \x27EOF\x27 > /sdcard/monthly/maintenance.sh"
+              while ((getline line < "maintenance.sh") > 0) {
+                sub(/\r$/, "", line)
+                print line
+              }
+              close("maintenance.sh")
+              print "EOF"
+              print "```"
+              flag=1
+              next
+            }
+            /<!-- SCRIPT_END -->/{
+              flag=0
+            }
+            !flag' README.md > README.md.tmp && mv README.md.tmp README.md
+          else
+            echo "[=] maintenance.sh was not modified. Skipping README script injection."
+          fi
+
+      - name: Create Pull Request for File Sync
         uses: peter-evans/create-pull-request@v6
         with:
           commit-message: "style/docs: auto-format, lint, and sync repository files"
-          title: "style/docs: auto-format and sync README.md"
+          title: "style/docs: auto-format and sync repository files"
           branch: "auto-update-readme"
           base: "main"
           delete-branch: true
