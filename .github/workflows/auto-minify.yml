@@ -63,7 +63,7 @@ jobs:
           if start in readme and end in readme:
               pre = readme.split(start)[0]
               post = readme.split(end)[1]
-              new_readme = f"{pre}{start}\n```sh\n{code}\n```\n{end}{post}"
+              new_readme = f"{pre}{start}\n```bash\n{code}\n```\n{end}{post}"
               with open("README.md", "w") as f:
                   f.write(new_readme)
           '
