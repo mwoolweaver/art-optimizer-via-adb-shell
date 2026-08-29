@@ -18,7 +18,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      
+
     steps:
       - name: Checkout repository
         id: checkout
@@ -43,8 +43,27 @@ jobs:
           # Clean up any residual data files
           rm -f shellcheck-results.json shellcheck-results.sarif
 
+          # Check if maintenance.sh was modified in the incoming commit
+          WAS_IN_COMMIT=false
+          if git rev-parse HEAD~1 &>/dev/null && git diff --name-only HEAD~1 HEAD | grep -q "^maintenance.sh$"; then
+            WAS_IN_COMMIT=true
+          fi
+
+          # Capture maintenance.sh hash before formatting
+          SH_BEFORE_HASH=$(git hash-object maintenance.sh)
+
           echo "[+] 1. Auto-formatting all Shell scripts (.sh)..."
           /home/runner/bin/shfmt -w -ln mksh -i 4 .
+
+          echo "[+] 1.1. Auto-formatting all YAML files (.yml)..."
+          npx --yes prettier --write "**/*.yml"
+
+          # Check if shfmt modified maintenance.sh during this run
+          SH_AFTER_HASH=$(git hash-object maintenance.sh)
+          WAS_FORMATTED=false
+          if [ "$SH_BEFORE_HASH" != "$SH_AFTER_HASH" ]; then
+            WAS_FORMATTED=true
+          fi
 
           echo "[+] 2. Normalizing all Markdown files (.md)..."
           python3 -c '
@@ -58,56 +77,55 @@ jobs:
                   file.write(content)
           '
 
-          echo "[+] 3. Checking maintenance.sh for script re-injection..."
+          # Capture README hash before script injection
+          README_BEFORE_HASH=$(git hash-object README.md)
 
-          # Check 1: Modified by shfmt during this run (uncommitted working tree diff)
-          WAS_FORMATTED=false
-          if ! git diff --quiet maintenance.sh; then
-            WAS_FORMATTED=true
+          echo "[+] 3. Injecting maintenance.sh into README.md..."
+          awk '/<!-- SCRIPT_START -->/{
+            print
+            print "```bash"
+            print "cat << \x27EOF\x27 > /sdcard/monthly/maintenance.sh"
+            while ((getline line < "maintenance.sh") > 0) {
+              sub(/\r$/, "", line)
+              print line
+            }
+            close("maintenance.sh")
+            print "EOF"
+            print "```"
+            flag=1
+            next
+          }
+          /<!-- SCRIPT_END -->/{
+            flag=0
+          }
+          !flag' README.md > README.md.tmp && mv README.md.tmp README.md
+
+          # Check if README was updated/desynced
+          README_AFTER_HASH=$(git hash-object README.md)
+          README_DESYNCED=false
+          if [ "$README_BEFORE_HASH" != "$README_AFTER_HASH" ]; then
+            README_DESYNCED=true
           fi
 
-          # Check 2: Modified in the commit itself (HEAD~1 vs HEAD)
-          WAS_IN_COMMIT=false
-          if git rev-parse HEAD~1 &>/dev/null && git diff --name-only HEAD~1 HEAD | grep -q "^maintenance.sh$"; then
-            WAS_IN_COMMIT=true
-          fi
-
-          if [ "$WAS_IN_COMMIT" = true ] || [ "$WAS_FORMATTED" = true ]; then
-            COMMIT_INFO=$(git log -1 --format="%h ('%s' by %an)" 2>/dev/null || echo "${GITHUB_SHA:-unknown}")
-
-            if [ "$WAS_IN_COMMIT" = true ] && [ "$WAS_FORMATTED" = true ]; then
-              echo "[+] Changes detected in maintenance.sh from commit $COMMIT_INFO AND automated shfmt formatting. Injecting new script version into README.md..."
-            elif [ "$WAS_IN_COMMIT" = true ]; then
-              echo "[+] Changes detected in maintenance.sh from commit $COMMIT_INFO. Injecting new script version into README.md..."
-            else
-              echo "[+] Changes detected in maintenance.sh via automated shfmt formatting. Injecting new script version into README.md..."
-            fi
-
-            awk '/<!-- SCRIPT_START -->/{
-              print
-              print "```bash"
-              print "cat << \x27EOF\x27 > /sdcard/monthly/maintenance.sh"
-              while ((getline line < "maintenance.sh") > 0) {
-                sub(/\r$/, "", line)
-                print line
-              }
-              close("maintenance.sh")
-              print "EOF"
-              print "```"
-              flag=1
-              next
-            }
-            /<!-- SCRIPT_END -->/{
-              flag=0
-            }
-            !flag' README.md > README.md.tmp && mv README.md.tmp README.md
+          echo "=========================================="
+          echo " PIPELINE EXECUTION SCENARIO REPORT:"
+          if [ "$WAS_IN_COMMIT" = true ] && [ "$WAS_FORMATTED" = true ]; then
+            echo " [SCENARIO 1] maintenance.sh was modified in commit AND auto-formatted by shfmt."
+          elif [ "$WAS_IN_COMMIT" = true ] && [ "$WAS_FORMATTED" = false ]; then
+            echo " [SCENARIO 2] maintenance.sh was modified in commit (already properly formatted)."
+          elif [ "$WAS_IN_COMMIT" = false ] && [ "$WAS_FORMATTED" = true ]; then
+            echo " [SCENARIO 3] maintenance.sh was unmodified in commit but formatted by shfmt during run."
+          elif [ "$README_DESYNCED" = true ]; then
+            echo " [SCENARIO 4] README.md script block was desynced or empty and has been re-injected."
           else
-            echo "[=] maintenance.sh was not modified. Skipping README script injection."
+            echo " [SCENARIO 5] All files are completely clean and in sync. No changes detected."
           fi
+          echo "=========================================="
 
       - name: Create Pull Request for File Sync
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
+          token: ${{ secrets.ACTION_TOKEN }}
           commit-message: "style/docs: auto-format, lint, and sync repository files"
           title: "style/docs: auto-format and sync repository files"
           branch: "auto-update-readme"
