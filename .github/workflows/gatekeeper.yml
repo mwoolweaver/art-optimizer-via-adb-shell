@@ -52,7 +52,13 @@ jobs:
           echo "[+] Validating YAML syntax..."
           python3 -c '
           import yaml, glob
-          for f in glob.glob("**/*.yml", recursive=True) + glob.glob("**/*.yaml", recursive=True):
+          files = set(
+              glob.glob("**/*.yml", recursive=True) +
+              glob.glob("**/*.yaml", recursive=True) +
+              glob.glob(".github/**/*.yml", recursive=True) +
+              glob.glob(".github/**/*.yaml", recursive=True)
+          )
+          for f in sorted(files):
               if ".git" in f: continue
               try:
                   with open(f, "r") as file:
@@ -67,8 +73,8 @@ jobs:
           echo "[+] Validating Markdown files..."
           python3 -c '
           import glob
-          for f in glob.glob("**/*.md", recursive=True):
-              if ".git" in f: continue
+          for f in sorted(glob.glob("**/*.md", recursive=True, include_hidden=True)):
+              if ".git/" in f or "/.git" in f: continue
               with open(f, "r", encoding="utf-8") as file:
                   content = file.read()
               if content.count("```") % 2 != 0:
