@@ -1,3 +1,9 @@
+[![Gatekeeper](https://github.com/mwoolweaver/art-optimizer-via-adb-shell/actions/workflows/gatekeeper.yml/badge.svg?branch=main)](https://github.com/mwoolweaver/art-optimizer-via-adb-shell/actions/workflows/gatekeeper.yml)
+[![Update README](https://github.com/mwoolweaver/art-optimizer-via-adb-shell/actions/workflows/update-readme.yml/badge.svg?branch=main)](https://github.com/mwoolweaver/art-optimizer-via-adb-shell/actions/workflows/update-readme.yml)
+[![License: Unlicense](https://img.shields.io/badge/License-Unlicense-blue.svg)](https://unlicense.org/)
+[![Android API](https://img.shields.io/badge/Android-7.0%2B%20%28API%2024%2B%20%29-green.svg)](https://developer.android.com)
+![POSIX Shell](https://img.shields.io/badge/Shell-POSIX%20compliant-blue)
+
 # art-optimizer-via-adb-shell
 
 A shell script to somewhat automate Android ART cache trimming and package optimization, written directly to the device via a heredoc from ADB shell.
@@ -6,50 +12,75 @@ A shell script to somewhat automate Android ART cache trimming and package optim
 
 Keeping your Android runtime (ART) cache optimized ensures faster app launches, smoother performance, and better battery life. This README provides a heredoc block that can be used over ADB to write the script directly to your device. This bypasses the need to download files or use `adb push`, allowing you to save and execute the script entirely from your computer's terminal.
 
-*   **No File Transfers:** Use the heredoc provided below to create the script directly on the device via ADB Shell.
-*   **Ultra-Lean Execution:** Built with strict POSIX compliance and zero-fork caching logic, bypassing heavy external binaries to run instantly natively.
-*   **Smart Compilation:** Reads existing ART cache states and skips unchanged packages, saving massive amounts of CPU cycles and preventing thermal throttling.
-*   **System Safeguards:** Actively monitors battery levels, available memory, and device temperatures before and during execution to ensure device safety.
+* **No File Transfers:** Use the heredoc provided below to create the script directly on the device via ADB Shell.
+* **Ultra-Lean Execution:** Built with strict POSIX compliance and zero-fork caching logic, bypassing heavy external binaries to run instantly natively.
+* **Smart Compilation:** Reads existing ART cache states and skips unchanged packages, saving massive amounts of CPU cycles and preventing thermal throttling.
+* **System Safeguards:** Actively monitors battery levels, available memory, and device temperatures before and during execution to ensure device safety.
 
 ## Prerequisites
 
-Before running the script, ensure you have the following setup:
+Before running the script, ensure your environment meets the following requirements:
 
-1.  **Terminal Access:** The script creation and execution are initiated from your computer.
-2.  **ADB (Android Debug Bridge):** Requires `adb`, available via Homebrew on macOS or most default Linux package managers.
-3.  **Debugging Enabled:** Turn on Developer Options on your Android device and enable USB or Wireless Debugging.
+1. **Android Device Requirements:**
+   * **Android Version:** Android 7.0 (API Level 24) or higher (required for `cmd package compile` support).
+   * **Developer Options:** Enable **USB Debugging** (or **Wireless Debugging** for Android 11+).
+   * **Available Storage:** At least **500 MB** of free space on `/data` (for compiled DEX/OAT runtime caches and temporary state execution in `/data/local/tmp`).
+2. **Host Machine Setup:**
+   * **Terminal Access:** Command-line terminal on macOS, Linux, or Windows (PowerShell/WSL).
+   * **ADB (Android Debug Bridge):** Platform tools installed and accessible via your system `$PATH`.
+3. **Execution Environment:**
+   * **Shell Privileges:** Access to standard `adb shell` (UID 2000) or `root` (UID 0).
+   * **Target Directories:** Write access to `/sdcard/monthly/` (script persistence across OTAs) and `/data/local/tmp/` (temporary cache handling via `TMPDIR`).
 
-## Usage 
+## Usage
 
 ### 1. Connect to your device
 
-Connect via USB or Wireless Debugging. For newer hardware, Wireless Debugging is paired securely via IP and Port:
+Connect your host machine to your Android device depending on your Android version:
 
-```bash
-# First time pairing:
-adb pair <IP>:<PAIRING_PORT>
+* **Android 7.0 – 10 (USB Required)**
+  Connect via USB cable with **USB Debugging** enabled.
 
-# Subsequent connections:
-adb connect <IP>:<CONNECTION_PORT>
-```
+  *Optional: Switch to wireless mode after initial USB connection:*
+  ```bash
+  adb tcpip 5555
+  # Disconnect USB cable, then connect over Wi-Fi:
+  adb connect <IP_ADDRESS>:5555
+  ```
 
-*Verify your connection by running `adb devices`. If the device shows as `unauthorized`, check your phone screen to grant the RSA key prompt.*
+* **Android 11+ (Native Wireless Debugging)**
+  Enable **Wireless Debugging** in Developer Options and connect directly over Wi-Fi:
+  ```bash
+  # First-time pairing (requires pairing code & port from Developer Options):
+  adb pair <IP>:<PAIRING_PORT>
+
+  # Connection (uses IP & connection port from Developer Options):
+  adb connect <IP>:<CONNECTION_PORT>
+  ```
+
+> **Verification:** Run `adb devices`. If the status reads `unauthorized`, accept the RSA key prompt on your device screen.
 
 ### 2. Open Shell & Make Directory
 
-Open an interactive ADB shell and create the target directory:
+Open an interactive ADB shell and create the script directory inside `/sdcard/`:
 
 ```bash
 adb shell
 mkdir -p /sdcard/monthly/
 ```
 
+> **Why `/sdcard/`?**
+> Storing the script in internal storage (`/sdcard/monthly/`) ensures it persists across system OS updates (OTAs), whereas files in `/data/local/tmp/` are often wiped during system updates or reboots.
+
 ### 3. Write the script using a heredoc
 
-Expand the section below, paste the entire block into your terminal, and hit **Enter** to save the script directly to your device.
+Expand the section below, paste the block into your terminal, and press **Enter** to save `maintenance.sh` directly to your device.
+
+<!-- NOTE: Do not remove SCRIPT_START and SCRIPT_END comments below.
+     They are used by update-readme.yml to auto-inject maintenance.sh -->
 
 <details>
-<summary><b>Click to Expand Heredoc Block</b></summary>
+<summary><b>Click to Expand Heredoc</b></summary>
 
 <!-- SCRIPT_START -->
 ```bash
@@ -433,7 +464,7 @@ process_packages() {
     printf '%s\n' "$pkg_list" | awk '{
         line = $0
         idx = 0
-        
+
         # Find the last occurrence of "=" to separate the file path from the package name
         # (Formats look like: /path/to/base.apk=com.example.app)
         for (i = length(line); i > 0; i--) {
@@ -442,23 +473,23 @@ process_packages() {
                 break
             }
         }
-        
+
         if (idx > 0) {
             # Extract the file path
             path = substr(line, 1, idx - 1)
-            
+
             # Security sanity check: skip malformed paths, null bytes, newlines, or excessive lengths
             if (path ~ /[\r\n\0]/ || length(path) > 1024) next
-            
+
             # Inline deduplication
             if (!seen[path]++) print path
-            
+
             # Extract parent directory cleanly using regex match and RLENGTH
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
-                
+
                 if (dir ~ /[\r\n\0]/ || length(dir) > 1024) next
-                
+
                 if (!seen[dir]++) print dir
             }
         }
@@ -490,7 +521,7 @@ process_packages() {
         {
             line = $0
             if (line == "") next  # Skip empty lines
-            
+
             # Extract path and package name by splitting on last "="
             idx = 0
             for (i = length(line); i > 0; i--) {
@@ -499,11 +530,11 @@ process_packages() {
                     break
                 }
             }
-            
+
             if (idx > 0) {
                 path = substr(line, 1, idx - 1)       # File path
                 pkg = substr(line, idx + 1)           # Package name
-                
+
                 # Look up stat data for this path
                 meta = stats[path]
                 if (meta == "") {
@@ -518,7 +549,7 @@ process_packages() {
                         meta = "0:0"  # Default if nothing found
                     }
                 }
-                
+
                 # Output merged data: package|path|metadata
                 print pkg "|" path "|" meta
             }
@@ -783,12 +814,13 @@ EOF
 
 ### 4. Run the script
 
-Execute the newly saved script using `sh`:
+Execute the script by passing it explicitly to `sh`:
+
 ```bash
 sh /sdcard/monthly/maintenance.sh
 ```
 
-*If you receive a `permission denied` error, ensure you are running the command within the `adb shell` environment, not your local computer terminal.*
+> **Note:** Executing via `sh /sdcard/monthly/maintenance.sh` allows the shell interpreter to read and run the script directly, cleanly bypassing the `noexec` mount restriction enforced on `/sdcard/`.
 
 #### Example Output:
 
@@ -819,12 +851,26 @@ sh /sdcard/monthly/maintenance.sh
 ==========================================
 ```
 
-
 ## 💡 Pro-Tip: Automation
 
-Because this script utilizes a zero-fork architecture and includes thermal safeguards, it is incredibly lightweight and safe to run in the background. You can easily hook this script into automation apps like **Tasker** or **MacroDroid** using a "Run Shell" action (with root or ADB Wi-Fi privileges) to keep your device optimized on a set schedule while it charges overnight.
+Because this script includes thermal safeguards and state-caching, it is safe to automate in the background. You can easily schedule it to run in **Tasker** or **MacroDroid** (e.g., weekly at 3:00 AM while charging).
 
-*Note: For non-rooted devices, automation apps generally require the `WRITE_SECURE_SETTINGS` permission to be granted via ADB before they can execute background shell commands.*
+### Command by Setup Type
+
+* **Rooted Devices:**
+  Use a standard **Run Shell** action with **Use Root** checked:
+  ```bash
+  sh /sdcard/monthly/maintenance.sh
+  ```
+
+* **Non-Rooted Devices:**
+  Use Tasker's **ADB Wifi** action or MacroDroid's **ADB Shell Command** action:
+  ```bash
+  sh /sdcard/monthly/maintenance.sh
+  ```
+
+> **Note for Non-Rooted Automation:**
+> Non-rooted devices executing shell commands require ADB Wi-Fi privileges. On Android 11+, Tasker can natively manage ADB Wi-Fi pairing across reboots. On Android 7–10, ADB Wi-Fi mode must be re-enabled after a reboot (`adb tcpip 5555`).
 
 ## License
 

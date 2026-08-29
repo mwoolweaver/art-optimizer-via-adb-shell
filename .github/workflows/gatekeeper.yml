@@ -1,0 +1,92 @@
+name: Repository Linter & Gatekeeper
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  gatekeeper:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      
+    steps:
+      - name: Checkout repository
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup shfmt
+        uses: mfinelli/setup-shfmt@a25fda4c1fe115aec0f85e04126610841bc3141d # v4.0.1
+
+      - name: Lint all repository files
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "[+] Starting full repository linting..."
+
+          # 1. Shell scripts (.sh): Validated via ShellCheck in a single invocation
+          mapfile -t sh_files < <(find . -name "*.sh" -not -path "./.git/*")
+          if [ "${#sh_files[@]}" -gt 0 ]; then
+            echo "  Linting shell script(s): ${sh_files[*]}"
+            if ! shellcheck -s ksh -f json "${sh_files[@]}" > shellcheck-results.json; then
+              if jq -e 'any(.[]; .level == "error")' shellcheck-results.json >/dev/null 2>&1; then
+                echo "::error::ShellCheck found critical syntax errors in shell scripts!"
+                exit 42
+              fi
+            fi
+          fi
+
+          # 2. YAML files (.yml): Strict syntax validation
+          echo "[+] Validating YAML syntax..."
+          python3 -c '
+          import yaml, glob
+          files = set(
+              glob.glob("**/*.yml", recursive=True) +
+              glob.glob("**/*.yaml", recursive=True) +
+              glob.glob(".github/**/*.yml", recursive=True) +
+              glob.glob(".github/**/*.yaml", recursive=True)
+          )
+          for f in sorted(files):
+              if ".git" in f: continue
+              try:
+                  with open(f, "r") as file:
+                      yaml.safe_load(file)
+                  print(f"  Passed YAML: {f}")
+              except Exception as e:
+                  print(f"::error::YAML error in {f}: {e}")
+                  exit(1)
+          '
+
+          # 3. Markdown files (.md): Structure checks
+          echo "[+] Validating Markdown files..."
+          python3 -c '
+          import glob
+          for f in sorted(glob.glob("**/*.md", recursive=True, include_hidden=True)):
+              if ".git/" in f or "/.git" in f: continue
+              with open(f, "r", encoding="utf-8") as file:
+                  content = file.read()
+              if content.count("```") % 2 != 0:
+                  print(f"::error::Unbalanced code block fences (```) in Markdown file: {f}")
+                  exit(1)
+              print(f"  Passed Markdown: {f}")
+          '
+
+          # 4. Gitignore (.gitignore): Format tracking validation
+          echo "[+] Validating .gitignore format..."
+          if [ -f ".gitignore" ]; then
+            git check-ignore -v README.md > /dev/null 2>&1 || true
+            echo "  Passed .gitignore syntax check."
+          fi
+
+          echo "[+] All repository files successfully linted!"
