@@ -23,6 +23,7 @@ jobs:
         id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Setup shfmt
@@ -34,15 +35,16 @@ jobs:
           set -euo pipefail
           echo "[+] Starting full repository linting..."
 
-          # 1. Shell scripts (.sh): Validated via ShellCheck
-          find . -name "*.sh" -not -path "./.git/*" | while read -r file; do
-            echo "  Linting shell script: $file"
-            shellcheck -s ksh -f json "$file" >> shellcheck-results.json
-          done
-
-          if [ -f "shellcheck-results.json" ] && jq 'any(.[]; .level == "error")' shellcheck-results.json | grep -q "true"; then
-            echo "::error::ShellCheck found critical syntax errors in shell scripts!"
-            exit 42
+          # 1. Shell scripts (.sh): Validated via ShellCheck in a single invocation
+          mapfile -t sh_files < <(find . -name "*.sh" -not -path "./.git/*")
+          if [ "${#sh_files[@]}" -gt 0 ]; then
+            echo "  Linting shell script(s): ${sh_files[*]}"
+            if ! shellcheck -s ksh -f json "${sh_files[@]}" > shellcheck-results.json; then
+              if jq -e 'any(.[]; .level == "error")' shellcheck-results.json >/dev/null 2>&1; then
+                echo "::error::ShellCheck found critical syntax errors in shell scripts!"
+                exit 42
+              fi
+            fi
           fi
 
           # 2. YAML files (.yml): Strict syntax validation
