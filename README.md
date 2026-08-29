@@ -40,7 +40,7 @@ Connect your host machine to your Android device depending on your Android versi
 
 * **Android 7.0 – 10 (USB Required)**
   Connect via USB cable with **USB Debugging** enabled.
-  
+
   *Optional: Switch to wireless mode after initial USB connection:*
   ```bash
   adb tcpip 5555
@@ -76,7 +76,7 @@ mkdir -p /sdcard/monthly/
 
 Expand the section below, paste the block into your terminal, and press **Enter** to save `maintenance.sh` directly to your device.
 
-<!-- NOTE: Do not remove SCRIPT_START and SCRIPT_END comments below. 
+<!-- NOTE: Do not remove SCRIPT_START and SCRIPT_END comments below.
      They are used by update-readme.yml to auto-inject maintenance.sh -->
 
 <details>
@@ -464,7 +464,7 @@ process_packages() {
     printf '%s\n' "$pkg_list" | awk '{
         line = $0
         idx = 0
-        
+
         # Find the last occurrence of "=" to separate the file path from the package name
         # (Formats look like: /path/to/base.apk=com.example.app)
         for (i = length(line); i > 0; i--) {
@@ -473,23 +473,23 @@ process_packages() {
                 break
             }
         }
-        
+
         if (idx > 0) {
             # Extract the file path
             path = substr(line, 1, idx - 1)
-            
+
             # Security sanity check: skip malformed paths, null bytes, newlines, or excessive lengths
             if (path ~ /[\r\n\0]/ || length(path) > 1024) next
-            
+
             # Inline deduplication
             if (!seen[path]++) print path
-            
+
             # Extract parent directory cleanly using regex match and RLENGTH
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
-                
+
                 if (dir ~ /[\r\n\0]/ || length(dir) > 1024) next
-                
+
                 if (!seen[dir]++) print dir
             }
         }
@@ -521,7 +521,7 @@ process_packages() {
         {
             line = $0
             if (line == "") next  # Skip empty lines
-            
+
             # Extract path and package name by splitting on last "="
             idx = 0
             for (i = length(line); i > 0; i--) {
@@ -530,11 +530,11 @@ process_packages() {
                     break
                 }
             }
-            
+
             if (idx > 0) {
                 path = substr(line, 1, idx - 1)       # File path
                 pkg = substr(line, idx + 1)           # Package name
-                
+
                 # Look up stat data for this path
                 meta = stats[path]
                 if (meta == "") {
@@ -549,7 +549,7 @@ process_packages() {
                         meta = "0:0"  # Default if nothing found
                     }
                 }
-                
+
                 # Output merged data: package|path|metadata
                 print pkg "|" path "|" meta
             }
@@ -869,7 +869,7 @@ Because this script includes thermal safeguards and state-caching, it is safe to
   sh /sdcard/monthly/maintenance.sh
   ```
 
-> **Note for Non-Rooted Automation:** 
+> **Note for Non-Rooted Automation:**
 > Non-rooted devices executing shell commands require ADB Wi-Fi privileges. On Android 11+, Tasker can natively manage ADB Wi-Fi pairing across reboots. On Android 7–10, ADB Wi-Fi mode must be re-enabled after a reboot (`adb tcpip 5555`).
 
 ## License
