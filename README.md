@@ -652,7 +652,7 @@ process_packages() {
                 idx = index(line, "=")
                 if (idx > 0) {
                     p = substr(line, 1, idx - 1)       # Path
-                    m = substr(line, idx + 1)         # Metadata (mtime:size:inode)
+                    m = substr(line, idx + 1)           # Metadata (mtime:size:inode)
                     stats[p] = m
                 }
             }
@@ -662,32 +662,33 @@ process_packages() {
             line = $0
             if (line == "") next  # Skip empty lines
 
-            # Extract path and package name by splitting on last "="
-            idx = 0
-            for (i = length(line); i > 0; i--) {
-                if (substr(line, i, 1) == "=") {
-                    idx = i
-                    break
-                }
-            }
+            # Extract path and package name by splitting on first ":"
+            idx = index(line, ":")
 
             if (idx > 0) {
-                path = substr(line, 1, idx - 1)       # File path
-                pkg = substr(line, idx + 1)           # Package name
+                pkg = substr(line, 1, idx - 1)          # Package name
+                path = substr(line, idx + 1)            # File path
 
-                    # Fallback: try looking up parent directory metadata
-	                # APK metadata could not be verified.
+                # Look up stat data for the APK itself
+                meta = stats[path]
+
+                if (meta == "") {
+                    # APK metadata unavailable.
+                    # Fall back to parent directory metadata to detect
+                    # partial/split APK updates.
                     dir = path
 
                     sub("/[^/]+/?$", "", dir)
                     d_meta = stats[dir]
-	
+
                     if (d_meta != "") {
                         split(d_meta, arr, ":")
-                        meta = arr[1] ":0"  # Use dir timestamp, zero size
+                        meta = arr[1] ":0:" arr[3]  # Use dir mtime, zero size, inode
                     } else {
-                        meta = "UNAVAILABLE"  # Default if nothing found
+                        # Neither APK nor parent directory could be verified.
+                        meta = "UNAVAILABLE"
                     }
+                }
 
                 # Output merged data: package|path|metadata
                 print pkg "|" path "|" meta

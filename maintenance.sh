@@ -550,8 +550,8 @@ process_packages() {
     #   %Y = Time of last data modification (epoch seconds)
     #   %s = Total size in bytes
     #   %i = Inode number
-    
-	# ========================================================================
+
+    # ========================================================================
     # STAGE 2: Match packages to stat metadata (change detection setup)
     # ========================================================================
 
