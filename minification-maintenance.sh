@@ -20,7 +20,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     debug_print "Dry-run mode enabled."
 fi
 SCRIPT_UID=${USER_ID:-1}
-debug_print "Checked user ID: $MY_UID"
+debug_print "Checked user ID: $SCRIPT_UID"
 if [ "$SCRIPT_UID" -ne 0 ] && [ "$SCRIPT_UID" -ne 2000 ]; then
     printf '[!] FATAL: Elevated privileges required (root or adb shell). Aborting.\n' >&2
     exit 1
