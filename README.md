@@ -593,7 +593,6 @@ process_packages() {
     IFS='
 ' # Split on newlines only
     for item in $pkg_list; do
-        # Strip trailing CR if present
         [ -n "$item" ] && total_pkgs=$((total_pkgs + 1))
     done
     IFS="$OLD_IFS"
@@ -608,7 +607,6 @@ process_packages() {
     printf '%s\n' "$pkg_list" | awk '{
         line = $0
         idx = 0
-        
         # Find the last occurrence of "=" to separate the file path from the package name
         # (Formats look like: /path/to/base.apk=com.example.app)
         for (i = length(line); i > 0; i--) {
@@ -617,32 +615,29 @@ process_packages() {
                 break
             }
         }
-        
         if (idx > 0) {
             # Extract the file path
             path = substr(line, 1, idx - 1)
-            
             # Security sanity check: skip malformed paths, null bytes, newlines, or excessive lengths
             if (path ~ /\0/ || length(path) > 1024) next
-            
             # Inline deduplication
             if (!seen[path]++) printf "%s\0", path
-            
             # Extract parent directory cleanly using regex match and RLENGTH
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
-                
+
                 if (dir ~ /\0/ || length(dir) > 1024) next
-                
+
                 if (!seen[dir]++) printf "%s\0", dir
             }
         }
-    }' | xargs -0 -r stat -c "%n=%Y:%s" 2>/dev/null >"$STAGE_STATS"
+    }' | xargs -0 -r stat -c "%n=%Y:%s:%i" 2>/dev/null >"$STAGE_STATS"
     # Batches the unique paths into a single efficient 'stat' call.
-    # Stat Format Mapping (%n=%Y:%s):
+    # Stat Format Mapping (%n=%Y:%s:%i):
     #   %n = File path
     #   %Y = Time of last data modification (epoch seconds)
     #   %s = Total size in bytes
+    #   %i = Inode number
 
     # ========================================================================
     # STAGE 2: Match packages to stat metadata (change detection setup)
@@ -657,7 +652,7 @@ process_packages() {
                 idx = index(line, "=")
                 if (idx > 0) {
                     p = substr(line, 1, idx - 1)       # Path
-                    m = substr(line, idx + 1)         # Metadata (inode:size:blocks)
+                    m = substr(line, idx + 1)         # Metadata (mtime:size:inode)
                     stats[p] = m
                 }
             }
@@ -666,7 +661,7 @@ process_packages() {
         {
             line = $0
             if (line == "") next  # Skip empty lines
-            
+
             # Extract path and package name by splitting on last "="
             idx = 0
             for (i = length(line); i > 0; i--) {
@@ -675,26 +670,25 @@ process_packages() {
                     break
                 }
             }
-            
+
             if (idx > 0) {
                 path = substr(line, 1, idx - 1)       # File path
                 pkg = substr(line, idx + 1)           # Package name
-                
-                # Look up stat data for this path
-                meta = stats[path]
-                if (meta == "") {
+
                     # Fallback: try looking up parent directory metadata
+	                # APK metadata could not be verified.
                     dir = path
+
                     sub("/[^/]+/?$", "", dir)
                     d_meta = stats[dir]
+	
                     if (d_meta != "") {
                         split(d_meta, arr, ":")
                         meta = arr[1] ":0"  # Use dir timestamp, zero size
                     } else {
-                        meta = "0:0"  # Default if nothing found
+                        meta = "UNAVAILABLE"  # Default if nothing found
                     }
-                }
-                
+
                 # Output merged data: package|path|metadata
                 print pkg "|" path "|" meta
             }
@@ -734,26 +728,31 @@ process_packages() {
             fi
         fi
 
-        # Create a fingerprint to detect if this package has changed since last run
         fingerprint="${pkg_name}:${apk_path}:${file_meta}"
 
-        # [OPTIMIZED]: Stream directly to open File Descriptor 3
-        echo "$fingerprint" >&3
+        case "$fingerprint" in
+        *UNAVAILABLE*)
+            echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
+            echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
 
-        debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
+            # No trustworthy fingerprint exists.
+            # Do not consult or update persistent state.
+            # Fall through to compilation.
+            ;;
+        *)
+            debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
 
-        # Check if this exact package was already processed in a previous run
-        # PREV_STATE contains all fingerprints from the last successful run
-        case "$PREV_STATE" in
-        *"
-$fingerprint
-"*)
-            # Package hasn't changed, skip recompilation
-            echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
-            continue
+            case "$PREV_STATE" in
+            *"
+            $fingerprint
+            "*)
+                echo "$fingerprint" >&3
+                echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
+                continue
+                ;;
+            esac
             ;;
         esac
-
         # ====================================================================
         # COMPILATION: Execute appropriate compilation mode
         # ====================================================================
@@ -788,9 +787,18 @@ $fingerprint
 
             if [ $compile_exit -eq 0 ]; then
                 printf '    [+] (%d/%d) Compiled: %s\n' "$current" "$total_pkgs" "$pkg_name"
+
+                # Compilation succeeded. Only now commit this fingerprint
+                # to the current-run state.
+                echo "$fingerprint" >&3
+
                 TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
             else
                 printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' "$current" "$total_pkgs" "$pkg_name" "$compile_exit"
+
+                # IMPORTANT:
+                # Do NOT write the fingerprint to CURRENT_RUN_STATE.
+                # This forces the package to be retried on the next run.
 
                 # Log the error, but explicitly catch if the logging itself fails (e.g., out of space)
                 if ! printf 'FAIL (%d): %s\n%s\n' "$compile_exit" "$pkg_name" "$err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then

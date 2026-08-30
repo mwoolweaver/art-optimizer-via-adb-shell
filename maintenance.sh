@@ -641,7 +641,7 @@ process_packages() {
         fi
 
         fingerprint="${pkg_name}:${apk_path}:${file_meta}"
-        
+
         case "$fingerprint" in
         *UNAVAILABLE*)
             echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
