@@ -277,10 +277,12 @@ get_thermal_status() {
                 return 0
             }
         fi
-        set -f; set -- $(dumpsys battery 2>/dev/null); set +f
+        set -f
+        set -- $(dumpsys battery 2>/dev/null)
+        set +f
         for i in "$@"; do
             if [ "${prev1:-}" = "temperature:" ]; then
-                bat_temp=$(( i / 10 ))
+                bat_temp=$((i / 10))
                 if [ "$bat_temp" -gt 0 ]; then
                     printf '%d\n' "$bat_temp"
                     return 0
@@ -315,13 +317,13 @@ get_memory_pressure() {
         local t="" a=""
         while read -r key val _rest; do
             case "$key" in
-                MemTotal:) t="$val" ;;
-                MemAvailable:) a="$val" ;;
+            MemTotal:) t="$val" ;;
+            MemAvailable:) a="$val" ;;
             esac
             [ -n "$t" ] && [ -n "$a" ] && break
-        done < /proc/meminfo
+        done </proc/meminfo
         if [ -n "$t" ] && [ -n "$a" ] && [ "$t" -gt 0 ]; then
-            printf '%d\n' "$(( (t - a) * 100 / t ))"
+            printf '%d\n' "$(((t - a) * 100 / t))"
         else
             printf 'N/A\n'
         fi
