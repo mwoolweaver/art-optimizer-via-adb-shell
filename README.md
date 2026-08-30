@@ -135,10 +135,10 @@ check_deps() {
 }
 check_deps
 case "$(service check package 2>/dev/null)" in
-    *"not found"* | "")
-        printf '[!] FATAL: Package manager service is not running or unresponsive. Aborting.\n' >&2
-        exit 1
-        ;;
+*"not found"* | "")
+    printf '[!] FATAL: Package manager service is not running or unresponsive. Aborting.\n' >&2
+    exit 1
+    ;;
 esac
 TOTAL_START_TIME=$(date +%s)
 android_version=$(getprop ro.build.version.release 2>/dev/null)
