@@ -32,55 +32,100 @@ jobs:
       - name: Lint all repository files
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           echo "[+] Starting full repository linting..."
+          has_errors=0
 
           # 1. Shell scripts (.sh): Validated via ShellCheck in a single invocation
           mapfile -t sh_files < <(find . -name "*.sh" -not -path "./.git/*")
           if [ "${#sh_files[@]}" -gt 0 ]; then
             echo "  Linting shell script(s): ${sh_files[*]}"
-            if ! shellcheck -s ksh -f json "${sh_files[@]}" > shellcheck-results.json; then
-              if jq -e 'any(.[]; .level == "error")' shellcheck-results.json >/dev/null 2>&1; then
-                echo "::error::ShellCheck found critical syntax errors in shell scripts!"
-                exit 42
-              fi
+            shellcheck -s ksh -f json "${sh_files[@]}" > shellcheck-results.json || true
+            
+            # Parse ShellCheck JSON to emit annotations with line numbers
+            if jq -e 'any(.[]; .level == "error")' shellcheck-results.json >/dev/null 2>&1; then
+              echo "::error::ShellCheck found critical syntax errors in shell scripts!"
+              python3 -c '
+              import json
+              with open("shellcheck-results.json") as f:
+                  data = json.load(f)
+              for file_entry in data:
+                  filename = file_entry.get("file")
+                  for comment in file_entry.get("comments", []):
+                      if comment.get("level") == "error":
+                          line = comment.get("line", 1)
+                          col = comment.get("column", 1)
+                          msg = comment.get("message", "").replace("\n", " ")
+                          code = comment.get("code", "")
+                          print(f"::error file={filename},line={line},col={col}::[SC{code}] {msg}")
+              '
+              has_errors=1
             fi
           fi
 
-          # 2. YAML files (.yml): Strict syntax validation
+          # 2. YAML files (.yml): Strict syntax validation with line numbers
           echo "[+] Validating YAML syntax..."
           python3 -c '
-          import yaml, glob
+          import yaml, glob, sys
           files = set(
               glob.glob("**/*.yml", recursive=True) +
               glob.glob("**/*.yaml", recursive=True) +
               glob.glob(".github/**/*.yml", recursive=True) +
               glob.glob(".github/**/*.yaml", recursive=True)
           )
+          error_count = 0
           for f in sorted(files):
               if ".git" in f: continue
               try:
                   with open(f, "r") as file:
                       yaml.safe_load(file)
                   print(f"  Passed YAML: {f}")
+              except yaml.YAMLError as e:
+                  line = 1
+                  if hasattr(e, "problem_mark") and e.problem_mark:
+                      line = e.problem_mark.line + 1
+                  print(f"::error file={f},line={line}::YAML error: {e}")
+                  error_count += 1
               except Exception as e:
-                  print(f"::error::YAML error in {f}: {e}")
-                  exit(1)
-          '
+                  print(f"::error file={f},line=1::YAML error: {e}")
+                  error_count += 1
+          if error_count > 0:
+              sys.exit(1)
+          ' || has_errors=1
 
-          # 3. Markdown files (.md): Structure checks
+          # 3. Markdown files (.md): Structure checks with approximate or exact line tracking
           echo "[+] Validating Markdown files..."
           python3 -c '
-          import glob
+          import glob, sys
+          error_count = 0
           for f in sorted(glob.glob("**/*.md", recursive=True, include_hidden=True)):
               if ".git/" in f or "/.git" in f: continue
               with open(f, "r", encoding="utf-8") as file:
-                  content = file.read()
+                  lines = file.readlines()
+              
+              content = "".join(lines)
               if content.count("```") % 2 != 0:
-                  print(f"::error::Unbalanced code block fences (```) in Markdown file: {f}")
-                  exit(1)
+                  # Find the line where the last unclosed fence starts
+                  open_line = 1
+                  fence_count = 0
+                  for idx, line_text in enumerate(lines, start=1):
+                      if "```" in line_text:
+                          fence_count += 1
+                  # If odd, flag the line of the final unmatched fence
+                  current_fences = 0
+                  for idx, line_text in enumerate(lines, start=1):
+                      if "```" in line_text:
+                          current_fences += 1
+                          if current_fences == fence_count:
+                              open_line = idx
+                              break
+                  print(f"::error file={f},line={open_line}::Unbalanced code block fences (```) in Markdown file.")
+                  error_count += 1
+                  continue
               print(f"  Passed Markdown: {f}")
-          '
+          if error_count > 0:
+              sys.exit(1)
+          ' || has_errors=1
 
           # 4. Gitignore (.gitignore): Format tracking validation
           echo "[+] Validating .gitignore format..."
@@ -89,4 +134,10 @@ jobs:
             echo "  Passed .gitignore syntax check."
           fi
 
-          echo "[+] All repository files successfully linted!"
+          if [ "$has_errors" -eq 0 ]; then
+            echo "[+] All repository files successfully linted!"
+            exit 0
+          else
+            echo "::error::Linting completed with errors."
+            exit 42
+          fi
