@@ -418,12 +418,19 @@ get_thermal_status() {
 
         # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
         # Battery temperature is in tenths of a degree (e.g. 350 = 35.0 C)
-        bat_temp=$(dumpsys battery 2>/dev/null | awk '/temperature:/ {print int($2 / 10); exit}')
-        if [ -n "$bat_temp" ] && [ "$bat_temp" -gt 0 ]; then
-            debug_print "Parsed battery thermal reading: ${bat_temp}°C"
-            printf '%s\n' "$bat_temp"
-            return 0
-        fi
+        set -f
+        set -- $(dumpsys battery 2>/dev/null)
+        set +f
+        for i in "$@"; do
+            if [ "${prev1:-}" = "temperature:" ]; then
+                bat_temp=$((i / 10))
+                if [ "$bat_temp" -gt 0 ]; then
+                    printf '%d\n' "$bat_temp"
+                    return 0
+                fi
+            fi
+            prev1="$i"
+        done
     fi
 
     # Fallback: sysfs (Good for root, fails for ADB due to Android SELinux rules)
@@ -461,23 +468,25 @@ get_thermal_status() {
 # Returns: Percentage (0-100), or "N/A" if unavailable
 # ============================================================================
 get_memory_pressure() {
-    # Memory info is available in /proc/meminfo on all Linux systems
     if [ -r /proc/meminfo ]; then
-        debug_print "Reading memory pressure statistics from /proc/meminfo."
-        # Extract MemAvailable and MemTotal, calculate percentage, and print directly
-        awk '
-            /^MemAvailable:/ { a = $2 }
-            /^MemTotal:/     { t = $2 }
-            END {
-                if (t > 0 && a > 0) {
-                    printf "%.1f", (t - a) / t * 100
-                } else {
-                    print "N/A"
-                }
-            }
-        ' /proc/meminfo 2>/dev/null
+        local t="" a=""
+        # Read file natively line-by-line without cat or awk
+        while read -r key val _rest; do
+            case "$key" in
+            MemTotal:) t="$val" ;;
+            MemAvailable:) a="$val" ;;
+            esac
+            # Break early once both values are found to save cycles
+            [ -n "$t" ] && [ -n "$a" ] && break
+        done </proc/meminfo
+
+        # Perform pure integer math in the shell: ((Total - Available) * 100 / Total)
+        if [ -n "$t" ] && [ -n "$a" ] && [ "$t" -gt 0 ]; then
+            printf '%d\n' "$(((t - a) * 100 / t))"
+        else
+            printf 'N/A\n'
+        fi
     else
-        debug_print "/proc/meminfo not readable."
         printf 'N/A\n'
     fi
 }
@@ -545,16 +554,13 @@ print_system_status() {
     if [ "$memory" = "N/A" ]; then
         printf '[*] Memory:   %s\n' "$memory"
     else
-        # Extract integer part (before decimal point)
-        int_mem="${memory%.*}"
-        int_mem="${int_mem:-0}"
         # Critical: > 99% (virtually no free memory)
-        [ "$int_mem" -gt 99 ] && {
+        [ "$memory" -gt 99 ] && {
             printf '[!] Memory:   %s%% (HIGH)\n' "$memory"
             return 1
         }
         # Moderate: > 85% (significant pressure, may cause slowdowns)
-        [ "$int_mem" -gt 85 ] && printf '[!] Memory:   %s%% (MODERATE)\n' "$memory" || printf '[*] Memory:   %s%% (OK)\n' "$memory"
+        [ "$memory" -gt 85 ] && printf '[!] Memory:   %s%% (MODERATE)\n' "$memory" || printf '[*] Memory:   %s%% (OK)\n' "$memory"
     fi
 
     # Display battery level (informational only)

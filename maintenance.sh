@@ -330,10 +330,12 @@ get_thermal_status() {
 
         # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
         # Battery temperature is in tenths of a degree (e.g. 350 = 35.0 C)
-        set -f; set -- $(dumpsys battery 2>/dev/null); set +f
+        set -f
+        set -- $(dumpsys battery 2>/dev/null)
+        set +f
         for i in "$@"; do
             if [ "${prev1:-}" = "temperature:" ]; then
-                bat_temp=$(( i / 10 ))
+                bat_temp=$((i / 10))
                 if [ "$bat_temp" -gt 0 ]; then
                     printf '%d\n' "$bat_temp"
                     return 0
@@ -383,16 +385,16 @@ get_memory_pressure() {
         # Read file natively line-by-line without cat or awk
         while read -r key val _rest; do
             case "$key" in
-                MemTotal:) t="$val" ;;
-                MemAvailable:) a="$val" ;;
+            MemTotal:) t="$val" ;;
+            MemAvailable:) a="$val" ;;
             esac
             # Break early once both values are found to save cycles
             [ -n "$t" ] && [ -n "$a" ] && break
-        done < /proc/meminfo
+        done </proc/meminfo
 
         # Perform pure integer math in the shell: ((Total - Available) * 100 / Total)
         if [ -n "$t" ] && [ -n "$a" ] && [ "$t" -gt 0 ]; then
-            printf '%d\n' "$(( (t - a) * 100 / t ))"
+            printf '%d\n' "$(((t - a) * 100 / t))"
         else
             printf 'N/A\n'
         fi
@@ -464,7 +466,7 @@ print_system_status() {
     if [ "$memory" = "N/A" ]; then
         printf '[*] Memory:   %s\n' "$memory"
     else
-       # Critical: > 99% (virtually no free memory)
+        # Critical: > 99% (virtually no free memory)
         [ "$memory" -gt 99 ] && {
             printf '[!] Memory:   %s%% (HIGH)\n' "$memory"
             return 1
