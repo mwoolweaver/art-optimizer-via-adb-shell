@@ -325,11 +325,11 @@ get_thermal_status() {
     # Fallback: sysfs (Good for root, fails for ADB due to Android SELinux rules)
     for f in /sys/class/thermal/thermal_zone*/temp; do
         [ -r "$f" ] || continue
-        
+
         # Group the redirection to safely catch SELinux or read errors
         val_out=$(<"$f" 2>&1)
         val_exit=$?
-        
+
         if [ $val_exit -ne 0 ]; then
             debug_print "Failed to read thermal zone $f (Exit: $val_exit): $val_out"
             continue
@@ -390,7 +390,7 @@ get_battery_level() {
         # Group the read operation to capture stderr via subshell redirection
         cap_out=$(<"$batt_path" 2>&1)
         cap_exit=$?
-        
+
         if [ $cap_exit -eq 0 ] && [ -n "$cap_out" ]; then
             printf '%s\n' "$cap_out"
         else
