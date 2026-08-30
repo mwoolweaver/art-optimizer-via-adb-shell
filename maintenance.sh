@@ -3,10 +3,20 @@
 
 # ============================================================================
 # ART Smart Maintenance Script
-# Purpose: Optimize Android ART (Android Runtime) compiled packages through
-#          intelligent cache management and profile-guided compilation
-# Environment: Designed specifically for Android system/device environments
-#              utilizing Android-native utilities (dumpsys, pm, getprop).
+# ============================================================================
+# Purpose: Optimize Android ART (Android Runtime) compiled packages through 
+#          intelligent cache management, profile-guided compilation (speed-profile),
+#          and change-detection state caching to minimize redundant I/O wear.
+# Target Environment: Android 7.0 (API 24) through Android 17+, requiring root 
+#                     privileges or ADB shell execution context.
+#
+# Key Features:
+#   1. Dry-run simulation mode (--dry-run) for safe workflow testing.
+#   2. Built in debugging output (--debug) to help diagnose script failure.
+#   3. Thermal and memory pressure safety checks to prevent thermal throttling.
+#   4. Incremental fingerprint-based tracking (.last_optimized) to skip 
+#      unchanged application packages and reduce CPU wake locks.
+#   5. Atomic temporary file handling and robust signal cleanup traps.
 # ============================================================================
 
 set -u # Exit immediately if any variable is unset
@@ -27,8 +37,8 @@ DEBUG="${DEBUG:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 for arg in "$@"; do
     case "$arg" in
-    -d | --debug | -v | --verbose) DEBUG=1 ;;
-    -n | --dry-run) DRY_RUN=1 ;;
+    --debug) DEBUG=1 ;;
+    --dry-run) DRY_RUN=1 ;;
     esac
 done
 
