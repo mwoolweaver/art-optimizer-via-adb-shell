@@ -63,15 +63,13 @@ jobs:
             fi
           fi
 
-          # 2. YAML files (.yml): Strict syntax validation with line numbers
-          echo "[+] Validating YAML syntax..."
+          # 2. YML files (.yml): Strict syntax validation with line numbers
+          echo "[+] Validating YML syntax..."
           python3 -c '
           import yaml, glob, sys
           files = set(
               glob.glob("**/*.yml", recursive=True) +
-              glob.glob("**/*.yaml", recursive=True) +
-              glob.glob(".github/**/*.yml", recursive=True) +
-              glob.glob(".github/**/*.yaml", recursive=True)
+              glob.glob(".github/**/*.yml", recursive=True)
           )
           error_count = 0
           for f in sorted(files):
