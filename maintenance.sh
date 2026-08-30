@@ -24,9 +24,11 @@ export LC_ALL=C
 # Purpose: Enable verbose logging via environment variable (DEBUG=1) or flags
 # ============================================================================
 DEBUG="${DEBUG:-0}"
+DRY_RUN="${DRY_RUN:-0}"
 for arg in "$@"; do
     case "$arg" in
     -d | --debug | -v | --verbose) DEBUG=1 ;;
+    -n | --dry-run) DRY_RUN=1 ;;
     esac
 done
 
@@ -37,6 +39,9 @@ debug_print() {
 }
 
 debug_print "Debug/Verbose mode initialized."
+if [ "$DRY_RUN" -eq 1 ]; then
+    debug_print "Dry-run mode enabled."
+fi
 
 # ============================================================================
 # EARLY PRIVILEGE GUARD
@@ -120,7 +125,11 @@ if [ "$sdk_version" -lt "$MIN_SDK" ]; then
     exit 1
 fi
 
-printf '[+] Starting ART Smart Maintenance on Android %s (SDK %s)...\n' "$android_version" "$sdk_version"
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[+] Starting ART Smart Maintenance (DRY RUN) on Android %s (SDK %s)...\n' "$android_version" "$sdk_version"
+else
+    printf '[+] Starting ART Smart Maintenance on Android %s (SDK %s)...\n' "$android_version" "$sdk_version"
+fi
 
 # ============================================================================
 # TEMP FILE & STATE MANAGEMENT VARIABLES
@@ -563,29 +572,40 @@ $fingerprint
         # ====================================================================
         if [ "$compile_mode" = "speed" ]; then
             # Full ahead-of-time (AOT) compilation for maximum performance
-            printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' "$current" "$total_pkgs" "$pkg_name"
+            if [ "$DRY_RUN" -eq 0 ]; then
+                printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' "$current" "$total_pkgs" "$pkg_name"
+            fi
             actual_mode="speed"
         elif [ "$default_mode" = "system" ]; then
             # Profile-guided optimization for Play Store System App updates
-            printf '    [-] (%d/%d) Play Store update compile (-m speed-profile): %s\n' "$current" "$total_pkgs" "$pkg_name"
+            if [ "$DRY_RUN" -eq 0 ]; then
+                printf '    [-] (%d/%d) Play Store update compile (-m speed-profile): %s\n' "$current" "$total_pkgs" "$pkg_name"
+            fi
             actual_mode="speed-profile"
         else
             # Profile-guided optimization for user-installed third-party apps
-            printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' "$current" "$total_pkgs" "$pkg_name"
+            if [ "$DRY_RUN" -eq 0 ]; then
+                printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' "$current" "$total_pkgs" "$pkg_name"
+            fi
             actual_mode="speed-profile"
         fi
 
-        # Attempt compilation and capture output/exit status safely in one clean step
-        debug_print "Executing command: cmd package compile -m $actual_mode -f $pkg_name"
-        err_output=$(cmd package compile -m "$actual_mode" -f "$pkg_name" 2>&1)
-        compile_exit=$?
-
-        if [ $compile_exit -eq 0 ]; then
-            printf '    [+] (%d/%d) Compiled: %s\n' "$current" "$total_pkgs" "$pkg_name"
+        # Attempt compilation (or simulate if dry run)
+        if [ "$DRY_RUN" -eq 1 ]; then
+            printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' "$current" "$total_pkgs" "$actual_mode" "$pkg_name"
             TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
         else
-            printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' "$current" "$total_pkgs" "$pkg_name" "$compile_exit"
-            printf 'FAIL (%d): %s\n%s\n' "$compile_exit" "$pkg_name" "$err_output" >>"$ERROR_TMPFILE"
+            debug_print "Executing command: cmd package compile -m $actual_mode -f $pkg_name"
+            err_output=$(cmd package compile -m "$actual_mode" -f "$pkg_name" 2>&1)
+            compile_exit=$?
+
+            if [ $compile_exit -eq 0 ]; then
+                printf '    [+] (%d/%d) Compiled: %s\n' "$current" "$total_pkgs" "$pkg_name"
+                TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
+            else
+                printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' "$current" "$total_pkgs" "$pkg_name" "$compile_exit"
+                printf 'FAIL (%d): %s\n%s\n' "$compile_exit" "$pkg_name" "$err_output" >>"$ERROR_TMPFILE"
+            fi
         fi
     done <"$STAGE_MERGED"
 
@@ -662,21 +682,31 @@ fi
 # ============================================================================
 # STEP 1: Cache Trimming
 # ============================================================================
-printf '[+] Step 1: Trimming system and app caches...\n'
-STEP1_START=$(date +%s)
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[+] Step 1: (DRY RUN) Would trim system and app caches...\n'
+    STEP1_START=$(date +%s)
+    STEP1_DURATION=0
+else
+    printf '[+] Step 1: Trimming system and app caches...\n'
+    STEP1_START=$(date +%s)
 
-# Tell package manager to clean app caches
-# Argument 100G indicates target cache size (aggressively frees everything)
-pm trim-caches 100G >/dev/null 2>&1
+    # Tell package manager to clean app caches
+    # Argument 100G indicates target cache size (aggressively frees everything)
+    pm trim-caches 100G >/dev/null 2>&1
 
-# Calculate elapsed time for this step
-STEP1_DURATION=$(($(date +%s) - STEP1_START))
-printf '[+] Cache trim finished in %ss.\n' "$STEP1_DURATION"
+    # Calculate elapsed time for this step
+    STEP1_DURATION=$(($(date +%s) - STEP1_START))
+    printf '[+] Cache trim finished in %ss.\n' "$STEP1_DURATION"
+fi
 
 # ============================================================================
 # STEP 2: System Package Optimization
 # ============================================================================
-printf '[+] Step 2: Smart-optimizing system packages...\n'
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[+] Step 2: (DRY RUN) Smart-optimizing system packages...\n'
+else
+    printf '[+] Step 2: Smart-optimizing system packages...\n'
+fi
 STEP2_START=$(date +%s)
 
 # List all system packages (-s flag) with full paths (-f flag)
@@ -699,7 +729,11 @@ fi
 # ============================================================================
 # STEP 3: User App Optimization
 # ============================================================================
-printf '[+] Step 3: Smart-optimizing user apps...\n'
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
+else
+    printf '[+] Step 3: Smart-optimizing user apps...\n'
+fi
 STEP3_START=$(date +%s)
 
 debug_print "Querying user packages via pm list packages -f -3..."
@@ -718,24 +752,29 @@ fi
 # ============================================================================
 # POST-OPTIMIZATION: State Management
 # ============================================================================
-# Update persistent state file only if fingerprints changed
+# Update persistent state file only if fingerprints changed (skipped in dry run)
 # Avoids unnecessary disk writes when nothing changed
-if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
-    printf '[+] State unchanged. Persistent state file left untouched.\n'
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[+] Dry-run mode: Persistent state file and error logs were not modified.\n'
 else
     # Move temporary state file to persistent location
-    if mv "$CURRENT_RUN_STATE" "$STATE_FILE"; then
-        printf '[+] Persistent state file updated.\n'
+    if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
+        printf '[+] State unchanged. Persistent state file left untouched.\n'
     else
-        printf '[!] WARNING: Failed to update persistent state file\n' >&2
+        # Move temporary state file to persistent location
+        if mv "$CURRENT_RUN_STATE" "$STATE_FILE"; then
+            printf '[+] Persistent state file updated.\n'
+        else
+            printf '[!] WARNING: Failed to update persistent state file\n' >&2
+        fi
     fi
-fi
 
-# Move error tempfile to final log only if errors exist
-if [ -s "$ERROR_TMPFILE" ]; then
-    mv "$ERROR_TMPFILE" "$ERROR_LOG"
-else
-    rm -f "$ERROR_TMPFILE"
+    # Move error tempfile to final log only if errors exist
+    if [ -s "$ERROR_TMPFILE" ]; then
+        mv "$ERROR_TMPFILE" "$ERROR_LOG"
+    else
+        rm -f "$ERROR_TMPFILE"
+    fi
 fi
 
 # ============================================================================
@@ -752,19 +791,28 @@ TOTAL_DURATION=$(($(date +%s) - TOTAL_START_TIME))
 
 # Prepare error notice if errors were logged
 error_notice=""
-if [ -s "$ERROR_LOG" ]; then
+if [ -s "$ERROR_LOG" ] && [ "$DRY_RUN" -eq 0 ]; then
     error_notice="    - [!] Errors occurred. See $ERROR_LOG"
 fi
 
 printf '\n==========================================\n'
-printf '[+] Maintenance Summary:\n'
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[+] Maintenance Summary (DRY RUN):\n'
+else
+    printf '[+] Maintenance Summary:\n'
+fi
 printf '    - Step 1 (Cache Trim):     %ss\n' "$STEP1_DURATION"
 printf '    - Step 2 (System Stage):   %ss\n' "$STEP2_DURATION"
 printf '    - Step 3 (User Stage):     %ss\n' "$STEP3_DURATION"
 printf '    --------------------------------------\n'
 printf '    - Grand Total:             %ss\n' "$TOTAL_DURATION"
-printf '    - Packages Compiled:       %d\n' "$TOTAL_COMPILED"
-printf '    - Packages Skipped (Cached): %d\n' "$TOTAL_SKIPPED"
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf '    - Packages Would Compile:  %d\n' "$TOTAL_COMPILED"
+    printf '    - Packages Would Skip:     %d\n' "$TOTAL_SKIPPED"
+else
+    printf '    - Packages Compiled:       %d\n' "$TOTAL_COMPILED"
+    printf '    - Packages Skipped (Cached): %d\n' "$TOTAL_SKIPPED"
+fi
 [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
 printf '==========================================\n'
 
