@@ -336,7 +336,7 @@ process_packages() {
                 idx = index(line, "=")
                 if (idx > 0) {
                     p = substr(line, 1, idx - 1)       # Path
-                    m = substr(line, idx + 1)         # Metadata (inode:size:blocks)
+                    m = substr(line, idx + 1)         # Metadata (mtime:size:inode)
                     stats[p] = m
                 }
             }
@@ -355,8 +355,6 @@ process_packages() {
             if (idx > 0) {
                 path = substr(line, 1, idx - 1)       # File path
                 pkg = substr(line, idx + 1)           # Package name
-                meta = stats[path]
-                if (meta == "") {
                     dir = path
                     sub("/[^/]+/?$", "", dir)
                     d_meta = stats[dir]
@@ -364,9 +362,8 @@ process_packages() {
                         split(d_meta, arr, ":")
                         meta = arr[1] ":0"  # Use dir timestamp, zero size
                     } else {
-                        meta = "0:0"  # Default if nothing found
+                        meta = "UNAVAILABLE"  # Default if nothing found
                     }
-                }
                 print pkg "|" path "|" meta
             }
         }
@@ -391,17 +388,22 @@ process_packages() {
                 compile_mode="speed" # Use full speed compilation for core system
             fi
         fi
-        fingerprint="${pkg_name}:${apk_path}:${file_meta}"
-        debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
-        case "$PREV_STATE" in
-        *"
-$fingerprint
-"*)
-            echo "$fingerprint" >&3
-            echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
-            continue
-            ;;
-        esac
+        if [ "$file_meta" == *"UNAVAILABLE"* ]; then
+            echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
+            echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
+        else
+            fingerprint="${pkg_name}:${apk_path}:${file_meta}"
+            debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
+            case "$PREV_STATE" in
+            *"
+            $fingerprint
+            "*)
+                echo "$fingerprint" >&3
+                echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
+                continue
+                ;;
+            esac
+        fi
         if [ "$compile_mode" = "speed" ]; then
             if [ "$DRY_RUN" -eq 0 ]; then
                 printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' "$current" "$total_pkgs" "$pkg_name"
