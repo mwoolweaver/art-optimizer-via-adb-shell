@@ -424,7 +424,7 @@ process_packages() {
                 idx = index(line, "=")
                 if (idx > 0) {
                     p = substr(line, 1, idx - 1)       # Path
-                    m = substr(line, idx + 1)         # Metadata (mtime:size:inode)
+                    m = substr(line, idx + 1)           # Metadata (mtime:size:inode)
                     stats[p] = m
                 }
             }
@@ -433,25 +433,22 @@ process_packages() {
         {
             line = $0
             if (line == "") next  # Skip empty lines
-            idx = 0
-            for (i = length(line); i > 0; i--) {
-                if (substr(line, i, 1) == "=") {
-                    idx = i
-                    break
-                }
-            }
+            idx = index(line, ":")
             if (idx > 0) {
-                path = substr(line, 1, idx - 1)       # File path
-                pkg = substr(line, idx + 1)           # Package name
+                pkg = substr(line, 1, idx - 1)          # Package name
+                path = substr(line, idx + 1)            # File path
+                meta = stats[path]
+                if (meta == "") {
                     dir = path
                     sub("/[^/]+/?$", "", dir)
                     d_meta = stats[dir]
                     if (d_meta != "") {
                         split(d_meta, arr, ":")
-                        meta = arr[1] ":0"  # Use dir timestamp, zero size
+                        meta = arr[1] ":0:" arr[3]  # Use dir mtime, zero size, inode
                     } else {
-                        meta = "UNAVAILABLE"  # Default if nothing found
+                        meta = "UNAVAILABLE"
                     }
+                }
                 print pkg "|" path "|" meta
             }
         }
