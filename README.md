@@ -480,12 +480,12 @@ process_packages() {
             fi
         fi
         fingerprint="${pkg_name}:${apk_path}:${file_meta}"
-        echo "$fingerprint" >&3
         debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
         case "$PREV_STATE" in
         *"
 $fingerprint
 "*)
+            echo "$fingerprint" >&3
             echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
             continue
             ;;
@@ -515,6 +515,7 @@ $fingerprint
             compile_exit=$?
             if [ $compile_exit -eq 0 ]; then
                 printf '    [+] (%d/%d) Compiled: %s\n' "$current" "$total_pkgs" "$pkg_name"
+                echo "$fingerprint" >&3
                 TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
             else
                 printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' "$current" "$total_pkgs" "$pkg_name" "$compile_exit"
