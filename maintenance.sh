@@ -640,16 +640,18 @@ process_packages() {
             fi
         fi
 
-        if [ "$file_meta" == *"UNAVAILABLE"* ]; then
+        fingerprint="${pkg_name}:${apk_path}:${file_meta}"
+        
+        case "$fingerprint" in
+        *UNAVAILABLE*)
             echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
             echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
 
             # No trustworthy fingerprint exists.
             # Do not consult or update persistent state.
             # Fall through to compilation.
-        else
-            fingerprint="${pkg_name}:${apk_path}:${file_meta}"
-
+            ;;
+        *)
             debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
 
             case "$PREV_STATE" in
@@ -661,7 +663,8 @@ process_packages() {
                 continue
                 ;;
             esac
-        fi
+            ;;
+        esac
         # ====================================================================
         # COMPILATION: Execute appropriate compilation mode
         # ====================================================================
