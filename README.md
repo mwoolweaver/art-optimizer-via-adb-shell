@@ -400,14 +400,9 @@ process_packages() {
     printf '%s\n' "$pkg_list" | awk '{
         line = $0
         idx = 0
-        for (i = length(line); i > 0; i--) {
-            if (substr(line, i, 1) == "=") {
-                idx = i
-                break
-            }
-        }
+        idx = index(line, ":")
         if (idx > 0) {
-            path = substr(line, 1, idx - 1)
+            path = substr(line, idx + 1)
             if (path ~ /\0/ || length(path) > 1024) next
             if (!seen[path]++) printf "%s\0", path
             if (match(path, /.*\//)) {
