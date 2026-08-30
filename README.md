@@ -138,6 +138,7 @@ debug_print() {
 }
 
 debug_print "Debug/Verbose mode initialized."
+
 if [ "$DRY_RUN" -eq 1 ]; then
     debug_print "Dry-run mode enabled."
 fi
@@ -146,9 +147,9 @@ fi
 # EARLY PRIVILEGE GUARD
 # Purpose: Abort immediately if not running as root (UID 0) or Shell (UID 2000)
 # ============================================================================
-MY_UID=${USER_ID:-1}
+SCRIPT_UID=${USER_ID:-1}
 debug_print "Checked user ID: $MY_UID"
-if [ "$MY_UID" -ne 0 ] && [ "$MY_UID" -ne 2000 ]; then
+if [ "$SCRIPT_UID" -ne 0 ] && [ "$SCRIPT_UID" -ne 2000 ]; then
     printf '[!] FATAL: Elevated privileges required (root or adb shell). Aborting.\n' >&2
     exit 1
 fi
@@ -241,8 +242,7 @@ fi
 # ============================================================================
 # TEMP FILE & STATE MANAGEMENT VARIABLES
 # ============================================================================
-
-# Android systems have /data/local/tmp available; ensures temp files go to writable location
+# Most Android systems have /data/local/tmp available; ensures temp files go to writable location
 export TMPDIR=/data/local/tmp
 debug_print "Set TMPDIR to $TMPDIR"
 
@@ -1038,6 +1038,7 @@ fi
 # Mark the run as fully successful
 SUCCESSFUL_RUN=1
 
+#Calculare package counts
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 TOTAL_SKIPPED=$((TOTAL_SCANNED - TOTAL_COMPILED))
 
