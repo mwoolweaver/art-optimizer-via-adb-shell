@@ -78,6 +78,12 @@ while [ $BOOT_WAIT_ELAPSED -lt 300 ]; do
     debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
 done
 
+# Explicitly abort if we timed out without booting
+if [ "$(getprop sys.boot_completed)" != "1" ]; then
+    printf '[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting.\n' >&2
+    exit 1
+fi
+
 # ============================================================================
 # FUNCTION: check_deps()
 # Purpose: Verify all required shell commands are available on the system
@@ -129,7 +135,7 @@ debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
 
 # ============================================================================
 # API LEVEL GUARD
-# Purpose: Require Android 7.0 (API 24)+ for 'cmd package compile' support
+# Purpose: Require Android 7.0+ (API 24)+ for 'cmd package compile' support
 # ============================================================================
 MIN_SDK=24
 
@@ -677,7 +683,10 @@ print_system_status "PRE-FLIGHT CHECK" || exit 1
 # Validate available storage on /data (minimum 500MB required for compilation buffers)
 FREE_KB=$(df -k /data 2>/dev/null | awk '/\/data/ {print $(NF-2)}')
 debug_print "Available storage on /data: ${FREE_KB:-0} KB"
-if [ -n "$FREE_KB" ] && [ "$FREE_KB" -lt 512000 ]; then
+
+if [ -z "$FREE_KB" ]; then
+    printf '    [!] WARNING: Could not determine free storage on /data. Proceeding with caution.\n' >&2
+elif [ "$FREE_KB" -lt 512000 ]; then
     printf '[!] FATAL: Insufficient storage on /data (%d MB available, 500 MB required). Aborting.\n' "$((FREE_KB / 1024))" >&2
     exit 1
 fi
@@ -809,11 +818,19 @@ else
     if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
         printf '[+] State unchanged. Persistent state file left untouched.\n'
     else
-        # Move temporary state file to persistent location
-        if mv "$CURRENT_RUN_STATE" "$STATE_FILE"; then
-            printf '[+] Persistent state file updated.\n'
+        # Move temporary state file to persistent location and catch any errors
+        mv_out=$(mv "$CURRENT_RUN_STATE" "$STATE_FILE" 2>&1)
+        mv_exit=$?
+
+        if [ $mv_exit -ne 0 ]; then
+            printf '    [!] WARNING: Failed to update persistent state file (Exit Code: %d).\n' "$mv_exit" >&2
+            
+            # Print the exact OS error if one was generated
+            if [ -n "$mv_out" ]; then
+                printf '        Output: %s\n' "$mv_out" >&2
+            fi
         else
-            printf '[!] WARNING: Failed to update persistent state file\n' >&2
+            printf '[+] Persistent state file updated.\n'
         fi
     fi
 
