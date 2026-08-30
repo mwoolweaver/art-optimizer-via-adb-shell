@@ -277,12 +277,17 @@ get_thermal_status() {
                 return 0
             }
         fi
-        bat_temp=$(dumpsys battery 2>/dev/null | awk '/temperature:/ {print int($2 / 10); exit}')
-        if [ -n "$bat_temp" ] && [ "$bat_temp" -gt 0 ]; then
-            debug_print "Parsed battery thermal reading: ${bat_temp}°C"
-            printf '%s\n' "$bat_temp"
-            return 0
-        fi
+        set -f; set -- $(dumpsys battery 2>/dev/null); set +f
+        for i in "$@"; do
+            if [ "${prev1:-}" = "temperature:" ]; then
+                bat_temp=$(( i / 10 ))
+                if [ "$bat_temp" -gt 0 ]; then
+                    printf '%d\n' "$bat_temp"
+                    return 0
+                fi
+            fi
+            prev1="$i"
+        done
     fi
     for f in /sys/class/thermal/thermal_zone*/temp; do
         [ -r "$f" ] || continue
@@ -307,20 +312,20 @@ get_thermal_status() {
 }
 get_memory_pressure() {
     if [ -r /proc/meminfo ]; then
-        debug_print "Reading memory pressure statistics from /proc/meminfo."
-        awk '
-            /^MemAvailable:/ { a = $2 }
-            /^MemTotal:/     { t = $2 }
-            END {
-                if (t > 0 && a > 0) {
-                    printf "%.1f", (t - a) / t * 100
-                } else {
-                    print "N/A"
-                }
-            }
-        ' /proc/meminfo 2>/dev/null
+        local t="" a=""
+        while read -r key val _rest; do
+            case "$key" in
+                MemTotal:) t="$val" ;;
+                MemAvailable:) a="$val" ;;
+            esac
+            [ -n "$t" ] && [ -n "$a" ] && break
+        done < /proc/meminfo
+        if [ -n "$t" ] && [ -n "$a" ] && [ "$t" -gt 0 ]; then
+            printf '%d\n' "$(( (t - a) * 100 / t ))"
+        else
+            printf 'N/A\n'
+        fi
     else
-        debug_print "/proc/meminfo not readable."
         printf 'N/A\n'
     fi
 }
@@ -362,13 +367,11 @@ print_system_status() {
     if [ "$memory" = "N/A" ]; then
         printf '[*] Memory:   %s\n' "$memory"
     else
-        int_mem="${memory%.*}"
-        int_mem="${int_mem:-0}"
-        [ "$int_mem" -gt 99 ] && {
+        [ "$memory" -gt 99 ] && {
             printf '[!] Memory:   %s%% (HIGH)\n' "$memory"
             return 1
         }
-        [ "$int_mem" -gt 85 ] && printf '[!] Memory:   %s%% (MODERATE)\n' "$memory" || printf '[*] Memory:   %s%% (OK)\n' "$memory"
+        [ "$memory" -gt 85 ] && printf '[!] Memory:   %s%% (MODERATE)\n' "$memory" || printf '[*] Memory:   %s%% (OK)\n' "$memory"
     fi
     printf '[*] Battery:  %s%%\n    ─────────────────────────────────\n\n' "$(get_battery_level)"
     return 0
