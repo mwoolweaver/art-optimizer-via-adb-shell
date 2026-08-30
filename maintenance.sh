@@ -228,6 +228,14 @@ cleanup() {
             fi
         fi
     done
+
+    # Release the concurrency lock if it exists
+    if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
+        debug_print "Releasing concurrency lock at $LOCK_DIR"
+        if ! rmdir "$LOCK_DIR" 2>/dev/null; then
+            printf '    [!] CRITICAL: Failed to release lock at %s. Manual deletion required.\n' "$LOCK_DIR" >&2
+        fi
+    fi
 }
 
 # Handle SIGINT (Ctrl+C) and SIGTERM (kill) gracefully with distinct exit codes
@@ -247,8 +255,8 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     exit 1
 fi
 
-# Set the EXIT trap to remove the lock and run the cleanup function
-trap 'rmdir "$LOCK_DIR" 2>/dev/null; cleanup' EXIT
+# Set the EXIT trap to run the unified cleanup function
+trap 'cleanup' EXIT
 
 # Initialize a flag to track successful completion
 SUCCESSFUL_RUN=0
@@ -837,11 +845,7 @@ else
     # Move error tempfile to final log only if errors exist
     if [ -s "$ERROR_TMPFILE" ]; then
         if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
-            printf '[!] WARNING: Failed to save error log to %s\n' "$ERROR_LOG" >&2
-        fi
-    else
-        if ! rm -f "$ERROR_TMPFILE" 2>/dev/null; then
-            debug_print "Warning: Failed to remove empty error tempfile."
+            printf '    [!] WARNING: Failed to save error log to %s\n' "$ERROR_LOG" >&2
         fi
     fi
 fi
