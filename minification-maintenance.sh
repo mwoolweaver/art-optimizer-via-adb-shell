@@ -186,14 +186,19 @@ get_thermal_status() {
     fi
     for f in /sys/class/thermal/thermal_zone*/temp; do
         [ -r "$f" ] || continue
-        val=$(<"$f") 2>/dev/null || continue
-        [ -z "$val" ] && continue
-        case "$val" in *[!0-9]*) continue ;; esac
-        debug_print "Read thermal zone from sysfs: $f = $val"
-        if [ "$val" -gt 1000 ]; then
-            printf '%d\n' $((val / 1000))
+        val_out=$(<"$f" 2>&1)
+        val_exit=$?
+        if [ $val_exit -ne 0 ]; then
+            debug_print "Failed to read thermal zone $f (Exit: $val_exit): $val_out"
+            continue
+        fi
+        [ -z "$val_out" ] && continue
+        case "$val_out" in *[!0-9]*) continue ;; esac
+        debug_print "Read thermal zone from sysfs: $f = $val_out"
+        if [ "$val_out" -gt 1000 ]; then
+            printf '%d\n' $((val_out / 1000))
         else
-            printf '%s\n' "$val"
+            printf '%s\n' "$val_out"
         fi
         return 0
     done
@@ -220,9 +225,16 @@ get_memory_pressure() {
     fi
 }
 get_battery_level() {
-    if [ -f /sys/class/power_supply/battery/capacity ]; then
-        cap=$(</sys/class/power_supply/battery/capacity) 2>/dev/null
-        [ -n "$cap" ] && echo "$cap" || echo "N/A"
+    batt_path="/sys/class/power_supply/battery/capacity"
+    if [ -f "$batt_path" ]; then
+        cap_out=$(<"$batt_path" 2>&1)
+        cap_exit=$?
+        if [ $cap_exit -eq 0 ] && [ -n "$cap_out" ]; then
+            printf '%s\n' "$cap_out"
+        else
+            debug_print "Failed to read battery capacity (Exit: $cap_exit): $cap_out"
+            echo "N/A"
+        fi
     else
         echo "N/A"
     fi
@@ -268,7 +280,6 @@ process_packages() {
     IFS='
 ' # Split on newlines only
     for item in $pkg_list; do
-        item="${item%"$CR"}"
         [ -n "$item" ] && total_pkgs=$((total_pkgs + 1))
     done
     IFS="$OLD_IFS"
