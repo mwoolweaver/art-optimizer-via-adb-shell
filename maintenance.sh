@@ -276,7 +276,20 @@ readonly CR
 # Returns: Temperature in Celsius, or "N/A" if unavailable
 # ============================================================================
 get_thermal_status() {
-    # Attempt 1: dumpsys hardware_properties (Best for root, often denied for ADB)
+    # Attempt 1: dumpsys thermalservice (Modern OS Status Code)
+    if command -v dumpsys >/dev/null 2>&1; then
+        local therm_status
+        therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
+        
+        # Verify output is a valid integer
+        if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
+            debug_print "Parsed global thermal status code: $therm_status"
+            printf '%s\n' "$therm_status"
+            return 0
+        fi
+    fi
+
+    # Attempt 2: dumpsys hardware_properties (Best for root, often denied for ADB)
     if command -v dumpsys >/dev/null 2>&1; then
         out=$(dumpsys hardware_properties 2>/dev/null || true)
         if [ -n "$out" ]; then
@@ -312,7 +325,7 @@ get_thermal_status() {
             }
         fi
 
-        # Attempt 2: dumpsys battery (Accessible to ADB/shell user!)
+        # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
         # Battery temperature is in tenths of a degree (e.g. 350 = 35.0 C)
         bat_temp=$(dumpsys battery 2>/dev/null | awk '/temperature:/ {print int($2 / 10); exit}')
         if [ -n "$bat_temp" ] && [ "$bat_temp" -gt 0 ]; then
@@ -416,7 +429,17 @@ print_system_status() {
     thermal=$(get_thermal_status)
     if [ "$thermal" = "N/A" ]; then
         printf '[*] Thermal:  %s\n' "$thermal"
+    elif [ "$thermal" -le 6 ]; then
+        # Android OS Thermal Status Code (0-6)
+        # Critical: >= 3 (SEVERE, CRITICAL, EMERGENCY, SHUTDOWN)
+        [ "$thermal" -ge 3 ] && {
+            printf '[!] Thermal:  Status %d (CRITICAL)\n' "$thermal"
+            return 1
+        }
+        # Warm: >= 1 (LIGHT, MODERATE)
+        [ "$thermal" -ge 1 ] && printf '[!] Thermal:  Status %d (WARM)\n' "$thermal" || printf '[*] Thermal:  Status %d (OK)\n' "$thermal"
     else
+        # Fallback Celsius Temperature (> 6)
         # Critical: > 55°C (likely throttling/damage risk)
         [ "$thermal" -gt 55 ] && {
             printf '[!] Thermal:  %d°C (CRITICAL)\n' "$thermal"
