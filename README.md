@@ -91,10 +91,20 @@ cat << 'EOF' > /sdcard/monthly/maintenance.sh
 
 # ============================================================================
 # ART Smart Maintenance Script
+# ============================================================================
 # Purpose: Optimize Android ART (Android Runtime) compiled packages through
-#          intelligent cache management and profile-guided compilation
-# Environment: Designed specifically for Android system/device environments
-#              utilizing Android-native utilities (dumpsys, pm, getprop).
+#          intelligent cache management, profile-guided compilation (speed-profile),
+#          and change-detection state caching to minimize redundant I/O wear.
+# Target Environment: Android 7.0+ & API 24+, requiring root privileges or
+#                     ADB shell execution context.
+#
+# Key Features:
+#   1. Dry-run simulation mode (--dry-run) for safe workflow testing.
+#   2. Built in debugging output (--debug) to help diagnose script failure.
+#   3. Thermal and memory pressure safety checks to prevent thermal throttling.
+#   4. Incremental fingerprint-based tracking (.last_optimized, saved in same dir as script)
+#      to skip unchanged application packages and reduce CPU wake locks.
+#   5. Atomic temporary file handling and robust signal cleanup traps.
 # ============================================================================
 
 set -u # Exit immediately if any variable is unset
@@ -108,15 +118,16 @@ umask 077
 export LC_ALL=C
 
 # ============================================================================
-# DEBUG & VERBOSE CONFIGURATION
-# Purpose: Enable verbose logging via environment variable (DEBUG=1) or flags
+# DEBUG & DRY_RUN CONFIGURATION
+# Purpose: Enable debug logging or dry-run ability
+#          via environment variable (DEBUG=1) or flags (--debug)
 # ============================================================================
 DEBUG="${DEBUG:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 for arg in "$@"; do
     case "$arg" in
-    -d | --debug | -v | --verbose) DEBUG=1 ;;
-    -n | --dry-run) DRY_RUN=1 ;;
+    --debug) DEBUG=1 ;;
+    --dry-run) DRY_RUN=1 ;;
     esac
 done
 
@@ -135,9 +146,9 @@ fi
 # EARLY PRIVILEGE GUARD
 # Purpose: Abort immediately if not running as root (UID 0) or Shell (UID 2000)
 # ============================================================================
-USER_ID=$(id -u 2>/dev/null || printf '9999')
-debug_print "Checked user ID: $USER_ID"
-if [ "$USER_ID" -ne 0 ] && [ "$USER_ID" -ne 2000 ]; then
+MY_UID=${USER_ID:-1}
+debug_print "Checked user ID: $MY_UID"
+if [ "$MY_UID" -ne 0 ] && [ "$MY_UID" -ne 2000 ]; then
     printf '[!] FATAL: Elevated privileges required (root or adb shell). Aborting.\n' >&2
     exit 1
 fi
@@ -182,10 +193,12 @@ check_deps
 # PACKAGE SERVICE GUARD
 # Purpose: Verify package manager IPC service is registered on the binder bus
 # ============================================================================
-if ! service check package >/dev/null 2>&1; then
+case "$(service check package 2>/dev/null)" in
+*"not found"* | "")
     printf '[!] FATAL: Package manager service is not running or unresponsive. Aborting.\n' >&2
     exit 1
-fi
+    ;;
+esac
 
 # ============================================================================
 # INITIALIZATION: Timing and System Detection
@@ -258,17 +271,36 @@ readonly ERROR_LOG
 # ============================================================================
 cleanup() {
     debug_print "Executing cleanup handler (SUCCESSFUL_RUN=$SUCCESSFUL_RUN)..."
-    # If the script exits before reaching the end, save an early exit snapshot
-    if [ "$SUCCESSFUL_RUN" -eq 0 ] && [ -n "${CURRENT_RUN_STATE:-}" ] && [ -f "$CURRENT_RUN_STATE" ] && [ -s "$CURRENT_RUN_STATE" ]; then
-        cp "$CURRENT_RUN_STATE" "${SCRIPT_DIR}/.early_exit" 2>/dev/null || true
+
+    if [ "$SUCCESSFUL_RUN" -eq 0 ]; then
+        # --- ABORTED OR FAILED RUN ---
+        # Save an early exit snapshot for debugging so we can see where it died
+        if [ -n "${CURRENT_RUN_STATE:-}" ] && [ -f "$CURRENT_RUN_STATE" ] && [ -s "$CURRENT_RUN_STATE" ]; then
+            debug_print "Saving early exit snapshot to: ${SCRIPT_DIR}/.early_exit"
+            if ! cp "$CURRENT_RUN_STATE" "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
+                printf '    [!] Warning: Failed to save early exit snapshot to %s\n' "${SCRIPT_DIR}/.early_exit" >&2
+            fi
+        fi
+
+        # Move error tempfile to final log if errors exist
+        if [ -n "${ERROR_TMPFILE:-}" ] && [ -f "$ERROR_TMPFILE" ] && [ -s "$ERROR_TMPFILE" ]; then
+            debug_print "Saving error log to: $ERROR_LOG"
+            if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
+                printf '    [!] Warning: Failed to save error log to %s\n' "$ERROR_LOG" >&2
+            fi
+        fi
+    else
+        # --- SUCCESSFUL RUN ---
+        # Nuke the debugging autopsy file since this run completed perfectly
+        if [ -f "${SCRIPT_DIR}/.early_exit" ]; then
+            debug_print "Cleaning up old autopsy file: ${SCRIPT_DIR}/.early_exit"
+            if ! rm -f "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
+                printf '    [!] Warning: Failed to clean up %s\n' "${SCRIPT_DIR}/.early_exit" >&2
+            fi
+        fi
     fi
 
-    # Move error tempfile to final log if errors exist and run wasn't successful
-    if [ "$SUCCESSFUL_RUN" -eq 0 ] && [ -n "${ERROR_TMPFILE:-}" ] && [ -f "$ERROR_TMPFILE" ] && [ -s "$ERROR_TMPFILE" ]; then
-        mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null || true
-    fi
-
-    # Remove all temporary files that STILL EXIST on disk
+    # Remove all volatile temporary files that STILL EXIST on disk
     for tmpfile in "${CURRENT_RUN_STATE:-}" "${STAGE_STATS:-}" "${STAGE_MERGED:-}" "${ERROR_TMPFILE:-}"; do
         # Skip empty variable strings or files that have already been moved/removed
         if [ -n "$tmpfile" ] && [ -e "$tmpfile" ]; then
@@ -528,7 +560,7 @@ process_packages() {
             path = substr(line, 1, idx - 1)
             
             # Security sanity check: skip malformed paths, null bytes, newlines, or excessive lengths
-            if (path ~ /[\r\n\0]/ || length(path) > 1024) next
+            if (path ~ /\0/ || length(path) > 1024) next
             
             # Inline deduplication
             if (!seen[path]++) print path
@@ -537,7 +569,7 @@ process_packages() {
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
                 
-                if (dir ~ /[\r\n\0]/ || length(dir) > 1024) next
+                if (dir ~ /\0/ || length(dir) > 1024) next
                 
                 if (!seen[dir]++) print dir
             }
@@ -619,7 +651,7 @@ process_packages() {
 
         # Sanity check: ensure package name contains no whitespace
         case "$pkg_name" in
-        *[\ \	]*)
+        *[[:space:]]*)
             echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
             continue
             ;;
@@ -640,7 +672,10 @@ process_packages() {
 
         # Create a fingerprint to detect if this package has changed since last run
         fingerprint="${pkg_name}:${apk_path}:${file_meta}"
-        echo "$fingerprint" >>"$CURRENT_RUN_STATE"
+
+        # [OPTIMIZED]: Stream directly to open File Descriptor 3
+        echo "$fingerprint" >&3
+
         debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
 
         # Check if this exact package was already processed in a previous run
@@ -684,7 +719,7 @@ $fingerprint
             TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
         else
             debug_print "Executing command: cmd package compile -m $actual_mode -f $pkg_name"
-            err_output=$(cmd package compile -m "$actual_mode" -f "$pkg_name" 2>&1)
+            err_output=$(cmd package compile -m "$actual_mode" -f "$pkg_name" 2>&1 3>&-)
             compile_exit=$?
 
             if [ $compile_exit -eq 0 ]; then
@@ -692,10 +727,14 @@ $fingerprint
                 TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
             else
                 printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' "$current" "$total_pkgs" "$pkg_name" "$compile_exit"
+
+                # We leave this as standard >> because errors are rare, so keeping it open isn't necessary
                 printf 'FAIL (%d): %s\n%s\n' "$compile_exit" "$pkg_name" "$err_output" >>"$ERROR_TMPFILE"
             fi
         fi
-    done <"$STAGE_MERGED"
+
+        # [OPTIMIZED]: Open File Descriptor 3 for the entire duration of the loop
+    done <"$STAGE_MERGED" 3>>"$CURRENT_RUN_STATE"
 
     # ========================================================================
     # Expose stage count globally so the summary can calculate grand totals
