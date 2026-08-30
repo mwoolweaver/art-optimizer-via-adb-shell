@@ -210,7 +210,7 @@ esac
 # INITIALIZATION: Timing and System Detection
 # ============================================================================
 # Record script start time for total duration calculation (in Unix epoch seconds)
-TOTAL_START_TIME=$(date +%s)
+TOTAL_START_TIME=$SECONDS
 
 # Query device properties (fail gracefully if unavailable)
 android_version=$(getprop ro.build.version.release 2>/dev/null)
@@ -253,7 +253,10 @@ if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
 fi
 
 # Absolute path to this script's directory (locked with readonly to prevent tampering)
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+case "$0" in
+*/*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
+*) SCRIPT_DIR="$(pwd)" ;;
+esac
 readonly SCRIPT_DIR
 debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
 
@@ -819,7 +822,23 @@ $fingerprint
 print_system_status "PRE-FLIGHT CHECK" || exit 1
 
 # Validate available storage on /data (minimum 500MB required for compilation buffers)
-FREE_KB=$(df -k /data 2>/dev/null | awk '/\/data/ {print $(NF-2)}')
+# Run df once, disable globbing, and assign output to positional parameters natively
+set -f
+set -- $(df -k /data 2>/dev/null)
+set +f
+
+FREE_KB=""
+for i in "$@"; do
+    case "$i" in
+    /data*)
+        FREE_KB="$prev2"
+        break
+        ;;
+    esac
+    prev2="${prev1:-}"
+    prev1="$i"
+done
+
 debug_print "Available storage on /data: ${FREE_KB:-0} KB"
 
 if [ -z "$FREE_KB" ]; then
@@ -870,7 +889,7 @@ fi
 # ============================================================================
 # STEP 1: Cache Trimming
 # ============================================================================
-STEP1_START=$(date +%s)
+STEP1_START=$SECONDS
 
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Step 1: (DRY RUN) Would trim system and app caches...\n'
@@ -892,13 +911,13 @@ else
 fi
 
 # Calculate elapsed time for this step
-STEP1_DURATION=$(($(date +%s) - STEP1_START))
+STEP1_DURATION=$((SECONDS - STEP1_START))
 printf '[+] Cache trim finished in %ss.\n' "$STEP1_DURATION"
 
 # ============================================================================
 # STEP 2: System Package Optimization
 # ============================================================================
-STEP2_START=$(date +%s)
+STEP2_START=$SECONDS
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Step 2: (DRY RUN) Smart-optimizing system packages...\n'
 else
@@ -930,13 +949,13 @@ else
         process_packages "$system_package_list" "system"
     fi
 fi
-STEP2_DURATION=$(($(date +%s) - STEP2_START))
+STEP2_DURATION=$((SECONDS - STEP2_START))
 printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
 
 # ============================================================================
 # STEP 3: User App Optimization
 # ============================================================================
-STEP3_START=$(date +%s)
+STEP3_START=$SECONDS
 
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
@@ -966,7 +985,7 @@ else
         process_packages "$user_package_list" "speed-profile"
     fi
 fi
-STEP3_DURATION=$(($(date +%s) - STEP3_START))
+STEP3_DURATION=$((SECONDS - STEP3_START))
 printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
 
 # ============================================================================
@@ -1015,7 +1034,7 @@ TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 TOTAL_SKIPPED=$((TOTAL_SCANNED - TOTAL_COMPILED))
 
 # Calculate total execution time
-TOTAL_DURATION=$(($(date +%s) - TOTAL_START_TIME))
+TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 
 # Prepare error notice if errors were logged
 error_notice=""
