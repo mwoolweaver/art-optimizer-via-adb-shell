@@ -413,16 +413,24 @@ get_thermal_status() {
     # Fallback: sysfs (Good for root, fails for ADB due to Android SELinux rules)
     for f in /sys/class/thermal/thermal_zone*/temp; do
         [ -r "$f" ] || continue
-        val=$(<"$f") 2>/dev/null || continue
 
-        [ -z "$val" ] && continue
-        case "$val" in *[!0-9]*) continue ;; esac
+        # Group the redirection to safely catch SELinux or read errors
+        val_out=$(<"$f" 2>&1)
+        val_exit=$?
 
-        debug_print "Read thermal zone from sysfs: $f = $val"
-        if [ "$val" -gt 1000 ]; then
-            printf '%d\n' $((val / 1000))
+        if [ $val_exit -ne 0 ]; then
+            debug_print "Failed to read thermal zone $f (Exit: $val_exit): $val_out"
+            continue
+        fi
+
+        [ -z "$val_out" ] && continue
+        case "$val_out" in *[!0-9]*) continue ;; esac
+
+        debug_print "Read thermal zone from sysfs: $f = $val_out"
+        if [ "$val_out" -gt 1000 ]; then
+            printf '%d\n' $((val_out / 1000))
         else
-            printf '%s\n' "$val"
+            printf '%s\n' "$val_out"
         fi
         return 0
     done
@@ -464,10 +472,19 @@ get_memory_pressure() {
 # Returns: Battery percentage, or "N/A" if unavailable
 # ============================================================================
 get_battery_level() {
-    # Most Android devices expose battery capacity at this sysfs path
-    if [ -f /sys/class/power_supply/battery/capacity ]; then
-        cap=$(</sys/class/power_supply/battery/capacity) 2>/dev/null
-        [ -n "$cap" ] && echo "$cap" || echo "N/A"
+    # Most Android devices expose battery capacity at physical sysfs path
+    batt_path="/sys/class/power_supply/battery/capacity"
+    if [ -f "$batt_path" ]; then
+        # Group the read operation to capture stderr via subshell redirection
+        cap_out=$(<"$batt_path" 2>&1)
+        cap_exit=$?
+
+        if [ $cap_exit -eq 0 ] && [ -n "$cap_out" ]; then
+            printf '%s\n' "$cap_out"
+        else
+            debug_print "Failed to read battery capacity (Exit: $cap_exit): $cap_out"
+            echo "N/A"
+        fi
     else
         echo "N/A"
     fi
@@ -544,7 +561,6 @@ process_packages() {
 ' # Split on newlines only
     for item in $pkg_list; do
         # Strip trailing CR if present
-        item="${item%"$CR"}"
         [ -n "$item" ] && total_pkgs=$((total_pkgs + 1))
     done
     IFS="$OLD_IFS"
