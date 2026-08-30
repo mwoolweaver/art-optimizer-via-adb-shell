@@ -505,7 +505,6 @@ process_packages() {
     IFS='
 ' # Split on newlines only
     for item in $pkg_list; do
-        # Strip trailing CR if present
         [ -n "$item" ] && total_pkgs=$((total_pkgs + 1))
     done
     IFS="$OLD_IFS"
@@ -520,7 +519,6 @@ process_packages() {
     printf '%s\n' "$pkg_list" | awk '{
         line = $0
         idx = 0
-        
         # Find the last occurrence of "=" to separate the file path from the package name
         # (Formats look like: /path/to/base.apk=com.example.app)
         for (i = length(line); i > 0; i--) {
@@ -529,23 +527,19 @@ process_packages() {
                 break
             }
         }
-        
         if (idx > 0) {
             # Extract the file path
             path = substr(line, 1, idx - 1)
-            
             # Security sanity check: skip malformed paths, null bytes, newlines, or excessive lengths
             if (path ~ /\0/ || length(path) > 1024) next
-            
             # Inline deduplication
             if (!seen[path]++) printf "%s\0", path
-            
             # Extract parent directory cleanly using regex match and RLENGTH
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
-                
+
                 if (dir ~ /\0/ || length(dir) > 1024) next
-                
+
                 if (!seen[dir]++) printf "%s\0", dir
             }
         }
@@ -570,7 +564,7 @@ process_packages() {
                 idx = index(line, "=")
                 if (idx > 0) {
                     p = substr(line, 1, idx - 1)       # Path
-                    m = substr(line, idx + 1)         # Metadata (inode:size:blocks)
+                    m = substr(line, idx + 1)         # Metadata (mtime:size:inode)
                     stats[p] = m
                 }
             }
@@ -579,7 +573,7 @@ process_packages() {
         {
             line = $0
             if (line == "") next  # Skip empty lines
-            
+
             # Extract path and package name by splitting on last "="
             idx = 0
             for (i = length(line); i > 0; i--) {
@@ -588,26 +582,25 @@ process_packages() {
                     break
                 }
             }
-            
+
             if (idx > 0) {
                 path = substr(line, 1, idx - 1)       # File path
                 pkg = substr(line, idx + 1)           # Package name
-                
-                # Look up stat data for this path
-                meta = stats[path]
-                if (meta == "") {
+
                     # Fallback: try looking up parent directory metadata
+	                # APK metadata could not be verified.
                     dir = path
+
                     sub("/[^/]+/?$", "", dir)
                     d_meta = stats[dir]
+	
                     if (d_meta != "") {
                         split(d_meta, arr, ":")
                         meta = arr[1] ":0"  # Use dir timestamp, zero size
                     } else {
-                        meta = "0:0"  # Default if nothing found
+                        meta = "UNAVAILABLE"  # Default if nothing found
                     }
-                }
-                
+
                 # Output merged data: package|path|metadata
                 print pkg "|" path "|" meta
             }
@@ -647,26 +640,28 @@ process_packages() {
             fi
         fi
 
-        # Create a fingerprint to detect if this package has changed since last run
-        fingerprint="${pkg_name}:${apk_path}:${file_meta}"
+        if [ "$file_meta" == *"UNAVAILABLE"* ]; then
+            echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
+            echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
 
-        debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
+            # No trustworthy fingerprint exists.
+            # Do not consult or update persistent state.
+            # Fall through to compilation.
+        else
+            fingerprint="${pkg_name}:${apk_path}:${file_meta}"
 
-        # Check if this exact package was already processed in a previous run
-        # PREV_STATE contains all fingerprints from the last successful run
-        case "$PREV_STATE" in
-        *"
-$fingerprint
-"*)
-            # Package hasn't changed, carry its fingerprint forward
-            # into the new state without recompiling
-            echo "$fingerprint" >&3
+            debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
 
-            echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
-            continue
-            ;;
-        esac
-
+            case "$PREV_STATE" in
+            *"
+            $fingerprint
+            "*)
+                echo "$fingerprint" >&3
+                echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
+                continue
+                ;;
+            esac
+        fi
         # ====================================================================
         # COMPILATION: Execute appropriate compilation mode
         # ====================================================================
