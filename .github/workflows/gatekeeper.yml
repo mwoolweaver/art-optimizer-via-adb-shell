@@ -75,7 +75,7 @@ jobs:
           for f in sorted(files):
               if ".git" in f: continue
               try:
-                  with open(f, "r") as file:
+                  with open(f, "r", encoding="utf-8") as file:
                       yaml.safe_load(file)
                   print(f"  Passed YAML: {f}")
               except yaml.YAMLError as e:
@@ -91,32 +91,35 @@ jobs:
               sys.exit(1)
           ' || has_errors=1
 
-          # 3. Markdown files (.md): Structure checks with approximate or exact line tracking
+          # 3. Markdown files (.md): Structure checks with precise line tracking
           echo "[+] Validating Markdown files..."
           python3 -c '
           import glob, sys
           error_count = 0
           for f in sorted(glob.glob("**/*.md", recursive=True, include_hidden=True)):
               if ".git/" in f or "/.git" in f: continue
-              with open(f, "r", encoding="utf-8") as file:
-                  lines = file.readlines()
+              try:
+                  with open(f, "r", encoding="utf-8") as file:
+                      lines = file.readlines()
+              except Exception as e:
+                  print(f"::error file={f},line=1::Could not read file: {e}")
+                  error_count += 1
+                  continue
               
               content = "".join(lines)
               if content.count("```") % 2 != 0:
-                  # Find the line where the last unclosed fence starts
                   open_line = 1
                   fence_count = 0
-                  for idx, line_text in enumerate(lines, start=1):
+                  for line_text in lines:
                       if "```" in line_text:
                           fence_count += 1
-                  # If odd, flag the line of the final unmatched fence
                   current_fences = 0
                   for idx, line_text in enumerate(lines, start=1):
                       if "```" in line_text:
-                          current_fences += 1
-                          if current_fences == fence_count:
-                              open_line = idx
-                              break
+                        current_fences += 1
+                        if current_fences == fence_count:
+                            open_line = idx
+                            break
                   print(f"::error file={f},line={open_line}::Unbalanced code block fences (```) in Markdown file.")
                   error_count += 1
                   continue
@@ -125,10 +128,21 @@ jobs:
               sys.exit(1)
           ' || has_errors=1
 
-          # 4. Gitignore (.gitignore): Format tracking validation
+          # 4. Gitignore (.gitignore): Format tracking validation with actual syntax reporting
           echo "[+] Validating .gitignore format..."
           if [ -f ".gitignore" ]; then
-            git check-ignore -v README.md > /dev/null 2>&1 || true
+            python3 -c '
+            import sys
+            error_count = 0
+            with open(".gitignore", "r", encoding="utf-8") as f:
+                for idx, line in enumerate(f, start=1):
+                    stripped = line.strip()
+                    if stripped.startswith("!") and len(stripped) == 1:
+                        print(f"::error file=.gitignore,line={idx}::Invalid standalone negation pattern.")
+                        error_count += 1
+            if error_count > 0:
+                sys.exit(1)
+            ' || has_errors=1
             echo "  Passed .gitignore syntax check."
           fi
 
