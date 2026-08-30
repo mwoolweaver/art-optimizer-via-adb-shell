@@ -79,8 +79,8 @@ if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
     exit 1
 fi
 case "$0" in
-    */*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
-    *) SCRIPT_DIR="$(pwd)" ;;
+*/*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
+*) SCRIPT_DIR="$(pwd)" ;;
 esac
 readonly SCRIPT_DIR
 debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
@@ -439,14 +439,16 @@ $fingerprint
     fi
 }
 print_system_status "PRE-FLIGHT CHECK" || exit 1
-set -f; set -- $(df -k /data 2>/dev/null); set +f
+set -f
+set -- $(df -k /data 2>/dev/null)
+set +f
 FREE_KB=""
 for i in "$@"; do
     case "$i" in
-        /data*) 
-            FREE_KB="$prev2"
-            break
-            ;;
+    /data*)
+        FREE_KB="$prev2"
+        break
+        ;;
     esac
     prev2="${prev1:-}"
     prev1="$i"
