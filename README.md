@@ -107,9 +107,9 @@ debug_print "Debug/Verbose mode initialized."
 if [ "$DRY_RUN" -eq 1 ]; then
     debug_print "Dry-run mode enabled."
 fi
-USER_ID=$(id -u 2>/dev/null || printf '9999')
-debug_print "Checked user ID: $USER_ID"
-if [ "$USER_ID" -ne 0 ] && [ "$USER_ID" -ne 2000 ]; then
+MY_UID=${USER_ID:-1}
+debug_print "Checked user ID: $MY_UID"
+if [ "$MY_UID" -ne 0 ] && [ "$MY_UID" -ne 2000 ]; then
     printf '[!] FATAL: Elevated privileges required (root or adb shell). Aborting.\n' >&2
     exit 1
 fi
@@ -134,10 +134,12 @@ check_deps() {
     fi
 }
 check_deps
-if ! service check package >/dev/null 2>&1; then
-    printf '[!] FATAL: Package manager service is not running or unresponsive. Aborting.\n' >&2
-    exit 1
-fi
+case "$(service check package 2>/dev/null)" in
+    *"not found"* | "")
+        printf '[!] FATAL: Package manager service is not running or unresponsive. Aborting.\n' >&2
+        exit 1
+        ;;
+esac
 TOTAL_START_TIME=$(date +%s)
 android_version=$(getprop ro.build.version.release 2>/dev/null)
 sdk_version=$(getprop ro.build.version.sdk 2>/dev/null)
@@ -173,11 +175,26 @@ ERROR_LOG="${SCRIPT_DIR}/compile_errors.log"
 readonly ERROR_LOG
 cleanup() {
     debug_print "Executing cleanup handler (SUCCESSFUL_RUN=$SUCCESSFUL_RUN)..."
-    if [ "$SUCCESSFUL_RUN" -eq 0 ] && [ -n "${CURRENT_RUN_STATE:-}" ] && [ -f "$CURRENT_RUN_STATE" ] && [ -s "$CURRENT_RUN_STATE" ]; then
-        cp "$CURRENT_RUN_STATE" "${SCRIPT_DIR}/.early_exit" 2>/dev/null || true
-    fi
-    if [ "$SUCCESSFUL_RUN" -eq 0 ] && [ -n "${ERROR_TMPFILE:-}" ] && [ -f "$ERROR_TMPFILE" ] && [ -s "$ERROR_TMPFILE" ]; then
-        mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null || true
+    if [ "$SUCCESSFUL_RUN" -eq 0 ]; then
+        if [ -n "${CURRENT_RUN_STATE:-}" ] && [ -f "$CURRENT_RUN_STATE" ] && [ -s "$CURRENT_RUN_STATE" ]; then
+            debug_print "Saving early exit snapshot to: ${SCRIPT_DIR}/.early_exit"
+            if ! cp "$CURRENT_RUN_STATE" "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
+                printf '    [!] Warning: Failed to save early exit snapshot to %s\n' "${SCRIPT_DIR}/.early_exit" >&2
+            fi
+        fi
+        if [ -n "${ERROR_TMPFILE:-}" ] && [ -f "$ERROR_TMPFILE" ] && [ -s "$ERROR_TMPFILE" ]; then
+            debug_print "Saving error log to: $ERROR_LOG"
+            if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
+                printf '    [!] Warning: Failed to save error log to %s\n' "$ERROR_LOG" >&2
+            fi
+        fi
+    else
+        if [ -f "${SCRIPT_DIR}/.early_exit" ]; then
+            debug_print "Cleaning up old autopsy file: ${SCRIPT_DIR}/.early_exit"
+            if ! rm -f "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
+                printf '    [!] Warning: Failed to clean up %s\n' "${SCRIPT_DIR}/.early_exit" >&2
+            fi
+        fi
     fi
     for tmpfile in "${CURRENT_RUN_STATE:-}" "${STAGE_STATS:-}" "${STAGE_MERGED:-}" "${ERROR_TMPFILE:-}"; do
         if [ -n "$tmpfile" ] && [ -e "$tmpfile" ]; then
@@ -347,11 +364,11 @@ process_packages() {
         }
         if (idx > 0) {
             path = substr(line, 1, idx - 1)
-            if (path ~ /[\r\n\0]/ || length(path) > 1024) next
+            if (path ~ /\0/ || length(path) > 1024) next
             if (!seen[path]++) print path
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
-                if (dir ~ /[\r\n\0]/ || length(dir) > 1024) next
+                if (dir ~ /\0/ || length(dir) > 1024) next
                 if (!seen[dir]++) print dir
             }
         }
@@ -404,7 +421,7 @@ process_packages() {
         current=$((current + 1))
         [ -z "$pkg_name" ] && continue # Skip empty entries
         case "$pkg_name" in
-        *[\ \	]*)
+        *[[:space:]]*)
             echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
             continue
             ;;
@@ -418,7 +435,7 @@ process_packages() {
             fi
         fi
         fingerprint="${pkg_name}:${apk_path}:${file_meta}"
-        echo "$fingerprint" >>"$CURRENT_RUN_STATE"
+        echo "$fingerprint" >&3
         debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
         case "$PREV_STATE" in
         *"
@@ -449,7 +466,7 @@ $fingerprint
             TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
         else
             debug_print "Executing command: cmd package compile -m $actual_mode -f $pkg_name"
-            err_output=$(cmd package compile -m "$actual_mode" -f "$pkg_name" 2>&1)
+            err_output=$(cmd package compile -m "$actual_mode" -f "$pkg_name" 2>&1 3>&-)
             compile_exit=$?
             if [ $compile_exit -eq 0 ]; then
                 printf '    [+] (%d/%d) Compiled: %s\n' "$current" "$total_pkgs" "$pkg_name"
@@ -459,7 +476,7 @@ $fingerprint
                 printf 'FAIL (%d): %s\n%s\n' "$compile_exit" "$pkg_name" "$err_output" >>"$ERROR_TMPFILE"
             fi
         fi
-    done <"$STAGE_MERGED"
+    done <"$STAGE_MERGED" 3>>"$CURRENT_RUN_STATE"
     if [ "$default_mode" = "system" ]; then
         SYSTEM_PKGS_COUNT="$total_pkgs"
     else
