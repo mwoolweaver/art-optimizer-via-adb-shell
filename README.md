@@ -181,7 +181,7 @@ fi
 # ============================================================================
 check_deps() {
     missing=""
-    for req in awk cmd cmp cp date df dirname dumpsys getprop mkdir mktemp mv pm printf rm rmdir sed service sleep stat xargs; do
+    for req in awk cmd cmp cp date df dirname dumpsys getprop mkdir mktemp mv pm printf rm rmdir service sleep stat xargs; do
         if ! command -v "$req" >/dev/null 2>&1; then
             missing="${missing}$req "
             debug_print "Missing required dependency: $req"
@@ -316,6 +316,14 @@ cleanup() {
             fi
         fi
     done
+
+    # Release the concurrency lock if it exists
+    if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
+        debug_print "Releasing concurrency lock at $LOCK_DIR"
+        if ! rmdir "$LOCK_DIR" 2>/dev/null; then
+            printf '    [!] CRITICAL: Failed to release lock at %s. Manual deletion required.\n' "$LOCK_DIR" >&2
+        fi
+    fi
 }
 
 # Handle SIGINT (Ctrl+C) and SIGTERM (kill) gracefully with distinct exit codes
@@ -335,8 +343,8 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     exit 1
 fi
 
-# Set the EXIT trap to remove the lock and run the cleanup function
-trap 'rmdir "$LOCK_DIR" 2>/dev/null; cleanup' EXIT
+# Set the EXIT trap to run the unified cleanup function
+trap 'cleanup' EXIT
 
 # Initialize a flag to track successful completion
 SUCCESSFUL_RUN=0
@@ -569,7 +577,7 @@ process_packages() {
             if (path ~ /\0/ || length(path) > 1024) next
             
             # Inline deduplication
-            if (!seen[path]++) print path
+            if (!seen[path]++) printf "%s\0", path
             
             # Extract parent directory cleanly using regex match and RLENGTH
             if (match(path, /.*\//)) {
@@ -577,10 +585,10 @@ process_packages() {
                 
                 if (dir ~ /\0/ || length(dir) > 1024) next
                 
-                if (!seen[dir]++) print dir
+                if (!seen[dir]++) printf "%s\0", dir
             }
         }
-    }' | xargs -r stat -c "%n=%Y:%s" 2>/dev/null >"$STAGE_STATS"
+    }' | xargs -0 -r stat -c "%n=%Y:%s" 2>/dev/null >"$STAGE_STATS"
     # Batches the unique paths into a single efficient 'stat' call.
     # Stat Format Mapping (%n=%Y:%s):
     #   %n = File path
@@ -856,17 +864,29 @@ else
 fi
 
 # List all system packages (-s flag) with full paths (-f flag)
-# Added 2>/dev/null to catch command errors silently
 debug_print "Querying system packages via pm list packages -f -s..."
-system_package_list=$(pm list packages -f -s 2>/dev/null | sed -e 's/^package://' -e 's/\r$//')
+system_package_list=$(pm list packages -f -s 2>&1)
+sys_exit=$?
 
-# Validate that we actually got a package list before processing
-if [ -z "$system_package_list" ]; then
-    printf '    [!] WARNING: System package list is empty or '\''pm'\'' failed. Skipping system stage.\n'
+if [ $sys_exit -ne 0 ]; then
+    printf '    [!] WARNING: Failed to query system packages (Exit Code: %d).\n' "$sys_exit" >&2
+    if [ -n "$system_package_list" ]; then
+        printf '        Output: %s\n' "$system_package_list" >&2
+    fi
     SYSTEM_PKGS_COUNT=0
 else
-    # Compile system packages with appropriate mode (speed for core, speed-profile for updates)
-    process_packages "$system_package_list" "system"
+    # Strip "package:" prefix and carriage returns purely in RAM (Zero-Fork)
+    system_package_list="${system_package_list//package:/}"
+    system_package_list="${system_package_list//$CR/}"
+
+    # Validate that we actually got a package list before processing
+    if [ -z "$system_package_list" ]; then
+        printf '    [!] WARNING: System package list is empty. Skipping system stage.\n' >&2
+        SYSTEM_PKGS_COUNT=0
+    else
+        # Compile system packages with appropriate mode
+        process_packages "$system_package_list" "system"
+    fi
 fi
 STEP2_DURATION=$(($(date +%s) - STEP2_START))
 printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
@@ -883,13 +903,26 @@ else
 fi
 
 debug_print "Querying user packages via pm list packages -f -3..."
-user_package_list=$(pm list packages -f -3 2>/dev/null | sed -e 's/^package://' -e 's/\r$//')
+user_package_list=$(pm list packages -f -3 2>&1)
+user_exit=$?
 
-if [ -z "$user_package_list" ]; then
-    printf '    [!] WARNING: User package list is empty or '\''pm'\'' failed. Skipping user stage.\n'
+if [ $user_exit -ne 0 ]; then
+    printf '    [!] WARNING: Failed to query user packages (Exit Code: %d).\n' "$user_exit" >&2
+    if [ -n "$user_package_list" ]; then
+        printf '        Output: %s\n' "$user_package_list" >&2
+    fi
     USER_PKGS_COUNT=0
 else
-    process_packages "$user_package_list" "speed-profile"
+    # Strip "package:" prefix and carriage returns purely in RAM (Zero-Fork)
+    user_package_list="${user_package_list//package:/}"
+    user_package_list="${user_package_list//$CR/}"
+
+    if [ -z "$user_package_list" ]; then
+        printf '    [!] WARNING: User package list is empty. Skipping user stage.\n' >&2
+        USER_PKGS_COUNT=0
+    else
+        process_packages "$user_package_list" "speed-profile"
+    fi
 fi
 STEP3_DURATION=$(($(date +%s) - STEP3_START))
 printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
@@ -925,11 +958,7 @@ else
     # Move error tempfile to final log only if errors exist
     if [ -s "$ERROR_TMPFILE" ]; then
         if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
-            printf '[!] WARNING: Failed to save error log to %s\n' "$ERROR_LOG" >&2
-        fi
-    else
-        if ! rm -f "$ERROR_TMPFILE" 2>/dev/null; then
-            debug_print "Warning: Failed to remove empty error tempfile."
+            printf '    [!] WARNING: Failed to save error log to %s\n' "$ERROR_LOG" >&2
         fi
     fi
 fi
