@@ -148,7 +148,7 @@ fi
 # Purpose: Abort immediately if not running as root (UID 0) or Shell (UID 2000)
 # ============================================================================
 SCRIPT_UID=${USER_ID:-1}
-debug_print "Checked user ID: $MY_UID"
+debug_print "Checked user ID: $SCRIPT_UID"
 if [ "$SCRIPT_UID" -ne 0 ] && [ "$SCRIPT_UID" -ne 2000 ]; then
     printf '[!] FATAL: Elevated privileges required (root or adb shell). Aborting.\n' >&2
     exit 1
@@ -1038,7 +1038,7 @@ fi
 # Mark the run as fully successful
 SUCCESSFUL_RUN=1
 
-#Calculare package counts
+#Calculate package counts
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 TOTAL_SKIPPED=$((TOTAL_SCANNED - TOTAL_COMPILED))
 
