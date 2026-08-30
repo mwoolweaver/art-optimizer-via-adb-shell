@@ -350,6 +350,7 @@ process_packages() {
     ' >"$STAGE_MERGED"
     debug_print "Running STAGE 3: Processing package compilation sequence..."
     current=0 # Progress counter
+    exec 3>>"$CURRENT_RUN_STATE"
     while IFS='|' read -r pkg_name apk_path file_meta; do
         current=$((current + 1))
         [ -z "$pkg_name" ] && continue # Skip empty entries
@@ -411,7 +412,8 @@ $fingerprint
                 fi
             fi
         fi
-    done <"$STAGE_MERGED" 3>>"$CURRENT_RUN_STATE"
+    done <"$STAGE_MERGED"
+    exec 3>&-
     if [ "$default_mode" = "system" ]; then
         SYSTEM_PKGS_COUNT="$total_pkgs"
     else
