@@ -144,6 +144,15 @@ CR=$(printf '\r')
 readonly CR
 get_thermal_status() {
     if command -v dumpsys >/dev/null 2>&1; then
+        local therm_status
+        therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
+        if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
+            debug_print "Parsed global thermal status code: $therm_status"
+            printf '%s\n' "$therm_status"
+            return 0
+        fi
+    fi
+    if command -v dumpsys >/dev/null 2>&1; then
         out=$(dumpsys hardware_properties 2>/dev/null || true)
         if [ -n "$out" ]; then
             debug_print "Parsed thermal status from hardware_properties dumpsys."
@@ -245,6 +254,12 @@ print_system_status() {
     thermal=$(get_thermal_status)
     if [ "$thermal" = "N/A" ]; then
         printf '[*] Thermal:  %s\n' "$thermal"
+    elif [ "$thermal" -le 6 ]; then
+        [ "$thermal" -ge 3 ] && {
+            printf '[!] Thermal:  Status %d (CRITICAL)\n' "$thermal"
+            return 1
+        }
+        [ "$thermal" -ge 1 ] && printf '[!] Thermal:  Status %d (WARM)\n' "$thermal" || printf '[*] Thermal:  Status %d (OK)\n' "$thermal"
     else
         [ "$thermal" -gt 55 ] && {
             printf '[!] Thermal:  %d°C (CRITICAL)\n' "$thermal"
