@@ -549,12 +549,13 @@ process_packages() {
                 if (!seen[dir]++) printf "%s\0", dir
             }
         }
-    }' | xargs -0 -r stat -c "%n=%Y:%s" 2>/dev/null >"$STAGE_STATS"
+    }' | xargs -0 -r stat -c "%n=%Y:%s:%i" 2>/dev/null >"$STAGE_STATS"
     # Batches the unique paths into a single efficient 'stat' call.
-    # Stat Format Mapping (%n=%Y:%s):
+    # Stat Format Mapping (%n=%Y:%s:%i):
     #   %n = File path
     #   %Y = Time of last data modification (epoch seconds)
     #   %s = Total size in bytes
+    #   %i = Inode number
 
     # ========================================================================
     # STAGE 2: Match packages to stat metadata (change detection setup)
