@@ -144,7 +144,7 @@ case "$(service check package 2>/dev/null)" in
     exit 1
     ;;
 esac
-TOTAL_START_TIME=$(date +%s)
+TOTAL_START_TIME=$SECONDS
 android_version=$(getprop ro.build.version.release 2>/dev/null)
 sdk_version=$(getprop ro.build.version.sdk 2>/dev/null)
 android_version="${android_version:-Unknown}"
@@ -166,7 +166,10 @@ if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
     printf '[!] FATAL: Temporary directory '\''%s'\'' is missing or not writable. Aborting.\n' "$TMPDIR" >&2
     exit 1
 fi
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+case "$0" in
+    */*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
+    *) SCRIPT_DIR="$(pwd)" ;;
+esac
 readonly SCRIPT_DIR
 debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
 if ! [ -w "$SCRIPT_DIR" ]; then
@@ -524,7 +527,18 @@ $fingerprint
     fi
 }
 print_system_status "PRE-FLIGHT CHECK" || exit 1
-FREE_KB=$(df -k /data 2>/dev/null | awk '/\/data/ {print $(NF-2)}')
+set -f; set -- $(df -k /data 2>/dev/null); set +f
+FREE_KB=""
+for i in "$@"; do
+    case "$i" in
+        /data*) 
+            FREE_KB="$prev2"
+            break
+            ;;
+    esac
+    prev2="${prev1:-}"
+    prev1="$i"
+done
 debug_print "Available storage on /data: ${FREE_KB:-0} KB"
 if [ -z "$FREE_KB" ]; then
     printf '    [!] WARNING: Could not determine free storage on /data. Proceeding with caution.\n' >&2
@@ -550,7 +564,7 @@ $(<"$STATE_FILE")
 else
     debug_print "No existing state file found at $STATE_FILE. Full optimization run expected."
 fi
-STEP1_START=$(date +%s)
+STEP1_START=$SECONDS
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Step 1: (DRY RUN) Would trim system and app caches...\n'
 else
@@ -564,9 +578,9 @@ else
         fi
     fi
 fi
-STEP1_DURATION=$(($(date +%s) - STEP1_START))
+STEP1_DURATION=$((SECONDS - STEP1_START))
 printf '[+] Cache trim finished in %ss.\n' "$STEP1_DURATION"
-STEP2_START=$(date +%s)
+STEP2_START=$SECONDS
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Step 2: (DRY RUN) Smart-optimizing system packages...\n'
 else
@@ -591,9 +605,9 @@ else
         process_packages "$system_package_list" "system"
     fi
 fi
-STEP2_DURATION=$(($(date +%s) - STEP2_START))
+STEP2_DURATION=$((SECONDS - STEP2_START))
 printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
-STEP3_START=$(date +%s)
+STEP3_START=$SECONDS
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
 else
@@ -618,7 +632,7 @@ else
         process_packages "$user_package_list" "speed-profile"
     fi
 fi
-STEP3_DURATION=$(($(date +%s) - STEP3_START))
+STEP3_DURATION=$((SECONDS - STEP3_START))
 printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Dry-run mode: Persistent state file and error logs were not modified.\n'
@@ -646,7 +660,7 @@ fi
 SUCCESSFUL_RUN=1
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 TOTAL_SKIPPED=$((TOTAL_SCANNED - TOTAL_COMPILED))
-TOTAL_DURATION=$(($(date +%s) - TOTAL_START_TIME))
+TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 error_notice=""
 if [ -s "$ERROR_LOG" ] && [ "$DRY_RUN" -eq 0 ]; then
     error_notice="    - [!] Errors occurred. See $ERROR_LOG"
