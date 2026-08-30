@@ -674,6 +674,7 @@ process_packages() {
     debug_print "Running STAGE 3: Processing package compilation sequence..."
     current=0 # Progress counter
 
+    exec 3>>"$CURRENT_RUN_STATE"
     # Read the merged data line by line
     while IFS='|' read -r pkg_name apk_path file_meta; do
         current=$((current + 1))
@@ -765,8 +766,10 @@ $fingerprint
             fi
         fi
 
-        # [OPTIMIZED]: Open File Descriptor 3 for the entire duration of the loop
-    done <"$STAGE_MERGED" 3>>"$CURRENT_RUN_STATE"
+    done <"$STAGE_MERGED"
+
+    # [OPTIMIZED]: Close File Descriptor 3 cleanly after the loop finishes
+    exec 3>&-
 
     # ========================================================================
     # Expose stage count globally so the summary can calculate grand totals
