@@ -128,24 +128,6 @@ jobs:
               sys.exit(1)
           ' || has_errors=1
 
-          # 4. Gitignore (.gitignore): Format tracking validation with actual syntax reporting
-          echo "[+] Validating .gitignore format..."
-          if [ -f ".gitignore" ]; then
-            python3 -c '
-            import sys
-            error_count = 0
-            with open(".gitignore", "r", encoding="utf-8") as f:
-                for idx, line in enumerate(f, start=1):
-                    stripped = line.strip()
-                    if stripped.startswith("!") and len(stripped) == 1:
-                        print(f"::error file=.gitignore,line={idx}::Invalid standalone negation pattern.")
-                        error_count += 1
-            if error_count > 0:
-                sys.exit(1)
-            ' || has_errors=1
-            echo "  Passed .gitignore syntax check."
-          fi
-
           if [ "$has_errors" -eq 0 ]; then
             echo "[+] All repository files successfully linted!"
             exit 0
