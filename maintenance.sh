@@ -649,9 +649,6 @@ process_packages() {
         # Create a fingerprint to detect if this package has changed since last run
         fingerprint="${pkg_name}:${apk_path}:${file_meta}"
 
-        # [OPTIMIZED]: Stream directly to open File Descriptor 3
-        echo "$fingerprint" >&3
-
         debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
 
         # Check if this exact package was already processed in a previous run
@@ -660,7 +657,10 @@ process_packages() {
         *"
 $fingerprint
 "*)
-            # Package hasn't changed, skip recompilation
+            # Package hasn't changed, carry its fingerprint forward
+            # into the new state without recompiling
+            echo "$fingerprint" >&3
+
             echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
             continue
             ;;
@@ -700,9 +700,18 @@ $fingerprint
 
             if [ $compile_exit -eq 0 ]; then
                 printf '    [+] (%d/%d) Compiled: %s\n' "$current" "$total_pkgs" "$pkg_name"
+
+                # Compilation succeeded. Only now commit this fingerprint
+                # to the current-run state.
+                echo "$fingerprint" >&3
+
                 TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
             else
                 printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' "$current" "$total_pkgs" "$pkg_name" "$compile_exit"
+
+                # IMPORTANT:
+                # Do NOT write the fingerprint to CURRENT_RUN_STATE.
+                # This forces the package to be retried on the next run.
 
                 # Log the error, but explicitly catch if the logging itself fails (e.g., out of space)
                 if ! printf 'FAIL (%d): %s\n%s\n' "$compile_exit" "$pkg_name" "$err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
