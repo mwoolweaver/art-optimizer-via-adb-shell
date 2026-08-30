@@ -476,11 +476,13 @@ process_packages() {
                 compile_mode="speed" # Use full speed compilation for core system
             fi
         fi
-        if [ "$file_meta" == *"UNAVAILABLE"* ]; then
+        fingerprint="${pkg_name}:${apk_path}:${file_meta}"
+        case "$fingerprint" in
+        *UNAVAILABLE*)
             echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
             echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
-        else
-            fingerprint="${pkg_name}:${apk_path}:${file_meta}"
+            ;;
+        *)
             debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
             case "$PREV_STATE" in
             *"
@@ -491,7 +493,8 @@ process_packages() {
                 continue
                 ;;
             esac
-        fi
+            ;;
+        esac
         if [ "$compile_mode" = "speed" ]; then
             if [ "$DRY_RUN" -eq 0 ]; then
                 printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' "$current" "$total_pkgs" "$pkg_name"
