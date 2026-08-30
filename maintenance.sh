@@ -93,7 +93,7 @@ fi
 # ============================================================================
 check_deps() {
     missing=""
-    for req in awk cmd cmp cp date df dirname dumpsys getprop mkdir mktemp mv pm printf rm rmdir service sleep stat xargs; do
+    for req in awk cmd cmp cp df dumpsys getprop mkdir mktemp mv pm printf rm rmdir service sleep stat xargs; do
         if ! command -v "$req" >/dev/null 2>&1; then
             missing="${missing}$req "
             debug_print "Missing required dependency: $req"
@@ -281,8 +281,18 @@ readonly CR
 get_thermal_status() {
     # Attempt 1: dumpsys thermalservice (Modern OS Status Code)
     if command -v dumpsys >/dev/null 2>&1; then
-        local therm_status
-        therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
+        local therm_status=""
+        set -f
+        set -- $(dumpsys thermalservice 2>/dev/null)
+        set +f
+        for i in "$@"; do
+            if [ "${prev1:-}" = "Status:" ] && [ "${prev2:-}" = "Thermal" ]; then
+                therm_status="$i"
+                break
+            fi
+            prev2="${prev1:-}"
+            prev1="$i"
+        done
 
         # Verify output is a valid integer
         if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
@@ -296,37 +306,61 @@ get_thermal_status() {
     if command -v dumpsys >/dev/null 2>&1; then
         out=$(dumpsys hardware_properties 2>/dev/null || true)
         if [ -n "$out" ]; then
-            debug_print "Parsed thermal status from hardware_properties dumpsys."
-            temp=$(printf "%s\n" "$out" | awk '
-                /CPU temperatures:/ {
-                    if (match($0, /\[[^]]*\]/)) {
-                        line = substr($0, RSTART + 1, RLENGTH - 2)
-                        n = split(line, temps, ",[ ]*")
-                        max_t = 0
-                        for (i = 1; i <= n; i++) {
-                            if (temps[i] ~ /^[0-9]+$/) {
-                                t = temps[i] + 0
-                                if (t > max_t && t < 120) max_t = t
-                            }
-                        }
-                        if (max_t > 0) { printf "%d", max_t; exit }
-                    }
-                }
-                /Skin temperatures:/ {
-                    if (match($0, /\[[^]]*\]/)) {
-                        line = substr($0, RSTART + 1, RLENGTH - 2)
-                        if (line ~ /^[0-9]+$/) {
-                            t = line + 0
-                            if (t > 0 && t < 120) { printf "%d", t; exit }
-                        }
-                    }
-                }
-            ')
-            [ -n "$temp" ] && {
-                printf '%s\n' "$temp"
+            debug_print "Parsed thermal status natively from hardware_properties dumpsys."
+            local max_t=0 skin_t=0
+            
+            # Read output natively. 'key' gets the first word, 'val' gets the rest of the line
+            while read -r key val; do
+                case "$key" in
+                    "CPU"|"Skin")
+                        # Verify the second word is "temperatures:"
+                        if [ "${val%% *}" = "temperatures:" ]; then
+                            # Extract string between brackets [ ]
+                            raw_temps="${val#*[}"
+                            raw_temps="${raw_temps%]*}"
+                            
+                            # Split comma-separated values into positional parameters ($1, $2, etc.)
+                            set -f
+                            OLD_IFS="$IFS"
+                            IFS=", "
+                            set -- $raw_temps
+                            IFS="$OLD_IFS"
+                            set +f
+                            
+                            for t_str in "$@"; do
+                                # Strip floating point decimals (e.g., 30.000002 -> 30)
+                                t_int="${t_str%%.*}"
+                                
+                                # Skip negative error constants (like -3.4028) or non-numbers
+                                case "${t_int:-}" in
+                                    *[!0-9]* | "") continue ;; 
+                                esac
+                                
+                                # Validate logical temperature range (> 0 and < 120 C)
+                                if [ "$t_int" -gt 0 ] && [ "$t_int" -lt 120 ]; then
+                                    if [ "$key" = "CPU" ]; then
+                                        [ "$t_int" -gt "$max_t" ] && max_t="$t_int"
+                                    elif [ "$key" = "Skin" ] && [ "$skin_t" -eq 0 ]; then
+                                        skin_t="$t_int"
+                                    fi
+                                fi
+                            done
+                        fi
+                        ;;
+                esac
+            done <<EOF
+$out
+EOF
+            # Prioritize CPU max temp, fallback to Skin temp
+            if [ "$max_t" -gt 0 ]; then
+                printf '%d\n' "$max_t"
                 return 0
-            }
+            elif [ "$skin_t" -gt 0 ]; then
+                printf '%d\n' "$skin_t"
+                return 0
+            fi
         fi
+    fi
 
         # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
         # Battery temperature is in tenths of a degree (e.g. 350 = 35.0 C)
