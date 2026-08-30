@@ -6,8 +6,8 @@ DEBUG="${DEBUG:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 for arg in "$@"; do
     case "$arg" in
-    -d | --debug | -v | --verbose) DEBUG=1 ;;
-    -n | --dry-run) DRY_RUN=1 ;;
+    --debug) DEBUG=1 ;;
+    --dry-run) DRY_RUN=1 ;;
     esac
 done
 debug_print() {
