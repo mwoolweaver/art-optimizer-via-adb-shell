@@ -331,6 +331,7 @@ get_thermal_status() {
         # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
         # Battery temperature is in tenths of a degree (e.g. 350 = 35.0 C)
         set -f
+        # shellcheck disable=SC2046
         set -- $(dumpsys battery 2>/dev/null)
         set +f
         for i in "$@"; do
@@ -742,6 +743,7 @@ print_system_status "PRE-FLIGHT CHECK" || exit 1
 # Validate available storage on /data (minimum 500MB required for compilation buffers)
 # Run df once, disable globbing, and assign output to positional parameters natively
 set -f
+# shellcheck disable=SC2046
 set -- $(df -k /data 2>/dev/null)
 set +f
 
