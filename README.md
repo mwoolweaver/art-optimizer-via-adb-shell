@@ -208,6 +208,12 @@ cleanup() {
             fi
         fi
     done
+    if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
+        debug_print "Releasing concurrency lock at $LOCK_DIR"
+        if ! rmdir "$LOCK_DIR" 2>/dev/null; then
+            printf '    [!] CRITICAL: Failed to release lock at %s. Manual deletion required.\n' "$LOCK_DIR" >&2
+        fi
+    fi
 }
 trap 'printf "\n    [!] Interrupted by user (SIGINT). Cleaning up...\n"; exit 130' INT
 trap 'printf "\n    [!] Terminated by system (SIGTERM). Cleaning up...\n"; exit 143' TERM
@@ -217,7 +223,7 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n' >&2
     exit 1
 fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null; cleanup' EXIT
+trap 'cleanup' EXIT
 SUCCESSFUL_RUN=0
 SYSTEM_PKGS_COUNT=0
 USER_PKGS_COUNT=0
@@ -583,11 +589,7 @@ else
     fi
     if [ -s "$ERROR_TMPFILE" ]; then
         if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
-            printf '[!] WARNING: Failed to save error log to %s\n' "$ERROR_LOG" >&2
-        fi
-    else
-        if ! rm -f "$ERROR_TMPFILE" 2>/dev/null; then
-            debug_print "Warning: Failed to remove empty error tempfile."
+            printf '    [!] WARNING: Failed to save error log to %s\n' "$ERROR_LOG" >&2
         fi
     fi
 fi
