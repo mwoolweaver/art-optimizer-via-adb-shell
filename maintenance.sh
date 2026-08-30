@@ -824,7 +824,7 @@ else
 
         if [ $mv_exit -ne 0 ]; then
             printf '    [!] WARNING: Failed to update persistent state file (Exit Code: %d).\n' "$mv_exit" >&2
-            
+
             # Print the exact OS error if one was generated
             if [ -n "$mv_out" ]; then
                 printf '        Output: %s\n' "$mv_out" >&2
