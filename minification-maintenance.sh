@@ -38,7 +38,7 @@ if [ "$(getprop sys.boot_completed)" != "1" ]; then
 fi
 check_deps() {
     missing=""
-    for req in awk cmd cmp cp date df dirname dumpsys getprop mkdir mktemp mv pm printf rm rmdir sed service sleep stat xargs; do
+    for req in awk cmd cmp cp date df dirname dumpsys getprop mkdir mktemp mv pm printf rm rmdir service sleep stat xargs; do
         if ! command -v "$req" >/dev/null 2>&1; then
             missing="${missing}$req "
             debug_print "Missing required dependency: $req"
@@ -287,14 +287,14 @@ process_packages() {
         if (idx > 0) {
             path = substr(line, 1, idx - 1)
             if (path ~ /\0/ || length(path) > 1024) next
-            if (!seen[path]++) print path
+            if (!seen[path]++) printf "%s\0", path
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
                 if (dir ~ /\0/ || length(dir) > 1024) next
-                if (!seen[dir]++) print dir
+                if (!seen[dir]++) printf "%s\0", dir
             }
         }
-    }' | xargs -r stat -c "%n=%Y:%s" 2>/dev/null >"$STAGE_STATS"
+    }' | xargs -0 -r stat -c "%n=%Y:%s" 2>/dev/null >"$STAGE_STATS"
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
     printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" '
         BEGIN {
@@ -457,12 +457,23 @@ else
     printf '[+] Step 2: Smart-optimizing system packages...\n'
 fi
 debug_print "Querying system packages via pm list packages -f -s..."
-system_package_list=$(pm list packages -f -s 2>/dev/null | sed -e 's/^package://' -e 's/\r$//')
-if [ -z "$system_package_list" ]; then
-    printf '    [!] WARNING: System package list is empty or '\''pm'\'' failed. Skipping system stage.\n'
+system_package_list=$(pm list packages -f -s 2>&1)
+sys_exit=$?
+if [ $sys_exit -ne 0 ]; then
+    printf '    [!] WARNING: Failed to query system packages (Exit Code: %d).\n' "$sys_exit" >&2
+    if [ -n "$system_package_list" ]; then
+        printf '        Output: %s\n' "$system_package_list" >&2
+    fi
     SYSTEM_PKGS_COUNT=0
 else
-    process_packages "$system_package_list" "system"
+    system_package_list="${system_package_list//package:/}"
+    system_package_list="${system_package_list//$CR/}"
+    if [ -z "$system_package_list" ]; then
+        printf '    [!] WARNING: System package list is empty. Skipping system stage.\n' >&2
+        SYSTEM_PKGS_COUNT=0
+    else
+        process_packages "$system_package_list" "system"
+    fi
 fi
 STEP2_DURATION=$(($(date +%s) - STEP2_START))
 printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
@@ -473,12 +484,23 @@ else
     printf '[+] Step 3: Smart-optimizing user apps...\n'
 fi
 debug_print "Querying user packages via pm list packages -f -3..."
-user_package_list=$(pm list packages -f -3 2>/dev/null | sed -e 's/^package://' -e 's/\r$//')
-if [ -z "$user_package_list" ]; then
-    printf '    [!] WARNING: User package list is empty or '\''pm'\'' failed. Skipping user stage.\n'
+user_package_list=$(pm list packages -f -3 2>&1)
+user_exit=$?
+if [ $user_exit -ne 0 ]; then
+    printf '    [!] WARNING: Failed to query user packages (Exit Code: %d).\n' "$user_exit" >&2
+    if [ -n "$user_package_list" ]; then
+        printf '        Output: %s\n' "$user_package_list" >&2
+    fi
     USER_PKGS_COUNT=0
 else
-    process_packages "$user_package_list" "speed-profile"
+    user_package_list="${user_package_list//package:/}"
+    user_package_list="${user_package_list//$CR/}"
+    if [ -z "$user_package_list" ]; then
+        printf '    [!] WARNING: User package list is empty. Skipping user stage.\n' >&2
+        USER_PKGS_COUNT=0
+    else
+        process_packages "$user_package_list" "speed-profile"
+    fi
 fi
 STEP3_DURATION=$(($(date +%s) - STEP3_START))
 printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
