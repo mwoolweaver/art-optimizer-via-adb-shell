@@ -519,21 +519,21 @@ process_packages() {
     printf '%s\n' "$pkg_list" | awk '{
         line = $0
         idx = 0
-        # Find the last occurrence of "=" to separate the file path from the package name
-        # (Formats look like: /path/to/base.apk=com.example.app)
-        for (i = length(line); i > 0; i--) {
-            if (substr(line, i, 1) == "=") {
-                idx = i
-                break
-            }
-        }
+
+        # Find the first ":" to separate the package name from the file path
+        # (Formats look like: com.example.app:/path/to/base.apk)
+        idx = index(line, ":")
+
         if (idx > 0) {
             # Extract the file path
-            path = substr(line, 1, idx - 1)
+            path = substr(line, idx + 1)
+
             # Security sanity check: skip malformed paths, null bytes, newlines, or excessive lengths
             if (path ~ /\0/ || length(path) > 1024) next
+
             # Inline deduplication
             if (!seen[path]++) printf "%s\0", path
+
             # Extract parent directory cleanly using regex match and RLENGTH
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
