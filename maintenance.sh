@@ -640,8 +640,10 @@ $fingerprint
             else
                 printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' "$current" "$total_pkgs" "$pkg_name" "$compile_exit"
                 
-                # We leave this as standard >> because errors are rare, so keeping it open isn't necessary
-                printf 'FAIL (%d): %s\n%s\n' "$compile_exit" "$pkg_name" "$err_output" >>"$ERROR_TMPFILE"
+                # Log the error, but explicitly catch if the logging itself fails (e.g., out of space)
+                if ! printf 'FAIL (%d): %s\n%s\n' "$compile_exit" "$pkg_name" "$err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
+                    printf '    [!] CRITICAL: Failed to write to error log! Storage may be full.\n' >&2
+                fi
             fi
         fi
         
@@ -721,32 +723,40 @@ fi
 # ============================================================================
 # STEP 1: Cache Trimming
 # ============================================================================
+STEP1_START=$(date +%s)
+
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Step 1: (DRY RUN) Would trim system and app caches...\n'
-    STEP1_START=$(date +%s)
-    STEP1_DURATION=0
 else
     printf '[+] Step 1: Trimming system and app caches...\n'
-    STEP1_START=$(date +%s)
 
     # Tell package manager to clean app caches
     # Argument 100G indicates target cache size (aggressively frees everything)
-    pm trim-caches 100G >/dev/null 2>&1
-
-    # Calculate elapsed time for this step
-    STEP1_DURATION=$(($(date +%s) - STEP1_START))
-    printf '[+] Cache trim finished in %ss.\n' "$STEP1_DURATION"
+    trim_out=$(pm trim-caches 100G 2>&1)
+    trim_exit=$?
+    
+    if [ $trim_exit -ne 0 ]; then
+        printf '    [!] WARNING: Cache trim failed (Exit Code: %d).\n' "$trim_exit" >&2
+        # Only print the output if it actually contains text to avoid blank lines
+        if [ -n "$trim_out" ]; then
+            printf '        Output: %s\n' "$trim_out" >&2
+        fi
+    fi
 fi
+
+# Calculate elapsed time for this step
+STEP1_DURATION=$(($(date +%s) - STEP1_START))
+printf '[+] Cache trim finished in %ss.\n' "$STEP1_DURATION"
 
 # ============================================================================
 # STEP 2: System Package Optimization
 # ============================================================================
+STEP2_START=$(date +%s)
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Step 2: (DRY RUN) Smart-optimizing system packages...\n'
 else
     printf '[+] Step 2: Smart-optimizing system packages...\n'
 fi
-STEP2_START=$(date +%s)
 
 # List all system packages (-s flag) with full paths (-f flag)
 # Added 2>/dev/null to catch command errors silently
@@ -756,37 +766,36 @@ system_package_list=$(pm list packages -f -s 2>/dev/null | sed -e 's/^package://
 # Validate that we actually got a package list before processing
 if [ -z "$system_package_list" ]; then
     printf '    [!] WARNING: System package list is empty or '\''pm'\'' failed. Skipping system stage.\n'
-    STEP2_DURATION=0
     SYSTEM_PKGS_COUNT=0
 else
     # Compile system packages with appropriate mode (speed for core, speed-profile for updates)
     process_packages "$system_package_list" "system"
-    STEP2_DURATION=$(($(date +%s) - STEP2_START))
-    printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
 fi
+STEP2_DURATION=$(($(date +%s) - STEP2_START))
+printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
 
 # ============================================================================
 # STEP 3: User App Optimization
 # ============================================================================
+STEP3_START=$(date +%s)
+
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
 else
     printf '[+] Step 3: Smart-optimizing user apps...\n'
 fi
-STEP3_START=$(date +%s)
 
 debug_print "Querying user packages via pm list packages -f -3..."
 user_package_list=$(pm list packages -f -3 2>/dev/null | sed -e 's/^package://' -e 's/\r$//')
 
 if [ -z "$user_package_list" ]; then
     printf '    [!] WARNING: User package list is empty or '\''pm'\'' failed. Skipping user stage.\n'
-    STEP3_DURATION=0
     USER_PKGS_COUNT=0
 else
     process_packages "$user_package_list" "speed-profile"
-    STEP3_DURATION=$(($(date +%s) - STEP3_START))
-    printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
 fi
+STEP3_DURATION=$(($(date +%s) - STEP3_START))
+printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
 
 # ============================================================================
 # POST-OPTIMIZATION: State Management
@@ -810,9 +819,13 @@ else
 
     # Move error tempfile to final log only if errors exist
     if [ -s "$ERROR_TMPFILE" ]; then
-        mv "$ERROR_TMPFILE" "$ERROR_LOG"
+        if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
+            printf '[!] WARNING: Failed to save error log to %s\n' "$ERROR_LOG" >&2
+        fi
     else
-        rm -f "$ERROR_TMPFILE"
+        if ! rm -f "$ERROR_TMPFILE" 2>/dev/null; then
+            debug_print "Warning: Failed to remove empty error tempfile."
+        fi
     fi
 fi
 
