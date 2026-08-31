@@ -328,10 +328,10 @@ process_packages() {
             }
         }
     }' |
-    xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
+        xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
     printf '\n===== DEBUG STAGE_STATS =====\n'
     printf 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
-    printf 'Lines: %s\n' "$(wc -l < "$STAGE_STATS")"
+    printf 'Lines: %s\n' "$(wc -l <"$STAGE_STATS")"
     printf '%s\n' '--- first 10 records ---'
     head -10 "$STAGE_STATS"
     printf '%s\n' '--- end DEBUG STAGE_STATS ---'
@@ -373,7 +373,7 @@ process_packages() {
     ' >"$STAGE_MERGED"
     printf '\n===== DEBUG STAGE_MERGED =====\n'
     printf 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
-    printf 'Lines: %s\n' "$(wc -l < "$STAGE_MERGED")"
+    printf 'Lines: %s\n' "$(wc -l <"$STAGE_MERGED")"
     printf '%s\n' '--- first 10 records ---'
     head -10 "$STAGE_MERGED"
     printf '%s\n' '--- end DEBUG STAGE_MERGED ---'
