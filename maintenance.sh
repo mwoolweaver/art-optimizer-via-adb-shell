@@ -523,7 +523,7 @@ process_packages() {
 
     normalized_pkg_list=$(
         printf '%s\n' "$pkg_list" |
-        awk '
+            awk '
             {
                 line = $0
                 idx = 0
@@ -600,7 +600,7 @@ process_packages() {
     # ========================================================================
 
     printf '%s\n' "$pkg_list" |
-    awk -F '|' '
+        awk -F '|' '
         {
             if (NF < 2)
                 next
@@ -655,7 +655,7 @@ process_packages() {
 
     tr '\n' '\0' <"$STAGE_PATHS" |
         xargs -0 -r stat -c '%n=%Y:%s:%i' \
-        >"$STAGE_STATS"
+            >"$STAGE_STATS"
 
     # ========================================================================
     # DEBUG STAGE_STATS
@@ -687,7 +687,7 @@ process_packages() {
     # ========================================================================
 
     printf '%s\n' "$pkg_list" |
-    awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" '
+        awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" '
         BEGIN {
             # Load stat cache into memory.
             #
@@ -792,10 +792,10 @@ process_packages() {
 
         # Sanity check: package names should contain no whitespace.
         case "$pkg_name" in
-            *[[:space:]]*)
-                echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
-                continue
-                ;;
+        *[[:space:]]*)
+            echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
+            continue
+            ;;
         esac
 
         # ====================================================================
@@ -822,35 +822,35 @@ process_packages() {
 
         case "$fingerprint" in
 
-            *UNAVAILABLE*)
+        *UNAVAILABLE*)
 
-                echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
-                echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
+            echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
+            echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
 
-                # No trustworthy fingerprint exists.
-                # Do not consult or update persistent state.
-                # Fall through to compilation.
+            # No trustworthy fingerprint exists.
+            # Do not consult or update persistent state.
+            # Fall through to compilation.
 
-                ;;
+            ;;
 
-            *)
+        *)
 
-                debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
+            debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
 
-                case "$PREV_STATE" in
-                    *"
+            case "$PREV_STATE" in
+            *"
 $fingerprint
 "*)
 
-                        echo "$fingerprint" >&3
+                echo "$fingerprint" >&3
 
-                        echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
+                echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
 
-                        continue
-                        ;;
-                esac
-
+                continue
                 ;;
+            esac
+
+            ;;
         esac
 
         # ====================================================================
