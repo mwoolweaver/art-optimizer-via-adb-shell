@@ -298,7 +298,7 @@ process_packages() {
         return 0
     }
     total_pkgs=0
-    set -f # Disable glob expansion (wildcards won't expand)
+    set -f
     OLD_IFS="$IFS"
     IFS='
 '
@@ -306,7 +306,7 @@ process_packages() {
         [ -n "$item" ] && total_pkgs=$((total_pkgs + 1))
     done
     IFS="$OLD_IFS"
-    set +f # Re-enable glob expansion
+    set +f
     debug_print "Total packages parsed for '$default_mode': $total_pkgs"
     debug_print "Running STAGE 1: Extracting file paths and stat metadata..."
     printf '%s\n' "$pkg_list" | awk '{
@@ -332,12 +332,12 @@ process_packages() {
                     printf "%s\0", dir
             }
         }
-    }' | xargs -0 -r stat -c "%n=%Y:%s:%i" 2>/dev/null >"$STAGE_STATS"
+    }' | xargs -0 -r stat -c "%n|%Y:%s:%i" 2>/dev/null >"$STAGE_STATS"
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
     printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" '
         BEGIN {
             while ((getline line < sf) > 0) {
-                idx = index(line, "=")
+                idx = index(line, "|")
                 if (idx > 0) {
                     p = substr(line, 1, idx - 1)
                     m = substr(line, idx + 1)
@@ -368,7 +368,7 @@ process_packages() {
                     if (d_meta != "") {
                         split(d_meta, arr, ":")
                         meta = arr[1] ":0:" arr[3]
-                    } else {
+                    else {
                         meta = "UNAVAILABLE"
                     }
                 }
