@@ -589,8 +589,7 @@ process_packages() {
     # ========================================================================
     # NORMALIZE PM OUTPUT
     # ========================================================================
-    # process_packages() receives pm -f output AFTER the caller has already
-    # stripped the "package:" prefix.
+    # process_packages() receives the output of pm list packages -f (-s||-3)
     #
     # Input:
     #   /path/to/base.apk=com.example.app
@@ -604,10 +603,14 @@ process_packages() {
     #
     #   /data/app/~~NFUaidAwYhRskD6PhHgvHA==/...
     #
-    # From this point forward, "|" is the package/path delimiter.
+    # From this point forward, "|" is the package|path delimiter.
     # ========================================================================
 
     debug_print "Normalizing package list to package|path format..."
+
+    # Strip "package:" prefix and carriage returns purely in RAM (Zero-Fork)
+    pkg_list="${pkg_list//package:/}"
+    pkg_list="${pkg_list//$CR/}"
 
     normalized_pkg_list=$(
         printf '%s\n' "$pkg_list" |
@@ -616,7 +619,8 @@ process_packages() {
                 line = $0
                 idx = 0
 
-                # Find the LAST "=" in the line.
+                # Since Android paths can contain "=" themselves,
+                # use the LAST "=" rather than the first one.
                 for (i = 1; i <= length(line); i++) {
                     if (substr(line, i, 1) == "=")
                         idx = i
@@ -950,7 +954,7 @@ $fingerprint
         esac
 
         # ====================================================================
-        # COMPILATION
+        # COMPILATION MODE DETECTION
         # ====================================================================
 
         if [ "$compile_mode" = "speed" ]; then
@@ -1176,19 +1180,10 @@ if [ $sys_exit -ne 0 ]; then
     fi
     SYSTEM_PKGS_COUNT=0
 else
-    # Strip "package:" prefix and carriage returns purely in RAM (Zero-Fork)
-    system_package_list="${system_package_list//package:/}"
-    system_package_list="${system_package_list//$CR/}"
-
-    # Validate that we actually got a package list before processing
-    if [ -z "$system_package_list" ]; then
-        printf '    [!] WARNING: System package list is empty. Skipping system stage.\n' >&2
-        SYSTEM_PKGS_COUNT=0
-    else
-        # Compile system packages with appropriate mode
-        process_packages "$system_package_list" "system"
-    fi
+    # Compile system packages with appropriate mode
+    process_packages "$system_package_list" "system"
 fi
+
 STEP2_DURATION=$((SECONDS - STEP2_START))
 printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
 
@@ -1214,17 +1209,9 @@ if [ $user_exit -ne 0 ]; then
     fi
     USER_PKGS_COUNT=0
 else
-    # Strip "package:" prefix and carriage returns purely in RAM (Zero-Fork)
-    user_package_list="${user_package_list//package:/}"
-    user_package_list="${user_package_list//$CR/}"
-
-    if [ -z "$user_package_list" ]; then
-        printf '    [!] WARNING: User package list is empty. Skipping user stage.\n' >&2
-        USER_PKGS_COUNT=0
-    else
-        process_packages "$user_package_list" "speed-profile"
-    fi
+    process_packages "$user_package_list" "speed-profile"
 fi
+
 STEP3_DURATION=$((SECONDS - STEP3_START))
 printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
 
