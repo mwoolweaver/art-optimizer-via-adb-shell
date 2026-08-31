@@ -644,7 +644,7 @@ process_packages() {
         head -n 20 "$STAGE_PATHS"
         debug_print '%s\n\n' '--- end DEBUG STAGE 1 PATHS ---'
     fi
-    
+
     # ========================================================================
     # STAGE 1b: STAT
     # ========================================================================
@@ -673,7 +673,7 @@ process_packages() {
         head -n 10 "$STAGE_STATS"
         debug_print '%s\n\n' '--- end DEBUG STAGE_STATS ---'
     fi
-    
+
     # ========================================================================
     # STAGE 2: Match packages to stat metadata
     # ========================================================================
@@ -778,7 +778,7 @@ process_packages() {
         head -n 10 "$STAGE_MERGED"
         debug_print '%s\n\n' '--- end DEBUG STAGE_MERGED ---'
     fi
-    
+
     # ========================================================================
     # STAGE 3: Process each package
     # ========================================================================
