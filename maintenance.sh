@@ -556,10 +556,12 @@ process_packages() {
     # ========================================================================
     # DEBUG NORMALIZED INPUT
     # ========================================================================
-    debug_print '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
-    debug_print '--- first 10 records ---\n'
-    debug_print '%s\n' "$pkg_list" | head -n 10
-    debug_print '%s\n\n' '--- end DEBUG NORMALIZED PACKAGE LIST ---'
+    if [ "$DEBUG" -eq 1 ]; then
+        debug_print '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
+        debug_print '--- first 10 records ---\n'
+        debug_print '%s\n' "$pkg_list" | head -n 10
+        debug_print '%s\n\n' '--- end DEBUG NORMALIZED PACKAGE LIST ---'
+    fi
 
     # ========================================================================
     # COUNT TOTAL PACKAGES
@@ -633,16 +635,16 @@ process_packages() {
     # ========================================================================
     # DEBUG STAGE 1 PATHS
     # ========================================================================
-    debug_print '\n===== DEBUG STAGE 1 PATHS =====\n'
-    debug_print 'PATH FILE: [%s]\n' "$STAGE_PATHS"
-    debug_print 'Paths: '
-    wc -l <"$STAGE_PATHS"
-    debug_print '%s\n' '--- first 20 paths ---'
     if [ "$DEBUG" -eq 1 ]; then
+        debug_print '\n===== DEBUG STAGE 1 PATHS =====\n'
+        debug_print 'PATH FILE: [%s]\n' "$STAGE_PATHS"
+        debug_print 'Paths: '
+        wc -l <"$STAGE_PATHS"
+        debug_print '%s\n' '--- first 20 paths ---'
         head -n 20 "$STAGE_PATHS"
+        debug_print '%s\n\n' '--- end DEBUG STAGE 1 PATHS ---'
     fi
-    debug_print '%s\n\n' '--- end DEBUG STAGE 1 PATHS ---'
-
+    
     # ========================================================================
     # STAGE 1b: STAT
     # ========================================================================
@@ -662,16 +664,16 @@ process_packages() {
     # ========================================================================
     # DEBUG STAGE_STATS
     # ========================================================================
-    debug_print '\n===== DEBUG STAGE_STATS =====\n'
-    debug_print 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
-    debug_print 'Lines: '
-    wc -l <"$STAGE_STATS"
-    debug_print '%s\n' '--- first 10 records ---'
     if [ "$DEBUG" -eq 1 ]; then
+        debug_print '\n===== DEBUG STAGE_STATS =====\n'
+        debug_print 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
+        debug_print 'Lines: '
+        wc -l <"$STAGE_STATS"
+        debug_print '%s\n' '--- first 10 records ---'
         head -n 10 "$STAGE_STATS"
+        debug_print '%s\n\n' '--- end DEBUG STAGE_STATS ---'
     fi
-    debug_print '%s\n\n' '--- end DEBUG STAGE_STATS ---'
-
+    
     # ========================================================================
     # STAGE 2: Match packages to stat metadata
     # ========================================================================
@@ -767,14 +769,16 @@ process_packages() {
     # ========================================================================
     # DEBUG STAGE_MERGED
     # ========================================================================
-    debug_print '\n===== DEBUG STAGE_MERGED =====\n'
-    debug_print 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
-    debug_print 'Lines: '
-    wc -l <"$STAGE_MERGED"
-    debug_print '%s\n' '--- first 10 records ---'
-    head -n 10 "$STAGE_MERGED"
-    debug_print '%s\n\n' '--- end DEBUG STAGE_MERGED ---'
-
+    if [ "$DEBUG" -eq 1 ]; then
+        debug_print '\n===== DEBUG STAGE_MERGED =====\n'
+        debug_print 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
+        debug_print 'Lines: '
+        wc -l <"$STAGE_MERGED"
+        debug_print '%s\n' '--- first 10 records ---'
+        head -n 10 "$STAGE_MERGED"
+        debug_print '%s\n\n' '--- end DEBUG STAGE_MERGED ---'
+    fi
+    
     # ========================================================================
     # STAGE 3: Process each package
     # ========================================================================
