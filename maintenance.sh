@@ -500,7 +500,7 @@ process_packages() {
 
     # Count total packages for progress reporting
     total_pkgs=0
-    set -f # Disable glob expansion (wildcards won't expand)
+    set -f
     OLD_IFS="$IFS"
     IFS='
 '
@@ -508,21 +508,22 @@ process_packages() {
         [ -n "$item" ] && total_pkgs=$((total_pkgs + 1))
     done
     IFS="$OLD_IFS"
-    set +f # Re-enable glob expansion
+    set +f
     debug_print "Total packages parsed for '$default_mode': $total_pkgs"
 
     # ========================================================================
     # STAGE 1: Extract file paths and get stat metadata
     # ========================================================================
-    # Parse native Android package list, extract file paths/dirs,
-    # deduplicate inline, and run stat.
     debug_print "Running STAGE 1: Extracting file paths and stat metadata..."
+
     printf '%s\n' "$pkg_list" | awk '{
         line = $0
         idx = 0
 
-        # Find the last "=" to separate the APK path from the package name.
-        # This is necessary because Android paths can themselves contain "=".
+        # Native pm format:
+        # /path/to/base.apk=com.example.app
+        #
+        # Use the LAST "=" because Android paths may themselves contain "=".
         for (i = length(line); i > 0; i--) {
             if (substr(line, i, 1) == "=") {
                 idx = i
@@ -531,20 +532,19 @@ process_packages() {
         }
 
         if (idx > 0) {
-            # Extract APK path from native pm format:
-            # /path/to/base.apk=com.example.app
+            # Native pm format is:
+            # path=package
             path = substr(line, 1, idx - 1)
 
-            # Security sanity check: skip malformed paths,
-            # null bytes, or excessive lengths.
+            # Security sanity check
             if (path ~ /\0/ || length(path) > 1024)
                 next
 
-            # Inline deduplication
+            # Deduplicate APK path
             if (!seen[path]++)
                 printf "%s\0", path
 
-            # Extract parent directory cleanly
+            # Extract and deduplicate parent directory
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
 
@@ -555,30 +555,28 @@ process_packages() {
                     printf "%s\0", dir
             }
         }
-    }' | xargs -0 -r stat -c "%n=%Y:%s:%i" 2>/dev/null >"$STAGE_STATS"
+    }' | xargs -0 -r stat -c "%n|%Y:%s:%i" 2>/dev/null >"$STAGE_STATS"
 
-    # Batches the unique paths into a single efficient 'stat' call.
-    # Stat Format Mapping:
-    #   %n = File path
-    #   %Y = Time of last data modification (epoch seconds)
-    #   %s = Total size in bytes
-    #   %i = Inode number
+    # STAGE_STATS format:
+    # /path/to/file.apk|mtime:size:inode
 
     # ========================================================================
-    # STAGE 2: Match packages to stat metadata (change detection setup)
+    # STAGE 2: Match packages to stat metadata
     # ========================================================================
-
-    # Read the stat data into memory and merge with package information
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
+
     printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" '
         BEGIN {
-            # Load stat cache into memory for fast lookups
+            # Load stat cache.
+            # Internal format:
+            # path|mtime:size:inode
             while ((getline line < sf) > 0) {
-                idx = index(line, "=")
+                idx = index(line, "|")
 
                 if (idx > 0) {
                     p = substr(line, 1, idx - 1)
                     m = substr(line, idx + 1)
+
                     stats[p] = m
                 }
             }
@@ -593,9 +591,9 @@ process_packages() {
                 next
 
             # Native pm format:
-            # /path/to/base.apk=com.example.app
+            # path=package
             #
-            # Find the LAST "=" because the APK path can contain "=".
+            # Again, use LAST "=" because "=" may occur in the path.
             idx = 0
 
             for (i = length(line); i > 0; i--) {
@@ -609,28 +607,34 @@ process_packages() {
                 path = substr(line, 1, idx - 1)
                 pkg = substr(line, idx + 1)
 
-                # Look up stat data for the APK itself
+                # Look up APK metadata
                 meta = stats[path]
 
                 if (meta == "") {
                     # APK metadata unavailable.
-                    # Fall back to parent directory metadata to detect
-                    # partial/split APK updates.
+                    # Check parent directory so directory changes can
+                    # still invalidate the package.
                     dir = path
-
                     sub("/[^/]+/?$", "", dir)
+
                     d_meta = stats[dir]
 
                     if (d_meta != "") {
                         split(d_meta, arr, ":")
+
+                        # Directory:
+                        # mtime:size:inode
+                        #
+                        # Size is deliberately zero because the directory
+                        # size itself is not useful for APK change detection.
                         meta = arr[1] ":0:" arr[3]
-                    } else {
-                        # Neither APK nor parent directory could be verified.
+                    else {
+                        # Neither APK nor parent directory was stat-able.
                         meta = "UNAVAILABLE"
                     }
                 }
 
-                # Output internal format:
+                # Internal format:
                 # package|path|metadata
                 print pkg "|" path "|" meta
             }
@@ -638,14 +642,13 @@ process_packages() {
     ' >"$STAGE_MERGED"
 
     # ========================================================================
-    # STAGE 3: Process each package (with change detection)
+    # STAGE 3: Process each package
     # ========================================================================
     debug_print "Running STAGE 3: Processing package compilation sequence..."
     current=0
 
     exec 3>>"$CURRENT_RUN_STATE"
 
-    # Read the merged data line by line
     while IFS='|' read -r pkg_name apk_path file_meta; do
         current=$((current + 1))
         [ -z "$pkg_name" ] && continue
@@ -677,7 +680,6 @@ process_packages() {
             echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
             echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
 
-            # No trustworthy fingerprint exists.
             # Do not consult or update persistent state.
             # Fall through to compilation.
             ;;
@@ -688,10 +690,7 @@ process_packages() {
             *"
 $fingerprint
 "*)
-                # Package is unchanged. Carry its fingerprint forward
-                # into the new state without recompiling.
                 echo "$fingerprint" >&3
-
                 echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
                 continue
                 ;;
@@ -700,37 +699,31 @@ $fingerprint
         esac
 
         # ====================================================================
-        # COMPILATION: Execute appropriate compilation mode
+        # COMPILATION
         # ====================================================================
         if [ "$compile_mode" = "speed" ]; then
-            # Full ahead-of-time (AOT) compilation for maximum performance
             if [ "$DRY_RUN" -eq 0 ]; then
                 printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' \
                     "$current" "$total_pkgs" "$pkg_name"
             fi
-
             actual_mode="speed"
 
         elif [ "$default_mode" = "system" ]; then
-            # Profile-guided optimization for Play Store System App updates
             if [ "$DRY_RUN" -eq 0 ]; then
                 printf '    [-] (%d/%d) Play Store update compile (-m speed-profile): %s\n' \
                     "$current" "$total_pkgs" "$pkg_name"
             fi
-
             actual_mode="speed-profile"
 
         else
-            # Profile-guided optimization for user-installed third-party apps
             if [ "$DRY_RUN" -eq 0 ]; then
                 printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' \
                     "$current" "$total_pkgs" "$pkg_name"
             fi
-
             actual_mode="speed-profile"
         fi
 
-        # Attempt compilation (or simulate if dry run)
+        # Attempt compilation
         if [ "$DRY_RUN" -eq 1 ]; then
             printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' \
                 "$current" "$total_pkgs" "$actual_mode" "$pkg_name"
@@ -747,8 +740,7 @@ $fingerprint
                 printf '    [+] (%d/%d) Compiled: %s\n' \
                     "$current" "$total_pkgs" "$pkg_name"
 
-                # Compilation succeeded. Only now commit this fingerprint
-                # to the current-run state.
+                # Only commit a fingerprint after successful compilation.
                 echo "$fingerprint" >&3
 
                 TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
@@ -757,12 +749,7 @@ $fingerprint
                 printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' \
                     "$current" "$total_pkgs" "$pkg_name" "$compile_exit"
 
-                # IMPORTANT:
-                # Do NOT write the fingerprint to CURRENT_RUN_STATE.
-                # This forces the package to be retried on the next run.
-
-                # Log the error, but explicitly catch if the logging itself
-                # fails (e.g., out of space).
+                # Do not write failed fingerprints to state.
                 if ! printf 'FAIL (%d): %s\n%s\n' \
                     "$compile_exit" "$pkg_name" "$err_output" \
                     >>"$ERROR_TMPFILE" 2>/dev/null; then
@@ -774,11 +761,11 @@ $fingerprint
 
     done <"$STAGE_MERGED"
 
-    # Close File Descriptor 3 cleanly after the loop finishes
+    # Close state file descriptor
     exec 3>&-
 
     # ========================================================================
-    # Expose stage count globally so the summary can calculate grand totals
+    # Expose stage count globally
     # ========================================================================
     if [ "$default_mode" = "system" ]; then
         SYSTEM_PKGS_COUNT="$total_pkgs"
