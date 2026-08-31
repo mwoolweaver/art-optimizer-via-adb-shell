@@ -297,6 +297,29 @@ process_packages() {
         debug_print "Package list for mode '$default_mode' is empty."
         return 0
     }
+    debug_print "Normalizing package list to package|path format..."
+    normalized_pkg_list=$(printf '%s\n' "$pkg_list" | awk '
+        {
+            line = $0
+            if (line == "")
+                next
+            idx = 0
+            for (i = length(line); i > 0; i--) {
+                if (substr(line, i, 1) == "=") {
+                    idx = i
+                    break
+                }
+            }
+            if (idx <= 0)
+                next
+            path = substr(line, 1, idx - 1)
+            pkg  = substr(line, idx + 1)
+            if (path == "" || pkg == "")
+                next
+            print pkg "|" path
+        }
+    ')
+    pkg_list="$normalized_pkg_list"
     total_pkgs=0
     set -f
     OLD_IFS="$IFS"
@@ -309,35 +332,36 @@ process_packages() {
     set +f
     debug_print "Total packages parsed for '$default_mode': $total_pkgs"
     debug_print "Running STAGE 1: Extracting file paths and stat metadata..."
-    printf '%s\n' "$pkg_list" | awk '{
-        line = $0
-        idx = index(line, ":")
-        if (idx <= 0)
-            next
-        path = substr(line, idx + 1)
-        if (path == "" || length(path) > 1024)
-            next
-        if (!seen[path]++) {
-            printf "%s\0", path
-        }
-        dir = path
-        sub("/[^/]+$", "", dir)
-        if (dir != "" && dir != path && length(dir) <= 1024) {
-            if (!seen[dir]++) {
-                printf "%s\0", dir
+    printf '%s\n' "$pkg_list" | awk -F'|' '
+        {
+            pkg  = $1
+            path = $2
+            if (pkg == "" || path == "")
+                next
+            if (length(path) > 1024)
+                next
+            if (!seen[path]++) {
+                printf "%s\0", path
+            }
+            dir = path
+            sub("/[^/]+$", "", dir)
+            if (dir != "" && dir != path && length(dir) <= 1024) {
+                if (!seen[dir]++) {
+                    printf "%s\0", dir
+                }
             }
         }
-    }' |
-        xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
+    ' |
+    xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
     printf '\n===== DEBUG STAGE_STATS =====\n'
     printf 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
-    printf 'Lines: %s\n' "$(wc -l <"$STAGE_STATS")"
+    printf 'Lines: %s\n' "$(wc -l < "$STAGE_STATS")"
     printf '%s\n' '--- first 10 records ---'
     head -10 "$STAGE_STATS"
     printf '%s\n' '--- end DEBUG STAGE_STATS ---'
     printf '\n'
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
-    printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" '
+    printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" -F'|' '
         BEGIN {
             while ((getline line < sf) > 0) {
                 split(line, a, "|")
@@ -348,14 +372,10 @@ process_packages() {
             close(sf)
         }
         {
-            line = $0
-            if (line == "")
+            pkg  = $1
+            path = $2
+            if (pkg == "" || path == "")
                 next
-            idx = index(line, ":")
-            if (idx <= 0)
-                next
-            pkg  = substr(line, 1, idx - 1)
-            path = substr(line, idx + 1)
             meta = stats[path]
             if (meta == "") {
                 dir = path
@@ -371,6 +391,13 @@ process_packages() {
             print pkg "|" path "|" meta
         }
     ' >"$STAGE_MERGED"
+    printf '\n===== DEBUG STAGE_MERGED =====\n'
+    printf 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
+    printf 'Lines: %s\n' "$(wc -l < "$STAGE_MERGED")"
+    printf '%s\n' '--- first 10 records ---'
+    head -10 "$STAGE_MERGED"
+    printf '%s\n' '--- end DEBUG STAGE_MERGED ---'
+    printf '\n'
     printf '\n===== DEBUG STAGE_MERGED =====\n'
     printf 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
     printf 'Lines: %s\n' "$(wc -l <"$STAGE_MERGED")"
