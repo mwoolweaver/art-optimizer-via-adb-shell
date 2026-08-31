@@ -297,7 +297,7 @@ process_packages() {
         debug_print "Package list for mode '$default_mode' is empty."
         return 0
     }
-    debug_print "Normalizing package list to package|path format..."
+    debug_print "Normalizing package list to internal | format..."
     normalized_pkg_list=$(printf '%s\n' "$pkg_list" | awk '
         {
             line = $0
@@ -310,15 +310,23 @@ process_packages() {
                     break
                 }
             }
-            if (idx <= 0)
-                next
-            path = substr(line, 1, idx - 1)
-            pkg  = substr(line, idx + 1)
-            if (path == "" || pkg == "")
-                next
-            print pkg "|" path
+            if (idx > 0) {
+                path = substr(line, 1, idx - 1)
+                pkg  = substr(line, idx + 1)
+                if (path == "" || pkg == "")
+                    next
+                if (path ~ /\0/ || pkg ~ /\0/)
+                    next
+                if (length(path) > 1024 || length(pkg) > 1024)
+                    next
+                print pkg "|" path
+            }
         }
     ')
+    if [ -z "$normalized_pkg_list" ]; then
+        debug_print "Package list for mode '$default_mode' produced no valid records."
+        return 0
+    fi
     pkg_list="$normalized_pkg_list"
     total_pkgs=0
     set -f
@@ -332,50 +340,72 @@ process_packages() {
     set +f
     debug_print "Total packages parsed for '$default_mode': $total_pkgs"
     debug_print "Running STAGE 1: Extracting file paths and stat metadata..."
-    printf '%s\n' "$pkg_list" | awk -F'|' '{
-        pkg  = $1
-        path = $2
-        if (pkg == "" || path == "")
-            next
-        if (!seen[path]++) {
-            print path
+    printf '%s\n' "$pkg_list" | awk -F'|' '
+        {
+            if (NF < 2)
+                next
+            pkg  = $1
+            path = $2
+            if (path == "")
+                next
+            if (path ~ /\0/ || length(path) > 1024)
+                next
+            if (!seen[path]++) {
+                printf "%s\0", path
+            }
+            dir = path
+            sub("/[^/]+/?$", "", dir)
+            if (dir != "" &&
+                dir !~ /\0/ &&
+                length(dir) <= 1024 &&
+                !seen[dir]++) {
+                printf "%s\0", dir
+            }
         }
-        dir = path
-        sub("/[^/]+$", "", dir)
-        if (dir != "" && dir != path && !seen[dir]++) {
-            print dir
-        }
-    }' >"${STAGE_STATS}.paths"
-    printf '\n===== DEBUG STAGE 1 PATHS =====\n'
-    printf 'PATH FILE: [%s]\n' "${STAGE_STATS}.paths"
-    printf 'Paths: %s\n' "$(wc -l <"${STAGE_STATS}.paths")"
-    printf '%s\n' '--- first 20 paths ---'
-    head -20 "${STAGE_STATS}.paths"
-    printf '%s\n' '--- end DEBUG STAGE 1 PATHS ---'
-    printf '\n'
-    while IFS= read -r test_path; do
-        printf 'STAT TEST: [%s]\n' "$test_path"
-        stat -c '%n|%Y|%s|%i' "$test_path"
-    done <"${STAGE_STATS}.paths" >"$STAGE_STATS" 2>&1
-    printf '\n===== DEBUG STAGE_STATS =====\n'
-    printf 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
-    printf 'Lines: %s\n' "$(wc -l <"$STAGE_STATS")"
-    printf '%s\n' '--- first 10 records ---'
+    ' >"${STAGE_STATS}.paths"
+    echo
+    echo "===== DEBUG STAGE 1 PATHS ====="
+    echo "PATH FILE: [${STAGE_STATS}.paths]"
+    echo "Paths: $(tr '\0' '\n' < "${STAGE_STATS}.paths" | wc -l)"
+    echo "--- first 20 paths ---"
+    tr '\0' '\n' < "${STAGE_STATS}.paths" | head -20
+    echo "--- end DEBUG STAGE 1 PATHS ---"
+    echo
+    tr '\0' '\n' < "${STAGE_STATS}.paths" |
+        while IFS= read -r stat_path; do
+            [ -z "$stat_path" ] && continue
+            stat -c "%n=%Y:%s:%i" "$stat_path"
+        done >"$STAGE_STATS"
+    echo
+    echo "===== DEBUG STAGE_STATS ====="
+    echo "STAGE_STATS: [$STAGE_STATS]"
+    echo "Lines: $(wc -l < "$STAGE_STATS")"
+    echo "--- first 10 records ---"
     head -10 "$STAGE_STATS"
-    printf '%s\n' '--- end DEBUG STAGE_STATS ---'
-    printf '\n'
+    echo "--- end DEBUG STAGE_STATS ---"
+    echo
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
-    printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" -F'|' '
+    printf '%s\n' "$pkg_list" | awk -F'|' -v sf="$STAGE_STATS" '
         BEGIN {
             while ((getline line < sf) > 0) {
-                split(line, a, "|")
-                if (a[1] != "") {
-                    stats[a[1]] = a[2] "|" a[3] "|" a[4]
+                idx = 0
+                for (i = length(line); i > 0; i--) {
+                    if (substr(line, i, 1) == "=") {
+                        idx = i
+                        break
+                    }
+                }
+                if (idx > 0) {
+                    p = substr(line, 1, idx - 1)
+                    m = substr(line, idx + 1)
+                    stats[p] = m
                 }
             }
             close(sf)
         }
         {
+            if (NF < 2)
+                next
             pkg  = $1
             path = $2
             if (pkg == "" || path == "")
@@ -383,11 +413,11 @@ process_packages() {
             meta = stats[path]
             if (meta == "") {
                 dir = path
-                sub("/[^/]+$", "", dir)
+                sub("/[^/]+/?$", "", dir)
                 d_meta = stats[dir]
                 if (d_meta != "") {
-                    split(d_meta, d, "|")
-                    meta = d[1] "|UNAVAILABLE|" d[3]
+                    split(d_meta, arr, ":")
+                    meta = arr[1] ":0:" arr[3]
                 } else {
                     meta = "UNAVAILABLE"
                 }
@@ -395,20 +425,14 @@ process_packages() {
             print pkg "|" path "|" meta
         }
     ' >"$STAGE_MERGED"
-    printf '\n===== DEBUG STAGE_MERGED =====\n'
-    printf 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
-    printf 'Lines: %s\n' "$(wc -l <"$STAGE_MERGED")"
-    printf '%s\n' '--- first 10 records ---'
+    echo
+    echo "===== DEBUG STAGE_MERGED ====="
+    echo "STAGE_MERGED: [$STAGE_MERGED]"
+    echo "Lines: $(wc -l < "$STAGE_MERGED")"
+    echo "--- first 10 records ---"
     head -10 "$STAGE_MERGED"
-    printf '%s\n' '--- end DEBUG STAGE_MERGED ---'
-    printf '\n'
-    printf '\n===== DEBUG STAGE_MERGED =====\n'
-    printf 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
-    printf 'Lines: %s\n' "$(wc -l <"$STAGE_MERGED")"
-    printf '%s\n' '--- first 10 records ---'
-    head -10 "$STAGE_MERGED"
-    printf '%s\n' '--- end DEBUG STAGE_MERGED ---'
-    printf '\n'
+    echo "--- end DEBUG STAGE_MERGED ---"
+    echo
     debug_print "Running STAGE 3: Processing package compilation sequence..."
     current=0
     exec 3>>"$CURRENT_RUN_STATE"
@@ -439,8 +463,8 @@ process_packages() {
             debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
             case "$PREV_STATE" in
             *"
-$fingerprint
-"*)
+            $fingerprint
+            "*)
                 echo "$fingerprint" >&3
                 echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
                 continue
