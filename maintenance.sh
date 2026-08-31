@@ -591,7 +591,7 @@ process_packages() {
 
     printf '\n===== DEBUG STAGE 1 PATHS =====\n'
     printf 'PATH FILE: [%s]\n' "${STAGE_STATS}.paths"
-    printf 'Paths: %s\n' "$(wc -l < "${STAGE_STATS}.paths")"
+    printf 'Paths: %s\n' "$(wc -l <"${STAGE_STATS}.paths")"
     printf '%s\n' '--- first 20 paths ---'
     head -20 "${STAGE_STATS}.paths"
     printf '%s\n' '--- end DEBUG STAGE 1 PATHS ---'
