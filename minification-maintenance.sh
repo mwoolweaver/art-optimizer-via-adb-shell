@@ -368,6 +368,7 @@ process_packages() {
                     if (d_meta != "") {
                         split(d_meta, arr, ":")
                         meta = arr[1] ":0:" arr[3]
+                    }
                     else {
                         meta = "UNAVAILABLE"
                     }
