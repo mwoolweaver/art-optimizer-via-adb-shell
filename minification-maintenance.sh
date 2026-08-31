@@ -298,6 +298,8 @@ process_packages() {
         return 0
     }
     debug_print "Normalizing package list to package|path format..."
+    pkg_list="${pkg_list//package:/}"
+    pkg_list="${pkg_list//$CR/}"
     normalized_pkg_list=$(
         printf '%s\n' "$pkg_list" |
             awk '
@@ -599,14 +601,7 @@ if [ $sys_exit -ne 0 ]; then
     fi
     SYSTEM_PKGS_COUNT=0
 else
-    system_package_list="${system_package_list//package:/}"
-    system_package_list="${system_package_list//$CR/}"
-    if [ -z "$system_package_list" ]; then
-        printf '    [!] WARNING: System package list is empty. Skipping system stage.\n' >&2
-        SYSTEM_PKGS_COUNT=0
-    else
-        process_packages "$system_package_list" "system"
-    fi
+    process_packages "$system_package_list" "system"
 fi
 STEP2_DURATION=$((SECONDS - STEP2_START))
 printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
@@ -626,14 +621,7 @@ if [ $user_exit -ne 0 ]; then
     fi
     USER_PKGS_COUNT=0
 else
-    user_package_list="${user_package_list//package:/}"
-    user_package_list="${user_package_list//$CR/}"
-    if [ -z "$user_package_list" ]; then
-        printf '    [!] WARNING: User package list is empty. Skipping user stage.\n' >&2
-        USER_PKGS_COUNT=0
-    else
-        process_packages "$user_package_list" "speed-profile"
-    fi
+    process_packages "$user_package_list" "speed-profile"
 fi
 STEP3_DURATION=$((SECONDS - STEP3_START))
 printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
