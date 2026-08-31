@@ -301,7 +301,7 @@ process_packages() {
     set -f # Disable glob expansion (wildcards won't expand)
     OLD_IFS="$IFS"
     IFS='
-' # Split on newlines only
+'
     for item in $pkg_list; do
         [ -n "$item" ] && total_pkgs=$((total_pkgs + 1))
     done
@@ -312,15 +312,24 @@ process_packages() {
     printf '%s\n' "$pkg_list" | awk '{
         line = $0
         idx = 0
-        idx = index(line, ":")
+        for (i = length(line); i > 0; i--) {
+            if (substr(line, i, 1) == "=") {
+                idx = i
+                break
+            }
+        }
         if (idx > 0) {
-            path = substr(line, idx + 1)
-            if (path ~ /\0/ || length(path) > 1024) next
-            if (!seen[path]++) printf "%s\0", path
+            path = substr(line, 1, idx - 1)
+            if (path ~ /\0/ || length(path) > 1024)
+                next
+            if (!seen[path]++)
+                printf "%s\0", path
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
-                if (dir ~ /\0/ || length(dir) > 1024) next
-                if (!seen[dir]++) printf "%s\0", dir
+                if (dir ~ /\0/ || length(dir) > 1024)
+                    next
+                if (!seen[dir]++)
+                    printf "%s\0", dir
             }
         }
     }' | xargs -0 -r stat -c "%n=%Y:%s:%i" 2>/dev/null >"$STAGE_STATS"
@@ -330,8 +339,8 @@ process_packages() {
             while ((getline line < sf) > 0) {
                 idx = index(line, "=")
                 if (idx > 0) {
-                    p = substr(line, 1, idx - 1)       # Path
-                    m = substr(line, idx + 1)           # Metadata (mtime:size:inode)
+                    p = substr(line, 1, idx - 1)
+                    m = substr(line, idx + 1)
                     stats[p] = m
                 }
             }
@@ -339,11 +348,18 @@ process_packages() {
         }
         {
             line = $0
-            if (line == "") next  # Skip empty lines
-            idx = index(line, ":")
+            if (line == "")
+                next
+            idx = 0
+            for (i = length(line); i > 0; i--) {
+                if (substr(line, i, 1) == "=") {
+                    idx = i
+                    break
+                }
+            }
             if (idx > 0) {
-                pkg = substr(line, 1, idx - 1)          # Package name
-                path = substr(line, idx + 1)            # File path
+                path = substr(line, 1, idx - 1)
+                pkg = substr(line, idx + 1)
                 meta = stats[path]
                 if (meta == "") {
                     dir = path
@@ -351,7 +367,7 @@ process_packages() {
                     d_meta = stats[dir]
                     if (d_meta != "") {
                         split(d_meta, arr, ":")
-                        meta = arr[1] ":0:" arr[3]  # Use dir mtime, zero size, inode
+                        meta = arr[1] ":0:" arr[3]
                     } else {
                         meta = "UNAVAILABLE"
                     }
@@ -361,11 +377,11 @@ process_packages() {
         }
     ' >"$STAGE_MERGED"
     debug_print "Running STAGE 3: Processing package compilation sequence..."
-    current=0 # Progress counter
+    current=0
     exec 3>>"$CURRENT_RUN_STATE"
     while IFS='|' read -r pkg_name apk_path file_meta; do
         current=$((current + 1))
-        [ -z "$pkg_name" ] && continue # Skip empty entries
+        [ -z "$pkg_name" ] && continue
         case "$pkg_name" in
         *[[:space:]]*)
             echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
@@ -375,9 +391,9 @@ process_packages() {
         compile_mode="$default_mode"
         if [ "$default_mode" = "system" ]; then
             if [ "$apk_path" != "${apk_path#/data/}" ]; then
-                compile_mode="speed-profile" # Use speed-profile for Play Store updates
+                compile_mode="speed-profile"
             else
-                compile_mode="speed" # Use full speed compilation for core system
+                compile_mode="speed"
             fi
         fi
         fingerprint="${pkg_name}:${apk_path}:${file_meta}"
@@ -390,8 +406,8 @@ process_packages() {
             debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
             case "$PREV_STATE" in
             *"
-            $fingerprint
-            "*)
+$fingerprint
+"*)
                 echo "$fingerprint" >&3
                 echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
                 continue
@@ -401,34 +417,42 @@ process_packages() {
         esac
         if [ "$compile_mode" = "speed" ]; then
             if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' "$current" "$total_pkgs" "$pkg_name"
+                printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' \
+                    "$current" "$total_pkgs" "$pkg_name"
             fi
             actual_mode="speed"
         elif [ "$default_mode" = "system" ]; then
             if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [-] (%d/%d) Play Store update compile (-m speed-profile): %s\n' "$current" "$total_pkgs" "$pkg_name"
+                printf '    [-] (%d/%d) Play Store update compile (-m speed-profile): %s\n' \
+                    "$current" "$total_pkgs" "$pkg_name"
             fi
             actual_mode="speed-profile"
         else
             if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' "$current" "$total_pkgs" "$pkg_name"
+                printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' \
+                    "$current" "$total_pkgs" "$pkg_name"
             fi
             actual_mode="speed-profile"
         fi
         if [ "$DRY_RUN" -eq 1 ]; then
-            printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' "$current" "$total_pkgs" "$actual_mode" "$pkg_name"
+            printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' \
+                "$current" "$total_pkgs" "$actual_mode" "$pkg_name"
             TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
         else
             debug_print "Executing command: cmd package compile -m $actual_mode -f $pkg_name"
             err_output=$(cmd package compile -m "$actual_mode" -f "$pkg_name" 2>&1 3>&-)
             compile_exit=$?
             if [ $compile_exit -eq 0 ]; then
-                printf '    [+] (%d/%d) Compiled: %s\n' "$current" "$total_pkgs" "$pkg_name"
+                printf '    [+] (%d/%d) Compiled: %s\n' \
+                    "$current" "$total_pkgs" "$pkg_name"
                 echo "$fingerprint" >&3
                 TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
             else
-                printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' "$current" "$total_pkgs" "$pkg_name" "$compile_exit"
-                if ! printf 'FAIL (%d): %s\n%s\n' "$compile_exit" "$pkg_name" "$err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
+                printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' \
+                    "$current" "$total_pkgs" "$pkg_name" "$compile_exit"
+                if ! printf 'FAIL (%d): %s\n%s\n' \
+                    "$compile_exit" "$pkg_name" "$err_output" \
+                    >>"$ERROR_TMPFILE" 2>/dev/null; then
                     printf '    [!] CRITICAL: Failed to write to error log! Storage may be full.\n' >&2
                 fi
             fi
