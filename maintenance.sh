@@ -565,7 +565,7 @@ process_packages() {
 
     debug_print "Total packages parsed for '$default_mode': $total_pkgs"
 
-        # ========================================================================
+    # ========================================================================
     # STAGE 1: Extract file paths and get stat metadata
     # ========================================================================
     debug_print "Running STAGE 1: Extracting file paths and stat metadata..."
@@ -597,14 +597,14 @@ process_packages() {
             }
         }
     ' |
-    xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
+        xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
 
     # ========================================================================
     # DEBUG STAGE 1
     # ========================================================================
     printf '\n===== DEBUG STAGE_STATS =====\n'
     printf 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
-    printf 'Lines: %s\n' "$(wc -l < "$STAGE_STATS")"
+    printf 'Lines: %s\n' "$(wc -l <"$STAGE_STATS")"
     printf '%s\n' '--- first 10 records ---'
     head -10 "$STAGE_STATS"
     printf '%s\n' '--- end DEBUG STAGE_STATS ---'
@@ -617,7 +617,7 @@ process_packages() {
     # Example:
     # /data/app/foo/base.apk|1787885640|110002233|976662
 
-        # ========================================================================
+    # ========================================================================
     # STAGE 2: Match packages to stat metadata
     # ========================================================================
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
@@ -674,7 +674,7 @@ process_packages() {
     # ========================================================================
     printf '\n===== DEBUG STAGE_MERGED =====\n'
     printf 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
-    printf 'Lines: %s\n' "$(wc -l < "$STAGE_MERGED")"
+    printf 'Lines: %s\n' "$(wc -l <"$STAGE_MERGED")"
     printf '%s\n' '--- first 10 records ---'
     head -10 "$STAGE_MERGED"
     printf '%s\n' '--- end DEBUG STAGE_MERGED ---'
