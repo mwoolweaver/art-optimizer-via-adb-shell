@@ -416,7 +416,14 @@ process_packages() {
             }
         }
     }' |
-        xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
+    xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
+    printf '\n===== DEBUG STAGE_STATS =====\n'
+    printf 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
+    printf 'Lines: %s\n' "$(wc -l < "$STAGE_STATS")"
+    printf '%s\n' '--- first 10 records ---'
+    head -10 "$STAGE_STATS"
+    printf '%s\n' '--- end DEBUG STAGE_STATS ---'
+    printf '\n'
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
     printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" '
         BEGIN {
@@ -452,6 +459,13 @@ process_packages() {
             print pkg "|" path "|" meta
         }
     ' >"$STAGE_MERGED"
+    printf '\n===== DEBUG STAGE_MERGED =====\n'
+    printf 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
+    printf 'Lines: %s\n' "$(wc -l < "$STAGE_MERGED")"
+    printf '%s\n' '--- first 10 records ---'
+    head -10 "$STAGE_MERGED"
+    printf '%s\n' '--- end DEBUG STAGE_MERGED ---'
+    printf '\n'
     debug_print "Running STAGE 3: Processing package compilation sequence..."
     current=0
     exec 3>>"$CURRENT_RUN_STATE"
