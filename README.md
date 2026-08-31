@@ -602,6 +602,7 @@ process_packages() {
     # ========================================================================
     # STAGE 1: Extract file paths and get stat metadata
     # ========================================================================
+
     debug_print "Running STAGE 1: Extracting file paths and stat metadata..."
 
     printf '%s\n' "$pkg_list" | awk '{
@@ -611,7 +612,7 @@ process_packages() {
         # Native pm format:
         # /path/to/base.apk=com.example.app
         #
-        # Use the LAST "=" because Android paths may themselves contain "=".
+        # Use the LAST "=" because "=" can occur in the path.
         for (i = length(line); i > 0; i--) {
             if (substr(line, i, 1) == "=") {
                 idx = i
@@ -620,19 +621,14 @@ process_packages() {
         }
 
         if (idx > 0) {
-            # Native pm format is:
-            # path=package
             path = substr(line, 1, idx - 1)
 
-            # Security sanity check
             if (path ~ /\0/ || length(path) > 1024)
                 next
 
-            # Deduplicate APK path
             if (!seen[path]++)
                 printf "%s\0", path
 
-            # Extract and deduplicate parent directory
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
 
@@ -645,18 +641,18 @@ process_packages() {
         }
     }' | xargs -0 -r stat -c "%n|%Y:%s:%i" 2>/dev/null >"$STAGE_STATS"
 
-    # STAGE_STATS format:
-    # /path/to/file.apk|mtime:size:inode
+    # STAGE_STATS:
+    # path|mtime:size:inode
 
     # ========================================================================
-    # STAGE 2: Match packages to stat metadata
+    # STAGE 2: Match packages to stat metadata (change detection setup)
     # ========================================================================
+
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
 
     printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" '
         BEGIN {
-            # Load stat cache.
-            # Internal format:
+            # STAGE_STATS format:
             # path|mtime:size:inode
             while ((getline line < sf) > 0) {
                 idx = index(line, "|")
@@ -664,7 +660,6 @@ process_packages() {
                 if (idx > 0) {
                     p = substr(line, 1, idx - 1)
                     m = substr(line, idx + 1)
-
                     stats[p] = m
                 }
             }
@@ -679,9 +674,9 @@ process_packages() {
                 next
 
             # Native pm format:
-            # path=package
+            # /path/to/base.apk=com.example.app
             #
-            # Again, use LAST "=" because "=" may occur in the path.
+            # Use the LAST "=" because "=" can occur in the path.
             idx = 0
 
             for (i = length(line); i > 0; i--) {
@@ -695,13 +690,12 @@ process_packages() {
                 path = substr(line, 1, idx - 1)
                 pkg = substr(line, idx + 1)
 
-                # Look up APK metadata
+                # Look up the APK itself.
                 meta = stats[path]
 
                 if (meta == "") {
                     # APK metadata unavailable.
-                    # Check parent directory so directory changes can
-                    # still invalidate the package.
+                    # Check the parent directory for partial/split APK changes.
                     dir = path
                     sub("/[^/]+/?$", "", dir)
 
@@ -710,14 +704,12 @@ process_packages() {
                     if (d_meta != "") {
                         split(d_meta, arr, ":")
 
-                        # Directory:
-                        # mtime:size:inode
-                        #
-                        # Size is deliberately zero because the directory
-                        # size itself is not useful for APK change detection.
+                        # Parent directory fingerprint:
+                        # mtime:0:inode
                         meta = arr[1] ":0:" arr[3]
+                    }
                     else {
-                        # Neither APK nor parent directory was stat-able.
+                        # Neither APK nor parent directory could be verified.
                         meta = "UNAVAILABLE"
                     }
                 }
