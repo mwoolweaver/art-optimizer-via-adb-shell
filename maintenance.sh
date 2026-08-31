@@ -629,9 +629,9 @@ process_packages() {
     echo
     echo "===== DEBUG STAGE 1 PATHS ====="
     echo "PATH FILE: [${STAGE_STATS}.paths]"
-    echo "Paths: $(tr '\0' '\n' < "${STAGE_STATS}.paths" | wc -l)"
+    echo "Paths: $(tr '\0' '\n' <"${STAGE_STATS}.paths" | wc -l)"
     echo "--- first 20 paths ---"
-    tr '\0' '\n' < "${STAGE_STATS}.paths" | head -20
+    tr '\0' '\n' <"${STAGE_STATS}.paths" | head -20
     echo "--- end DEBUG STAGE 1 PATHS ---"
     echo
 
@@ -651,7 +651,7 @@ process_packages() {
     # Errors are intentionally NOT redirected away while debugging.
     # ========================================================================
 
-    tr '\0' '\n' < "${STAGE_STATS}.paths" |
+    tr '\0' '\n' <"${STAGE_STATS}.paths" |
         while IFS= read -r stat_path; do
             [ -z "$stat_path" ] && continue
 
@@ -665,7 +665,7 @@ process_packages() {
     echo
     echo "===== DEBUG STAGE_STATS ====="
     echo "STAGE_STATS: [$STAGE_STATS]"
-    echo "Lines: $(wc -l < "$STAGE_STATS")"
+    echo "Lines: $(wc -l <"$STAGE_STATS")"
     echo "--- first 10 records ---"
     head -10 "$STAGE_STATS"
     echo "--- end DEBUG STAGE_STATS ---"
@@ -765,7 +765,7 @@ process_packages() {
     echo
     echo "===== DEBUG STAGE_MERGED ====="
     echo "STAGE_MERGED: [$STAGE_MERGED]"
-    echo "Lines: $(wc -l < "$STAGE_MERGED")"
+    echo "Lines: $(wc -l <"$STAGE_MERGED")"
     echo "--- first 10 records ---"
     head -10 "$STAGE_MERGED"
     echo "--- end DEBUG STAGE_MERGED ---"
