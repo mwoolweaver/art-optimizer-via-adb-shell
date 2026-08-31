@@ -556,10 +556,10 @@ process_packages() {
     # ========================================================================
     # DEBUG NORMALIZED INPUT
     # ========================================================================
-    printf '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
-    printf '--- first 10 records ---\n'
-    printf '%s\n' "$pkg_list" | head -n 10
-    printf '%s\n\n' '--- end DEBUG NORMALIZED PACKAGE LIST ---'
+    debug_print '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
+    debug_print '--- first 10 records ---\n'
+    debug_print '%s\n' "$pkg_list" | head -n 10
+    debug_print '%s\n\n' '--- end DEBUG NORMALIZED PACKAGE LIST ---'
 
     # ========================================================================
     # COUNT TOTAL PACKAGES
@@ -633,13 +633,15 @@ process_packages() {
     # ========================================================================
     # DEBUG STAGE 1 PATHS
     # ========================================================================
-    printf '\n===== DEBUG STAGE 1 PATHS =====\n'
-    printf 'PATH FILE: [%s]\n' "$STAGE_PATHS"
-    printf 'Paths: '
+    debug_print '\n===== DEBUG STAGE 1 PATHS =====\n'
+    debug_print 'PATH FILE: [%s]\n' "$STAGE_PATHS"
+    debug_print 'Paths: '
     wc -l <"$STAGE_PATHS"
-    printf '%s\n' '--- first 20 paths ---'
-    head -n 20 "$STAGE_PATHS"
-    printf '%s\n\n' '--- end DEBUG STAGE 1 PATHS ---'
+    debug_print '%s\n' '--- first 20 paths ---'
+    if [ "$DEBUG" -eq 1 ]; then
+        head -n 20 "$STAGE_PATHS"
+    fi
+    debug_print '%s\n\n' '--- end DEBUG STAGE 1 PATHS ---'
 
     # ========================================================================
     # STAGE 1b: STAT
@@ -660,13 +662,15 @@ process_packages() {
     # ========================================================================
     # DEBUG STAGE_STATS
     # ========================================================================
-    printf '\n===== DEBUG STAGE_STATS =====\n'
-    printf 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
-    printf 'Lines: '
+    debug_print '\n===== DEBUG STAGE_STATS =====\n'
+    debug_print 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
+    debug_print 'Lines: '
     wc -l <"$STAGE_STATS"
-    printf '%s\n' '--- first 10 records ---'
-    head -n 10 "$STAGE_STATS"
-    printf '%s\n\n' '--- end DEBUG STAGE_STATS ---'
+    debug_print '%s\n' '--- first 10 records ---'
+    if [ "$DEBUG" -eq 1 ]; then
+        head -n 10 "$STAGE_STATS"
+    fi
+    debug_print '%s\n\n' '--- end DEBUG STAGE_STATS ---'
 
     # ========================================================================
     # STAGE 2: Match packages to stat metadata
@@ -763,13 +767,13 @@ process_packages() {
     # ========================================================================
     # DEBUG STAGE_MERGED
     # ========================================================================
-    printf '\n===== DEBUG STAGE_MERGED =====\n'
-    printf 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
-    printf 'Lines: '
+    debug_print '\n===== DEBUG STAGE_MERGED =====\n'
+    debug_print 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
+    debug_print 'Lines: '
     wc -l <"$STAGE_MERGED"
-    printf '%s\n' '--- first 10 records ---'
+    debug_print '%s\n' '--- first 10 records ---'
     head -n 10 "$STAGE_MERGED"
-    printf '%s\n\n' '--- end DEBUG STAGE_MERGED ---'
+    debug_print '%s\n\n' '--- end DEBUG STAGE_MERGED ---'
 
     # ========================================================================
     # STAGE 3: Process each package
