@@ -410,10 +410,12 @@ process_packages() {
         debug_print "Package list became empty during normalization."
         return 0
     fi
-    debug_print '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
-    debug_print '--- first 10 records ---\n'
-    debug_print '%s\n' "$pkg_list" | head -n 10
-    debug_print '%s\n\n' '--- end DEBUG NORMALIZED PACKAGE LIST ---'
+    if [ "$DEBUG" -eq 1 ]; then
+        debug_print '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
+        debug_print '--- first 10 records ---\n'
+        debug_print '%s\n' "$pkg_list" | head -n 10
+        debug_print '%s\n\n' '--- end DEBUG NORMALIZED PACKAGE LIST ---'
+    fi
     total_pkgs=0
     OLD_IFS="$IFS"
     IFS='
@@ -449,28 +451,28 @@ process_packages() {
             }
         }
     ' >"$STAGE_PATHS"
-    debug_print '\n===== DEBUG STAGE 1 PATHS =====\n'
-    debug_print 'PATH FILE: [%s]\n' "$STAGE_PATHS"
-    debug_print 'Paths: '
-    wc -l <"$STAGE_PATHS"
-    debug_print '%s\n' '--- first 20 paths ---'
     if [ "$DEBUG" -eq 1 ]; then
+        debug_print '\n===== DEBUG STAGE 1 PATHS =====\n'
+        debug_print 'PATH FILE: [%s]\n' "$STAGE_PATHS"
+        debug_print 'Paths: '
+        wc -l <"$STAGE_PATHS"
+        debug_print '%s\n' '--- first 20 paths ---'
         head -n 20 "$STAGE_PATHS"
+        debug_print '%s\n\n' '--- end DEBUG STAGE 1 PATHS ---'
     fi
-    debug_print '%s\n\n' '--- end DEBUG STAGE 1 PATHS ---'
     debug_print "Running stat on unique paths..."
     tr '\n' '\0' <"$STAGE_PATHS" |
         xargs -0 -r stat -c '%n=%Y:%s:%i' \
             >"$STAGE_STATS"
-    debug_print '\n===== DEBUG STAGE_STATS =====\n'
-    debug_print 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
-    debug_print 'Lines: '
-    wc -l <"$STAGE_STATS"
-    debug_print '%s\n' '--- first 10 records ---'
     if [ "$DEBUG" -eq 1 ]; then
+        debug_print '\n===== DEBUG STAGE_STATS =====\n'
+        debug_print 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
+        debug_print 'Lines: '
+        wc -l <"$STAGE_STATS"
+        debug_print '%s\n' '--- first 10 records ---'
         head -n 10 "$STAGE_STATS"
+        debug_print '%s\n\n' '--- end DEBUG STAGE_STATS ---'
     fi
-    debug_print '%s\n\n' '--- end DEBUG STAGE_STATS ---'
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
     printf '%s\n' "$pkg_list" |
         awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" '
@@ -515,13 +517,15 @@ process_packages() {
             print pkg, path, meta
         }
     ' >"$STAGE_MERGED"
-    debug_print '\n===== DEBUG STAGE_MERGED =====\n'
-    debug_print 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
-    debug_print 'Lines: '
-    wc -l <"$STAGE_MERGED"
-    debug_print '%s\n' '--- first 10 records ---'
-    head -n 10 "$STAGE_MERGED"
-    debug_print '%s\n\n' '--- end DEBUG STAGE_MERGED ---'
+    if [ "$DEBUG" -eq 1 ]; then
+        debug_print '\n===== DEBUG STAGE_MERGED =====\n'
+        debug_print 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
+        debug_print 'Lines: '
+        wc -l <"$STAGE_MERGED"
+        debug_print '%s\n' '--- first 10 records ---'
+        head -n 10 "$STAGE_MERGED"
+        debug_print '%s\n\n' '--- end DEBUG STAGE_MERGED ---'
+    fi
     debug_print "Running STAGE 3: Processing package compilation sequence..."
     current=0
     exec 3>>"$CURRENT_RUN_STATE"
