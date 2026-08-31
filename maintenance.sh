@@ -514,65 +514,66 @@ process_packages() {
     # ========================================================================
     # STAGE 1: Extract file paths and get stat metadata
     # ========================================================================
-
     debug_print "Running STAGE 1: Extracting file paths and stat metadata..."
 
     printf '%s\n' "$pkg_list" | awk '{
         line = $0
-        idx = 0
 
-        # Native pm format:
-        # /path/to/base.apk=com.example.app
+        # Input format:
+        # package.name:/path/to/base.apk
         #
-        # Use the LAST "=" because "=" can occur in the path.
-        for (i = length(line); i > 0; i--) {
-            if (substr(line, i, 1) == "=") {
-                idx = i
-                break
-            }
+        # Package names do not contain ":" so the first ":" is safe here.
+        idx = index(line, ":")
+
+        if (idx <= 0)
+            next
+
+        path = substr(line, idx + 1)
+
+        # Sanity check
+        if (path == "" || length(path) > 1024)
+            next
+
+        # Add APK path
+        if (!seen[path]++) {
+            printf "%s\0", path
         }
 
-        if (idx > 0) {
-            path = substr(line, 1, idx - 1)
+        # Add parent directory
+        dir = path
+        sub("/[^/]+$", "", dir)
 
-            if (path ~ /\0/ || length(path) > 1024)
-                next
-
-            if (!seen[path]++)
-                printf "%s\0", path
-
-            if (match(path, /.*\//)) {
-                dir = substr(path, 1, RLENGTH - 1)
-
-                if (dir ~ /\0/ || length(dir) > 1024)
-                    next
-
-                if (!seen[dir]++)
-                    printf "%s\0", dir
+        if (dir != "" && dir != path && length(dir) <= 1024) {
+            if (!seen[dir]++) {
+                printf "%s\0", dir
             }
         }
-    }' | xargs -0 -r stat -c "%n|%Y:%s:%i" 2>/dev/null >"$STAGE_STATS"
+    }' |
+    xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
 
-    # STAGE_STATS:
-    # path|mtime:size:inode
+    # STAGE_STATS format:
+    #
+    # path|mtime|size|inode
+    #
+    # Example:
+    # /data/app/foo/base.apk|1787885640|110002233|976662
 
     # ========================================================================
-    # STAGE 2: Match packages to stat metadata (change detection setup)
+    # STAGE 2: Match packages to stat metadata
     # ========================================================================
-
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
 
     printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" '
         BEGIN {
-            # STAGE_STATS format:
-            # path|mtime:size:inode
+            # Load:
+            # path|mtime|size|inode
+            #
+            # into memory.
             while ((getline line < sf) > 0) {
-                idx = index(line, "|")
+                split(line, a, "|")
 
-                if (idx > 0) {
-                    p = substr(line, 1, idx - 1)
-                    m = substr(line, idx + 1)
-                    stats[p] = m
+                if (a[1] != "") {
+                    stats[a[1]] = a[2] "|" a[3] "|" a[4]
                 }
             }
 
@@ -585,51 +586,50 @@ process_packages() {
             if (line == "")
                 next
 
-            # Native pm format:
-            # /path/to/base.apk=com.example.app
+            # Input:
+            # package.name:/path/to/base.apk
+            idx = index(line, ":")
+
+            if (idx <= 0)
+                next
+
+            pkg  = substr(line, 1, idx - 1)
+            path = substr(line, idx + 1)
+
+            # ------------------------------------------------------------
+            # First try the APK itself.
+            # ------------------------------------------------------------
+            meta = stats[path]
+
+            if (meta == "") {
+                # --------------------------------------------------------
+                # APK itself was not stat-able.
+                #
+                # Try the parent directory so split/partial APK updates
+                # can still produce a useful fingerprint.
+                # --------------------------------------------------------
+                dir = path
+                sub("/[^/]+$", "", dir)
+
+                d_meta = stats[dir]
+
+                if (d_meta != "") {
+                    split(d_meta, d, "|")
+
+                    # Parent directory fingerprint:
+                    # mtime|UNAVAILABLE|inode
+                    meta = d[1] "|UNAVAILABLE|" d[3]
+                } else {
+                    # Neither APK nor parent directory could be verified.
+                    meta = "UNAVAILABLE"
+                }
+            }
+
+            # Internal representation is now ALWAYS:
             #
-            # Use the LAST "=" because "=" can occur in the path.
-            idx = 0
-
-            for (i = length(line); i > 0; i--) {
-                if (substr(line, i, 1) == "=") {
-                    idx = i
-                    break
-                }
-            }
-
-            if (idx > 0) {
-                path = substr(line, 1, idx - 1)
-                pkg = substr(line, idx + 1)
-
-                # Look up the APK itself.
-                meta = stats[path]
-
-                if (meta == "") {
-                    # APK metadata unavailable.
-                    # Check the parent directory for partial/split APK changes.
-                    dir = path
-                    sub("/[^/]+/?$", "", dir)
-
-                    d_meta = stats[dir]
-
-                    if (d_meta != "") {
-                        split(d_meta, arr, ":")
-
-                        # Parent directory fingerprint:
-                        # mtime:0:inode
-                        meta = arr[1] ":0:" arr[3]
-                    }
-                    else {
-                        # Neither APK nor parent directory could be verified.
-                        meta = "UNAVAILABLE"
-                    }
-                }
-
-                # Internal format:
-                # package|path|metadata
-                print pkg "|" path "|" meta
-            }
+            # package|path|metadata
+            #
+            print pkg "|" path "|" meta
         }
     ' >"$STAGE_MERGED"
 
