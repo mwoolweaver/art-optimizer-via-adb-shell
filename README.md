@@ -420,27 +420,31 @@ process_packages() {
     set +f
     debug_print "Total packages parsed for '$default_mode': $total_pkgs"
     debug_print "Running STAGE 1: Extracting file paths and stat metadata..."
-    printf '%s\n' "$pkg_list" | awk -F'|' '
-        {
-            pkg  = $1
-            path = $2
-            if (pkg == "" || path == "")
-                next
-            if (length(path) > 1024)
-                next
-            if (!seen[path]++) {
-                printf "%s\0", path
-            }
-            dir = path
-            sub("/[^/]+$", "", dir)
-            if (dir != "" && dir != path && length(dir) <= 1024) {
-                if (!seen[dir]++) {
-                    printf "%s\0", dir
-                }
-            }
+    printf '%s\n' "$pkg_list" | awk -F'|' '{
+        pkg  = $1
+        path = $2
+        if (pkg == "" || path == "")
+            next
+        if (!seen[path]++) {
+            print path
         }
-    ' |
-        xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
+        dir = path
+        sub("/[^/]+$", "", dir)
+        if (dir != "" && dir != path && !seen[dir]++) {
+            print dir
+        }
+    }' >"${STAGE_STATS}.paths"
+    printf '\n===== DEBUG STAGE 1 PATHS =====\n'
+    printf 'PATH FILE: [%s]\n' "${STAGE_STATS}.paths"
+    printf 'Paths: %s\n' "$(wc -l < "${STAGE_STATS}.paths")"
+    printf '%s\n' '--- first 20 paths ---'
+    head -20 "${STAGE_STATS}.paths"
+    printf '%s\n' '--- end DEBUG STAGE 1 PATHS ---'
+    printf '\n'
+    while IFS= read -r test_path; do
+        printf 'STAT TEST: [%s]\n' "$test_path"
+        stat -c '%n|%Y|%s|%i' "$test_path"
+    done <"${STAGE_STATS}.paths" >"$STAGE_STATS" 2>&1
     printf '\n===== DEBUG STAGE_STATS =====\n'
     printf 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
     printf 'Lines: %s\n' "$(wc -l <"$STAGE_STATS")"
