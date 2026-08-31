@@ -388,7 +388,7 @@ process_packages() {
     debug_print "Normalizing package list to package|path format..."
     normalized_pkg_list=$(
         printf '%s\n' "$pkg_list" |
-        awk '
+            awk '
             {
                 line = $0
                 idx = 0
@@ -428,7 +428,7 @@ process_packages() {
     debug_print "Running STAGE 1: Extracting file paths..."
     STAGE_PATHS="${STAGE_STATS}.paths"
     printf '%s\n' "$pkg_list" |
-    awk -F '|' '
+        awk -F '|' '
         {
             if (NF < 2)
                 next
@@ -459,7 +459,7 @@ process_packages() {
     debug_print "Running stat on unique paths..."
     tr '\n' '\0' <"$STAGE_PATHS" |
         xargs -0 -r stat -c '%n=%Y:%s:%i' \
-        >"$STAGE_STATS"
+            >"$STAGE_STATS"
     printf '\n===== DEBUG STAGE_STATS =====\n'
     printf 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
     printf 'Lines: '
@@ -469,7 +469,7 @@ process_packages() {
     printf '%s\n\n' '--- end DEBUG STAGE_STATS ---'
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
     printf '%s\n' "$pkg_list" |
-    awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" '
+        awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" '
         BEGIN {
             while ((getline line < sf) > 0) {
                 idx = 0
@@ -525,10 +525,10 @@ process_packages() {
         current=$((current + 1))
         [ -z "$pkg_name" ] && continue
         case "$pkg_name" in
-            *[[:space:]]*)
-                echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
-                continue
-                ;;
+        *[[:space:]]*)
+            echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
+            continue
+            ;;
         esac
         compile_mode="$default_mode"
         if [ "$default_mode" = "system" ]; then
@@ -540,22 +540,22 @@ process_packages() {
         fi
         fingerprint="${pkg_name}:${apk_path}:${file_meta}"
         case "$fingerprint" in
-            *UNAVAILABLE*)
-                echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
-                echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
-                ;;
-            *)
-                debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
-                case "$PREV_STATE" in
-                    *"
+        *UNAVAILABLE*)
+            echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
+            echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
+            ;;
+        *)
+            debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
+            case "$PREV_STATE" in
+            *"
 $fingerprint
 "*)
-                        echo "$fingerprint" >&3
-                        echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
-                        continue
-                        ;;
-                esac
+                echo "$fingerprint" >&3
+                echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
+                continue
                 ;;
+            esac
+            ;;
         esac
         if [ "$compile_mode" = "speed" ]; then
             if [ "$DRY_RUN" -eq 0 ]; then
