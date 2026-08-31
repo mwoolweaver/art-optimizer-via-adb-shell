@@ -498,8 +498,61 @@ process_packages() {
         return 0
     }
 
-    # Count total packages for progress reporting
+    # ========================================================================
+    # NORMALIZE PM OUTPUT
+    # ========================================================================
+    # Native pm list packages -f format:
+    #
+    #   /path/to/base.apk=com.example.app
+    #
+    # Convert once to:
+    #
+    #   com.example.app|/path/to/base.apk
+    #
+    # Everything after this point uses "|" as the delimiter.
+    debug_print "Normalizing package list to package|path format..."
+
+    normalized_pkg_list=$(printf '%s\n' "$pkg_list" | awk '
+        {
+            line = $0
+
+            if (line == "")
+                next
+
+            # Find the LAST "=".
+            #
+            # APK paths can contain "=" characters, so we must NOT
+            # split on the first "=".
+            idx = 0
+
+            for (i = length(line); i > 0; i--) {
+                if (substr(line, i, 1) == "=") {
+                    idx = i
+                    break
+                }
+            }
+
+            if (idx <= 0)
+                next
+
+            path = substr(line, 1, idx - 1)
+            pkg  = substr(line, idx + 1)
+
+            if (path == "" || pkg == "")
+                next
+
+            print pkg "|" path
+        }
+    ')
+
+    # Replace the original list with the normalized representation.
+    pkg_list="$normalized_pkg_list"
+
+    # ========================================================================
+    # COUNT PACKAGES
+    # ========================================================================
     total_pkgs=0
+
     set -f
     OLD_IFS="$IFS"
     IFS='
@@ -509,54 +562,49 @@ process_packages() {
     done
     IFS="$OLD_IFS"
     set +f
+
     debug_print "Total packages parsed for '$default_mode': $total_pkgs"
 
-    # ========================================================================
+        # ========================================================================
     # STAGE 1: Extract file paths and get stat metadata
     # ========================================================================
     debug_print "Running STAGE 1: Extracting file paths and stat metadata..."
 
-    printf '%s\n' "$pkg_list" | awk '{
-        line = $0
+    printf '%s\n' "$pkg_list" | awk -F'|' '
+        {
+            pkg  = $1
+            path = $2
 
-        # Input format:
-        # package.name:/path/to/base.apk
-        #
-        # Package names do not contain ":" so the first ":" is safe here.
-        idx = index(line, ":")
+            if (pkg == "" || path == "")
+                next
 
-        if (idx <= 0)
-            next
+            if (length(path) > 1024)
+                next
 
-        path = substr(line, idx + 1)
+            # APK path
+            if (!seen[path]++) {
+                printf "%s\0", path
+            }
 
-        # Sanity check
-        if (path == "" || length(path) > 1024)
-            next
+            # Parent directory
+            dir = path
+            sub("/[^/]+$", "", dir)
 
-        # Add APK path
-        if (!seen[path]++) {
-            printf "%s\0", path
-        }
-
-        # Add parent directory
-        dir = path
-        sub("/[^/]+$", "", dir)
-
-        if (dir != "" && dir != path && length(dir) <= 1024) {
-            if (!seen[dir]++) {
-                printf "%s\0", dir
+            if (dir != "" && dir != path && length(dir) <= 1024) {
+                if (!seen[dir]++) {
+                    printf "%s\0", dir
+                }
             }
         }
-    }' |
-        xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
+    ' |
+    xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
 
     # ========================================================================
-    # DEBUG: Inspect Stage 1 stat output
+    # DEBUG STAGE 1
     # ========================================================================
     printf '\n===== DEBUG STAGE_STATS =====\n'
     printf 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
-    printf 'Lines: %s\n' "$(wc -l <"$STAGE_STATS")"
+    printf 'Lines: %s\n' "$(wc -l < "$STAGE_STATS")"
     printf '%s\n' '--- first 10 records ---'
     head -10 "$STAGE_STATS"
     printf '%s\n' '--- end DEBUG STAGE_STATS ---'
@@ -569,15 +617,13 @@ process_packages() {
     # Example:
     # /data/app/foo/base.apk|1787885640|110002233|976662
 
-    # ========================================================================
+        # ========================================================================
     # STAGE 2: Match packages to stat metadata
     # ========================================================================
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
 
-    printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" '
+    printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" -F'|' '
         BEGIN {
-            # Load:
-            # path|mtime|size|inode
             while ((getline line < sf) > 0) {
                 split(line, a, "|")
 
@@ -590,27 +636,18 @@ process_packages() {
         }
 
         {
-            line = $0
+            pkg  = $1
+            path = $2
 
-            if (line == "")
+            if (pkg == "" || path == "")
                 next
 
-            # Input:
-            # package.name:/path/to/base.apk
-            idx = index(line, ":")
-
-            if (idx <= 0)
-                next
-
-            pkg  = substr(line, 1, idx - 1)
-            path = substr(line, idx + 1)
-
-            # Look up APK metadata
+            # First try the APK itself.
             meta = stats[path]
 
             if (meta == "") {
-                # APK itself unavailable.
-                # Try parent directory for split/partial APK changes.
+                # APK unavailable.
+                # Try parent directory.
                 dir = path
                 sub("/[^/]+$", "", dir)
 
@@ -623,7 +660,6 @@ process_packages() {
                     # mtime|UNAVAILABLE|inode
                     meta = d[1] "|UNAVAILABLE|" d[3]
                 } else {
-                    # Neither APK nor parent directory could be verified.
                     meta = "UNAVAILABLE"
                 }
             }
@@ -632,6 +668,17 @@ process_packages() {
             print pkg "|" path "|" meta
         }
     ' >"$STAGE_MERGED"
+
+    # ========================================================================
+    # DEBUG STAGE 2
+    # ========================================================================
+    printf '\n===== DEBUG STAGE_MERGED =====\n'
+    printf 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
+    printf 'Lines: %s\n' "$(wc -l < "$STAGE_MERGED")"
+    printf '%s\n' '--- first 10 records ---'
+    head -10 "$STAGE_MERGED"
+    printf '%s\n' '--- end DEBUG STAGE_MERGED ---'
+    printf '\n'
 
     # ========================================================================
     # DEBUG: Inspect Stage 2 merged output
