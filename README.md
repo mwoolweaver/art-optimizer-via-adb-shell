@@ -385,103 +385,97 @@ process_packages() {
         debug_print "Package list for mode '$default_mode' is empty."
         return 0
     }
-    debug_print "Normalizing package list to internal | format..."
-    normalized_pkg_list=$(printf '%s\n' "$pkg_list" | awk '
-        {
-            line = $0
-            if (line == "")
-                next
-            idx = 0
-            for (i = length(line); i > 0; i--) {
-                if (substr(line, i, 1) == "=") {
-                    idx = i
-                    break
+    debug_print "Normalizing package list to package|path format..."
+    normalized_pkg_list=$(
+        printf '%s\n' "$pkg_list" |
+        awk '
+            {
+                line = $0
+                idx = 0
+                for (i = 1; i <= length(line); i++) {
+                    if (substr(line, i, 1) == "=")
+                        idx = i
+                }
+                if (idx > 0) {
+                    path = substr(line, 1, idx - 1)
+                    pkg  = substr(line, idx + 1)
+                    if (path != "" && pkg != "")
+                        print pkg "|" path
                 }
             }
-            if (idx > 0) {
-                path = substr(line, 1, idx - 1)
-                pkg  = substr(line, idx + 1)
-                if (path == "" || pkg == "")
-                    next
-                if (path ~ /\0/ || pkg ~ /\0/)
-                    next
-                if (length(path) > 1024 || length(pkg) > 1024)
-                    next
-                print pkg "|" path
-            }
-        }
-    ')
-    if [ -z "$normalized_pkg_list" ]; then
-        debug_print "Package list for mode '$default_mode' produced no valid records."
+        '
+    )
+    pkg_list="$normalized_pkg_list"
+    if [ -z "$pkg_list" ]; then
+        debug_print "Package list became empty during normalization."
         return 0
     fi
-    pkg_list="$normalized_pkg_list"
+    printf '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
+    printf '--- first 10 records ---\n'
+    printf '%s\n' "$pkg_list" | head -n 10
+    printf '%s\n\n' '--- end DEBUG NORMALIZED PACKAGE LIST ---'
     total_pkgs=0
-    set -f
     OLD_IFS="$IFS"
     IFS='
 '
+    set -f
     for item in $pkg_list; do
         [ -n "$item" ] && total_pkgs=$((total_pkgs + 1))
     done
-    IFS="$OLD_IFS"
     set +f
+    IFS="$OLD_IFS"
     debug_print "Total packages parsed for '$default_mode': $total_pkgs"
-    debug_print "Running STAGE 1: Extracting file paths and stat metadata..."
-    printf '%s\n' "$pkg_list" | awk -F'|' '
+    debug_print "Running STAGE 1: Extracting file paths..."
+    STAGE_PATHS="${STAGE_STATS}.paths"
+    printf '%s\n' "$pkg_list" |
+    awk -F '|' '
         {
             if (NF < 2)
                 next
             pkg  = $1
             path = $2
-            if (path == "")
-                next
-            if (path ~ /\0/ || length(path) > 1024)
+            if (path == "" || length(path) > 1024)
                 next
             if (!seen[path]++) {
-                printf "%s\0", path
+                print path
             }
-            dir = path
-            sub("/[^/]+/?$", "", dir)
-            if (dir != "" &&
-                dir !~ /\0/ &&
-                length(dir) <= 1024 &&
-                !seen[dir]++) {
-                printf "%s\0", dir
+            if (match(path, /.*\//)) {
+                dir = substr(path, 1, RLENGTH - 1)
+                if (dir != "" &&
+                    length(dir) <= 1024 &&
+                    !seen[dir]++) {
+                    print dir
+                }
             }
         }
-    ' >"${STAGE_STATS}.paths"
-    echo
-    echo "===== DEBUG STAGE 1 PATHS ====="
-    echo "PATH FILE: [${STAGE_STATS}.paths]"
-    echo "Paths: $(tr '\0' '\n' <"${STAGE_STATS}.paths" | wc -l)"
-    echo "--- first 20 paths ---"
-    tr '\0' '\n' <"${STAGE_STATS}.paths" | head -20
-    echo "--- end DEBUG STAGE 1 PATHS ---"
-    echo
-    tr '\0' '\n' <"${STAGE_STATS}.paths" |
-        while IFS= read -r stat_path; do
-            [ -z "$stat_path" ] && continue
-            stat -c "%n=%Y:%s:%i" "$stat_path"
-        done >"$STAGE_STATS"
-    echo
-    echo "===== DEBUG STAGE_STATS ====="
-    echo "STAGE_STATS: [$STAGE_STATS]"
-    echo "Lines: $(wc -l <"$STAGE_STATS")"
-    echo "--- first 10 records ---"
-    head -10 "$STAGE_STATS"
-    echo "--- end DEBUG STAGE_STATS ---"
-    echo
+    ' >"$STAGE_PATHS"
+    printf '\n===== DEBUG STAGE 1 PATHS =====\n'
+    printf 'PATH FILE: [%s]\n' "$STAGE_PATHS"
+    printf 'Paths: '
+    wc -l <"$STAGE_PATHS"
+    printf '%s\n' '--- first 20 paths ---'
+    head -n 20 "$STAGE_PATHS"
+    printf '%s\n\n' '--- end DEBUG STAGE 1 PATHS ---'
+    debug_print "Running stat on unique paths..."
+    tr '\n' '\0' <"$STAGE_PATHS" |
+        xargs -0 -r stat -c '%n=%Y:%s:%i' \
+        >"$STAGE_STATS"
+    printf '\n===== DEBUG STAGE_STATS =====\n'
+    printf 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
+    printf 'Lines: '
+    wc -l <"$STAGE_STATS"
+    printf '%s\n' '--- first 10 records ---'
+    head -n 10 "$STAGE_STATS"
+    printf '%s\n\n' '--- end DEBUG STAGE_STATS ---'
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
-    printf '%s\n' "$pkg_list" | awk -F'|' -v sf="$STAGE_STATS" '
+    printf '%s\n' "$pkg_list" |
+    awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" '
         BEGIN {
             while ((getline line < sf) > 0) {
                 idx = 0
-                for (i = length(line); i > 0; i--) {
-                    if (substr(line, i, 1) == "=") {
+                for (i = 1; i <= length(line); i++) {
+                    if (substr(line, i, 1) == "=")
                         idx = i
-                        break
-                    }
                 }
                 if (idx > 0) {
                     p = substr(line, 1, idx - 1)
@@ -505,22 +499,25 @@ process_packages() {
                 d_meta = stats[dir]
                 if (d_meta != "") {
                     split(d_meta, arr, ":")
-                    meta = arr[1] ":0:" arr[3]
+                    if (length(arr) >= 3) {
+                        meta = arr[1] ":0:" arr[3]
+                    } else {
+                        meta = "UNAVAILABLE"
+                    }
                 } else {
                     meta = "UNAVAILABLE"
                 }
             }
-            print pkg "|" path "|" meta
+            print pkg, path, meta
         }
     ' >"$STAGE_MERGED"
-    echo
-    echo "===== DEBUG STAGE_MERGED ====="
-    echo "STAGE_MERGED: [$STAGE_MERGED]"
-    echo "Lines: $(wc -l <"$STAGE_MERGED")"
-    echo "--- first 10 records ---"
-    head -10 "$STAGE_MERGED"
-    echo "--- end DEBUG STAGE_MERGED ---"
-    echo
+    printf '\n===== DEBUG STAGE_MERGED =====\n'
+    printf 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
+    printf 'Lines: '
+    wc -l <"$STAGE_MERGED"
+    printf '%s\n' '--- first 10 records ---'
+    head -n 10 "$STAGE_MERGED"
+    printf '%s\n\n' '--- end DEBUG STAGE_MERGED ---'
     debug_print "Running STAGE 3: Processing package compilation sequence..."
     current=0
     exec 3>>"$CURRENT_RUN_STATE"
@@ -528,10 +525,10 @@ process_packages() {
         current=$((current + 1))
         [ -z "$pkg_name" ] && continue
         case "$pkg_name" in
-        *[[:space:]]*)
-            echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
-            continue
-            ;;
+            *[[:space:]]*)
+                echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
+                continue
+                ;;
         esac
         compile_mode="$default_mode"
         if [ "$default_mode" = "system" ]; then
@@ -543,22 +540,22 @@ process_packages() {
         fi
         fingerprint="${pkg_name}:${apk_path}:${file_meta}"
         case "$fingerprint" in
-        *UNAVAILABLE*)
-            echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
-            echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
-            ;;
-        *)
-            debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
-            case "$PREV_STATE" in
-            *"
-            $fingerprint
-            "*)
-                echo "$fingerprint" >&3
-                echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
-                continue
+            *UNAVAILABLE*)
+                echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
+                echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
                 ;;
-            esac
-            ;;
+            *)
+                debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
+                case "$PREV_STATE" in
+                    *"
+$fingerprint
+"*)
+                        echo "$fingerprint" >&3
+                        echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
+                        continue
+                        ;;
+                esac
+                ;;
         esac
         if [ "$compile_mode" = "speed" ]; then
             if [ "$DRY_RUN" -eq 0 ]; then
@@ -587,7 +584,7 @@ process_packages() {
             debug_print "Executing command: cmd package compile -m $actual_mode -f $pkg_name"
             err_output=$(cmd package compile -m "$actual_mode" -f "$pkg_name" 2>&1 3>&-)
             compile_exit=$?
-            if [ $compile_exit -eq 0 ]; then
+            if [ "$compile_exit" -eq 0 ]; then
                 printf '    [+] (%d/%d) Compiled: %s\n' \
                     "$current" "$total_pkgs" "$pkg_name"
                 echo "$fingerprint" >&3
