@@ -639,6 +639,17 @@ process_packages() {
     }' |
         xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
 
+    # ========================================================================
+    # DEBUG: Inspect Stage 1 stat output
+    # ========================================================================
+    printf '\n===== DEBUG STAGE_STATS =====\n'
+    printf 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
+    printf 'Lines: %s\n' "$(wc -l <"$STAGE_STATS")"
+    printf '%s\n' '--- first 10 records ---'
+    head -10 "$STAGE_STATS"
+    printf '%s\n' '--- end DEBUG STAGE_STATS ---'
+    printf '\n'
+
     # STAGE_STATS format:
     #
     # path|mtime|size|inode
@@ -655,8 +666,6 @@ process_packages() {
         BEGIN {
             # Load:
             # path|mtime|size|inode
-            #
-            # into memory.
             while ((getline line < sf) > 0) {
                 split(line, a, "|")
 
@@ -684,18 +693,12 @@ process_packages() {
             pkg  = substr(line, 1, idx - 1)
             path = substr(line, idx + 1)
 
-            # ------------------------------------------------------------
-            # First try the APK itself.
-            # ------------------------------------------------------------
+            # Look up APK metadata
             meta = stats[path]
 
             if (meta == "") {
-                # --------------------------------------------------------
-                # APK itself was not stat-able.
-                #
-                # Try the parent directory so split/partial APK updates
-                # can still produce a useful fingerprint.
-                # --------------------------------------------------------
+                # APK itself unavailable.
+                # Try parent directory for split/partial APK changes.
                 dir = path
                 sub("/[^/]+$", "", dir)
 
@@ -704,7 +707,7 @@ process_packages() {
                 if (d_meta != "") {
                     split(d_meta, d, "|")
 
-                    # Parent directory fingerprint:
+                    # Parent directory:
                     # mtime|UNAVAILABLE|inode
                     meta = d[1] "|UNAVAILABLE|" d[3]
                 } else {
@@ -713,13 +716,21 @@ process_packages() {
                 }
             }
 
-            # Internal representation is now ALWAYS:
-            #
             # package|path|metadata
-            #
             print pkg "|" path "|" meta
         }
     ' >"$STAGE_MERGED"
+
+    # ========================================================================
+    # DEBUG: Inspect Stage 2 merged output
+    # ========================================================================
+    printf '\n===== DEBUG STAGE_MERGED =====\n'
+    printf 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
+    printf 'Lines: %s\n' "$(wc -l <"$STAGE_MERGED")"
+    printf '%s\n' '--- first 10 records ---'
+    head -10 "$STAGE_MERGED"
+    printf '%s\n' '--- end DEBUG STAGE_MERGED ---'
+    printf '\n'
 
     # ========================================================================
     # STAGE 3: Process each package
