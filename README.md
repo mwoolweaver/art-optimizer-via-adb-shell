@@ -399,37 +399,31 @@ process_packages() {
     debug_print "Running STAGE 1: Extracting file paths and stat metadata..."
     printf '%s\n' "$pkg_list" | awk '{
         line = $0
-        idx = 0
-        for (i = length(line); i > 0; i--) {
-            if (substr(line, i, 1) == "=") {
-                idx = i
-                break
+        idx = index(line, ":")
+        if (idx <= 0)
+            next
+        path = substr(line, idx + 1)
+        if (path == "" || length(path) > 1024)
+            next
+        if (!seen[path]++) {
+            printf "%s\0", path
+        }
+        dir = path
+        sub("/[^/]+$", "", dir)
+        if (dir != "" && dir != path && length(dir) <= 1024) {
+            if (!seen[dir]++) {
+                printf "%s\0", dir
             }
         }
-        if (idx > 0) {
-            path = substr(line, 1, idx - 1)
-            if (path ~ /\0/ || length(path) > 1024)
-                next
-            if (!seen[path]++)
-                printf "%s\0", path
-            if (match(path, /.*\//)) {
-                dir = substr(path, 1, RLENGTH - 1)
-                if (dir ~ /\0/ || length(dir) > 1024)
-                    next
-                if (!seen[dir]++)
-                    printf "%s\0", dir
-            }
-        }
-    }' | xargs -0 -r stat -c "%n|%Y:%s:%i" 2>/dev/null >"$STAGE_STATS"
+    }' |
+    xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
     printf '%s\n' "$pkg_list" | awk -v sf="$STAGE_STATS" '
         BEGIN {
             while ((getline line < sf) > 0) {
-                idx = index(line, "|")
-                if (idx > 0) {
-                    p = substr(line, 1, idx - 1)
-                    m = substr(line, idx + 1)
-                    stats[p] = m
+                split(line, a, "|")
+                if (a[1] != "") {
+                    stats[a[1]] = a[2] "|" a[3] "|" a[4]
                 }
             }
             close(sf)
@@ -438,31 +432,24 @@ process_packages() {
             line = $0
             if (line == "")
                 next
-            idx = 0
-            for (i = length(line); i > 0; i--) {
-                if (substr(line, i, 1) == "=") {
-                    idx = i
-                    break
+            idx = index(line, ":")
+            if (idx <= 0)
+                next
+            pkg  = substr(line, 1, idx - 1)
+            path = substr(line, idx + 1)
+            meta = stats[path]
+            if (meta == "") {
+                dir = path
+                sub("/[^/]+$", "", dir)
+                d_meta = stats[dir]
+                if (d_meta != "") {
+                    split(d_meta, d, "|")
+                    meta = d[1] "|UNAVAILABLE|" d[3]
+                } else {
+                    meta = "UNAVAILABLE"
                 }
             }
-            if (idx > 0) {
-                path = substr(line, 1, idx - 1)
-                pkg = substr(line, idx + 1)
-                meta = stats[path]
-                if (meta == "") {
-                    dir = path
-                    sub("/[^/]+/?$", "", dir)
-                    d_meta = stats[dir]
-                    if (d_meta != "") {
-                        split(d_meta, arr, ":")
-                        meta = arr[1] ":0:" arr[3]
-                    }
-                    else {
-                        meta = "UNAVAILABLE"
-                    }
-                }
-                print pkg "|" path "|" meta
-            }
+            print pkg "|" path "|" meta
         }
     ' >"$STAGE_MERGED"
     debug_print "Running STAGE 3: Processing package compilation sequence..."
