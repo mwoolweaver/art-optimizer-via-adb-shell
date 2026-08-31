@@ -549,7 +549,7 @@ process_packages() {
             }
         }
     }' |
-    xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
+        xargs -0 -r stat -c '%n|%Y|%s|%i' 2>/dev/null >"$STAGE_STATS"
 
     # STAGE_STATS format:
     #
