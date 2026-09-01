@@ -489,9 +489,10 @@ process_packages() {
     fi
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
     printf '%s\n' "$pkg_list" |
-        awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" '
+        awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DEBUG" '
         BEGIN {
             while ((getline line < sf) > 0) {
+                stat_records++
                 idx = 0
                 for (i = 1; i <= length(line); i++) {
                     if (substr(line, i, 1) == "=")
@@ -500,35 +501,117 @@ process_packages() {
                 if (idx > 0) {
                     p = substr(line, 1, idx - 1)
                     m = substr(line, idx + 1)
-                    stats[p] = m
+                    n = split(m, stat_meta, ":")
+                    if (p != "" &&
+                        n == 3 &&
+                        stat_meta[1] ~ /^-?[0-9]+$/ &&
+                        stat_meta[2] ~ /^[0-9]+$/ &&
+                        stat_meta[3] ~ /^[0-9]+$/) {
+                        if (p in stats)
+                            duplicate_stat_paths++
+                        stats[p] = m
+                        valid_stat_records++
+                    } else {
+                        invalid_stat_records++
+                    }
+                } else {
+                    invalid_stat_records++
                 }
             }
             close(sf)
         }
         {
-            if (NF < 2)
+            input_records++
+            if (NF < 2) {
+                invalid_package_records++
                 next
+            }
             pkg  = $1
             path = $2
-            if (pkg == "" || path == "")
+            if (pkg == "" || path == "") {
+                invalid_package_records++
                 next
+            }
+            accepted_packages++
             meta = stats[path]
-            if (meta == "") {
+            if (meta != "") {
+                direct_matches++
+            } else {
                 dir = path
                 sub("/[^/]+/?$", "", dir)
                 d_meta = stats[dir]
                 if (d_meta != "") {
-                    split(d_meta, arr, ":")
-                    if (length(arr) >= 3) {
-                        meta = arr[1] ":0:" arr[3]
+                    n = split(d_meta, dir_meta, ":")
+                    if (n == 3 &&
+                        dir_meta[1] ~ /^-?[0-9]+$/ &&
+                        dir_meta[2] ~ /^[0-9]+$/ &&
+                        dir_meta[3] ~ /^[0-9]+$/) {
+                        meta = dir_meta[1] ":0:" dir_meta[3]
+                        directory_fallbacks++
                     } else {
                         meta = "UNAVAILABLE"
+                        unavailable++
                     }
                 } else {
                     meta = "UNAVAILABLE"
+                    unavailable++
                 }
             }
             print pkg, path, meta
+            merged_records++
+        }
+        END {
+            if (debug == 1) {
+                print "" > "/dev/stderr"
+                print "===== DEBUG STAGE 2: MATCH ACCOUNTING =====" > "/dev/stderr"
+                printf "Stat records read:          %d\n", stat_records > "/dev/stderr"
+                printf "Valid stat records:         %d\n", valid_stat_records > "/dev/stderr"
+                printf "Invalid stat records:       %d\n", invalid_stat_records > "/dev/stderr"
+                printf "Duplicate stat paths:       %d\n", duplicate_stat_paths > "/dev/stderr"
+                printf "Package records received:   %d\n", input_records > "/dev/stderr"
+                printf "Package records accepted:   %d\n", accepted_packages > "/dev/stderr"
+                printf "Invalid package records:    %d\n", invalid_package_records > "/dev/stderr"
+                printf "Direct APK matches:         %d\n", direct_matches > "/dev/stderr"
+                printf "Parent directory fallbacks: %d\n", directory_fallbacks > "/dev/stderr"
+                printf "Unavailable metadata:       %d\n", unavailable > "/dev/stderr"
+                printf "Merged records produced:    %d\n", merged_records > "/dev/stderr"
+                print "" > "/dev/stderr"
+                if (stat_records == valid_stat_records + invalid_stat_records) {
+                    print "[+] Stat accounting verified." > "/dev/stderr"
+                } else {
+                    printf "[!] WARNING: Stat accounting mismatch: %d != %d + %d\n",
+                        stat_records,
+                        valid_stat_records,
+                        invalid_stat_records > "/dev/stderr"
+                }
+                if (input_records == accepted_packages + invalid_package_records) {
+                    print "[+] Package-input accounting verified." > "/dev/stderr"
+                } else {
+                    printf "[!] WARNING: Package-input accounting mismatch: %d != %d + %d\n",
+                        input_records,
+                        accepted_packages,
+                        invalid_package_records > "/dev/stderr"
+                }
+                resolved_packages = direct_matches +
+                                    directory_fallbacks +
+                                    unavailable
+                if (accepted_packages == resolved_packages) {
+                    print "[+] Metadata-resolution accounting verified." > "/dev/stderr"
+                } else {
+                    printf "[!] WARNING: Metadata-resolution mismatch: %d accepted != %d resolved.\n",
+                        accepted_packages,
+                        resolved_packages > "/dev/stderr"
+                }
+                if (accepted_packages == merged_records) {
+                    print "[+] Merge accounting verified." > "/dev/stderr"
+                } else {
+                    printf "[!] WARNING: Merge accounting mismatch: %d accepted != %d merged.\n",
+                        accepted_packages,
+                        merged_records > "/dev/stderr"
+                }
+                print "===== END DEBUG STAGE 2 ACCOUNTING =====" > "/dev/stderr"
+                print "" > "/dev/stderr"
+            }
         }
     ' >"$STAGE_MERGED"
     if [ "$DEBUG" -eq 1 ]; then
