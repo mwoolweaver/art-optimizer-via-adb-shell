@@ -155,7 +155,7 @@ fi
 # TEMP FILE & STATE MANAGEMENT VARIABLES
 # ============================================================================
 # Most Android systems have /data/local/tmp available; ensures temp files go to writable location
-export TMPDIR=/data/local/tmp
+export TMPDIR="${TMPDIR:-/data/local/tmp}"
 debug_print "Set TMPDIR to $TMPDIR"
 
 # Validate that TMPDIR exists and is actually writable
