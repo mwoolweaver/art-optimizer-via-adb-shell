@@ -825,6 +825,9 @@ process_packages() {
         compile_mode="$default_mode"
 
         if [ "$default_mode" = "system" ]; then
+            # Distinguish between core system packages (/system/*) and third-party updates (/data/app/*)
+            # Core system packages use full AOT compilation (-m speed) for maximum performance.
+            # Third-party updates use speed-profile compilation to balance speed and storage.
 
             # System packages installed under /data/ are third-party updates.
             if [ "$apk_path" != "${apk_path#/data/}" ]; then
@@ -837,6 +840,12 @@ process_packages() {
         # ====================================================================
         # Build fingerprint
         # ====================================================================
+
+        # Fingerprint format: package:path:metadata
+        # Uses '|' as delimiter (consistent with normalized package|path format above).
+        # This unique combination identifies if a package has changed since last optimization.
+        # Unchanged fingerprints skip recompilation; changed ones trigger fresh compilation.
+
 
         fingerprint="${pkg_name}|${apk_path}|${file_meta}"
 
@@ -1002,6 +1011,9 @@ set -- $(df -k /data 2>/dev/null)
 set +f
 
 FREE_KB=""
+# Parse df output: df outputs columns [filesystem, 1k-blocks, used, available, use%, mount]
+# We need the "available" column (index 3), so we track previous values as we iterate.
+# When we find /data*, prev2 contains the available space from two positions back.
 for i in "$@"; do
     case "$i" in
     /data*)
