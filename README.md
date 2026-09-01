@@ -182,7 +182,7 @@ fi
 # ============================================================================
 check_deps() {
     missing=""
-    for req in awk cmd cmp cp date df dirname dumpsys getprop mkdir mktemp mv pm printf rm rmdir service sleep stat xargs; do
+    for req in awk cmd cmp cp date df dirname dumpsys getprop head mkdir mktemp mv pm printf rm rmdir service sleep stat tr wc xargs; do
         if ! command -v "$req" >/dev/null 2>&1; then
             missing="${missing}$req "
             debug_print "Missing required dependency: $req"
@@ -236,7 +236,7 @@ fi
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "[+] Starting ART Smart Maintenance (DRY RUN) on Android $android_version (SDK $sdk_version)..."
 else
-    echo "[+] Starting ART Smart Maintenance (DRY RUN) on Android $android_version (SDK $sdk_version)..."
+    echo "[+] Starting ART Smart Maintenance on Android $android_version (SDK $sdk_version)..."
 fi
 
 # ============================================================================
@@ -770,10 +770,9 @@ process_packages() {
         echo "[!] WARNING: stat produced no output. Run with --debug for more info.\n"
     fi
 
-    STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
-    STAGE_STAT_COUNT=$(wc -l <"$STAGE_STATS")
-
     if [ "$DEBUG" -eq 1 ]; then
+        STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
+        STAGE_STAT_COUNT=$(wc -l <"$STAGE_STATS")
         debug_print "\n===== DEBUG STAGE 1b: STAT ACCOUNTING =====\n"
         debug_print "Unique paths submitted to stat: $STAGE_PATH_COUNT"
         debug_print "Stat records produced:          $STAGE_STAT_COUNT"
@@ -1023,6 +1022,7 @@ process_packages() {
     stage3_compiled=0
     stage3_failed=0
     stage3_unverified=0
+    stage3_invalid=0
 
     exec 3>>"$CURRENT_RUN_STATE"
 
@@ -1040,6 +1040,7 @@ process_packages() {
         case "$pkg_name" in
         *[[:space:]]*)
             echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
+            stage3_invalid=$((stage3_invalid + 1))
             continue
             ;;
         esac
@@ -1195,6 +1196,7 @@ $fingerprint
         debug_print "Compiled successfully: $stage3_compiled"
         debug_print "Compilation failures:  $stage3_failed"
         debug_print "Metadata unavailable:  $stage3_unverified"
+        debug_print "Metadata invalid:      $stage3_invalid"
         debug_print "Accounting check:      $stage3_skipped + $stage3_compiled + $stage3_failed = $((stage3_skipped + stage3_compiled + stage3_failed))"
         debug_print "--- end DEBUG STAGE 3 ---"
     fi
