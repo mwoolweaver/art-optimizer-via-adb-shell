@@ -744,12 +744,12 @@ process_packages() {
                     p = substr(line, 1, idx - 1)
                     m = substr(line, idx + 1)
 
-                    # Validate expected stat metadata:
+                    # Validate expected metadata format:
                     #
                     #   mtime:size:inode
                     #
-                    # %Y (mtime) may theoretically be negative for dates
-                    # before the Unix epoch. Size and inode are non-negative.
+                    # mtime may theoretically be negative for dates before
+                    # the Unix epoch. Size and inode must be non-negative.
                     n = split(m, stat_meta, ":")
 
                     if (p != "" &&
@@ -757,6 +757,9 @@ process_packages() {
                         stat_meta[1] ~ /^-?[0-9]+$/ &&
                         stat_meta[2] ~ /^[0-9]+$/ &&
                         stat_meta[3] ~ /^[0-9]+$/) {
+
+                        if (p in stats)
+                            duplicate_stat_paths++
 
                         stats[p] = m
                         valid_stat_records++
@@ -839,22 +842,72 @@ process_packages() {
             if (debug == 1) {
                 print "" > "/dev/stderr"
                 print "===== DEBUG STAGE 2: MATCH ACCOUNTING =====" > "/dev/stderr"
+
                 printf "Stat records read:          %d\n", stat_records > "/dev/stderr"
                 printf "Valid stat records:         %d\n", valid_stat_records > "/dev/stderr"
                 printf "Invalid stat records:       %d\n", invalid_stat_records > "/dev/stderr"
+                printf "Duplicate stat paths:       %d\n", duplicate_stat_paths > "/dev/stderr"
+
                 printf "Package records received:   %d\n", input_records > "/dev/stderr"
                 printf "Package records accepted:   %d\n", accepted_packages > "/dev/stderr"
                 printf "Invalid package records:    %d\n", invalid_package_records > "/dev/stderr"
+
                 printf "Direct APK matches:         %d\n", direct_matches > "/dev/stderr"
                 printf "Parent directory fallbacks: %d\n", directory_fallbacks > "/dev/stderr"
                 printf "Unavailable metadata:       %d\n", unavailable > "/dev/stderr"
+
                 printf "Merged records produced:    %d\n", merged_records > "/dev/stderr"
 
+                print "" > "/dev/stderr"
+
+                # ------------------------------------------------------------
+                # Verify stat accounting
+                # ------------------------------------------------------------
+                if (stat_records == valid_stat_records + invalid_stat_records) {
+                    print "[+] Stat accounting verified." > "/dev/stderr"
+                } else {
+                    printf "[!] WARNING: Stat accounting mismatch: %d != %d + %d\n",
+                        stat_records,
+                        valid_stat_records,
+                        invalid_stat_records > "/dev/stderr"
+                }
+
+                # ------------------------------------------------------------
+                # Verify package-input accounting
+                # ------------------------------------------------------------
+                if (input_records == accepted_packages + invalid_package_records) {
+                    print "[+] Package-input accounting verified." > "/dev/stderr"
+                } else {
+                    printf "[!] WARNING: Package-input accounting mismatch: %d != %d + %d\n",
+                        input_records,
+                        accepted_packages,
+                        invalid_package_records > "/dev/stderr"
+                }
+
+                # ------------------------------------------------------------
+                # Verify metadata-resolution accounting
+                # ------------------------------------------------------------
+                resolved_packages = direct_matches +
+                                    directory_fallbacks +
+                                    unavailable
+
+                if (accepted_packages == resolved_packages) {
+                    print "[+] Metadata-resolution accounting verified." > "/dev/stderr"
+                } else {
+                    printf "[!] WARNING: Metadata-resolution mismatch: %d accepted != %d resolved.\n",
+                        accepted_packages,
+                        resolved_packages > "/dev/stderr"
+                }
+
+                # ------------------------------------------------------------
+                # Verify merge accounting
+                # ------------------------------------------------------------
                 if (accepted_packages == merged_records) {
                     print "[+] Merge accounting verified." > "/dev/stderr"
                 } else {
-                    printf "[!] WARNING: %d accepted package(s) were not merged.\n",
-                        accepted_packages - merged_records > "/dev/stderr"
+                    printf "[!] WARNING: Merge accounting mismatch: %d accepted != %d merged.\n",
+                        accepted_packages,
+                        merged_records > "/dev/stderr"
                 }
 
                 print "===== END DEBUG STAGE 2 ACCOUNTING =====" > "/dev/stderr"
