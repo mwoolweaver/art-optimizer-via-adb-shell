@@ -359,6 +359,7 @@ TOTAL_COMPILED=0
 TOTAL_SKIPPED=0
 TOTAL_FAILED=0
 TOTAL_INVALID=0
+TOTAL_WOULD_COMPILE=0
 
 # Define a literal carriage return safely for POSIX compliance globally
 CR=$(printf '\r')
@@ -1236,6 +1237,7 @@ $fingerprint
     fi
 
     TOTAL_COMPILED=$((TOTAL_COMPILED + stage3_compiled))
+    TOTAL_WOULD_COMPILE=$((TOTAL_WOULD_COMPILE + stage3_would_compile))
     TOTAL_SKIPPED=$((TOTAL_SKIPPED + stage3_skipped))
     TOTAL_FAILED=$((TOTAL_FAILED + stage3_failed))
     TOTAL_INVALID=$((TOTAL_INVALID + stage3_invalid))
@@ -1455,7 +1457,6 @@ SUCCESSFUL_RUN=1
 
 # Calculate package counts
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
-TOTAL_SKIPPED=$((TOTAL_SCANNED - TOTAL_COMPILED))
 
 # Calculate total execution time
 TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
@@ -1478,11 +1479,13 @@ printf '    - Step 3 (User Stage):     %ss\n' "$STEP3_DURATION"
 printf '    --------------------------------------\n'
 printf '    - Grand Total:             %ss\n' "$TOTAL_DURATION"
 if [ "$DRY_RUN" -eq 1 ]; then
-    printf '    - Packages Would Compile:  %d\n' "$TOTAL_COMPILED"
+    printf '    - Packages Would Compile:  %d\n' "$TOTAL_WOULD_COMPILE"
     printf '    - Packages Would Skip:     %d\n' "$TOTAL_SKIPPED"
 else
-    printf '    - Packages Compiled:       %d\n' "$TOTAL_COMPILED"
+    printf '    - Packages Compiled:         %d\n' "$TOTAL_COMPILED"
     printf '    - Packages Skipped (Cached): %d\n' "$TOTAL_SKIPPED"
+    printf '    - Packages Failed:           %d\n' "$TOTAL_FAILED"
+    printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
 fi
 [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
 printf '==========================================\n'
