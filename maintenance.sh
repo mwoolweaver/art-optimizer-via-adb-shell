@@ -683,17 +683,23 @@ process_packages() {
         printf '[!] WARNING: stat produced no output. Run with --debug for more info.\n' >&2
     fi
 
-    # ========================================================================
-    # DEBUG STAGE 1b: STATS
-    # ========================================================================
+    STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
+    STAGE_STAT_COUNT=$(wc -l <"$STAGE_STATS")
+
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print '\n===== DEBUG STAGE 1b: STAGE_STATS =====\n'
-        debug_print 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
-        debug_print 'Stats: '
-        wc -l <"$STAGE_STATS"
-        debug_print '%s\n' '--- first 10 records ---'
-        head -n 10 "$STAGE_STATS"
-        debug_print '%s\n\n' '--- end DEBUG STAGE_STATS ---'
+        debug_print '\n===== DEBUG STAGE 1b: STAT ACCOUNTING =====\n'
+        debug_print 'Unique paths submitted to stat: %d\n' "$STAGE_PATH_COUNT"
+        debug_print 'Stat records produced:          %d\n' "$STAGE_STAT_COUNT"
+
+        if [ "$STAGE_STAT_COUNT" -ne "$STAGE_PATH_COUNT" ]; then
+            debug_print '[!] WARNING: stat record count differs from path count.\n'
+            debug_print '    Missing/failed stat records: %d\n' \
+                "$((STAGE_PATH_COUNT - STAGE_STAT_COUNT))"
+        else
+            debug_print '[+] Stat accounting: path count matches stat count.\n'
+        fi
+
+        debug_print '%s\n\n' '--- end DEBUG STAGE 1b ACCOUNTING ---'
     fi
 
     # ========================================================================
@@ -806,7 +812,13 @@ process_packages() {
     # ========================================================================
     debug_print "Running STAGE 3: Processing package compilation sequence..."
 
+    
+
     current=0
+    stage3_skipped=0
+    stage3_compiled=0
+    stage3_failed=0
+    stage3_unverified=0
 
     exec 3>>"$CURRENT_RUN_STATE"
 
@@ -864,6 +876,7 @@ process_packages() {
 
             echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
             echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
+            stage3_unverified=$((stage3_unverified + 1))
 
             # No trustworthy fingerprint exists.
             # Do not consult or update persistent state.
@@ -883,6 +896,7 @@ $fingerprint
                 echo "$fingerprint" >&3
 
                 echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
+                stage3_skipped=$((stage3_skipped + 1))
 
                 continue
                 ;;
@@ -950,6 +964,7 @@ $fingerprint
                 echo "$fingerprint" >&3
 
                 TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
+                stage3_compiled=$((stage3_compiled + 1))
 
             else
 
@@ -959,6 +974,8 @@ $fingerprint
                 # IMPORTANT:
                 # Failed compilations are NOT written to state.
                 # They will therefore be retried on the next run.
+
+                stage3_failed=$((stage3_failed + 1))
 
                 if ! printf 'FAIL (%d): %s\n%s\n' \
                     "$compile_exit" "$pkg_name" "$err_output" \
@@ -972,13 +989,18 @@ $fingerprint
     done <"$STAGE_MERGED"
 
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print '\n===== DEBUG STAGE 3: Compilation =====\n'
-        debug_print 'Compiled Apps: [%s]\n' "$STAGE_MERGED"
-        debug_print 'Compiled: '
-        wc -l <"$STAGE_MERGED"
-        debug_print '%s\n' '--- first 20 paths ---'
-        head -n 20 "$STAGE_MERGED"
-        debug_print '%s\n\n' '--- end DEBUG STAGE 1 PATHS ---'
+        debug_print '\n===== DEBUG STAGE 3: COMPILATION =====\n'
+        debug_print 'Stage 3 input records: %d\n' "$current"
+        debug_print 'Skipped unchanged:     %d\n' "$stage3_skipped"
+        debug_print 'Compiled successfully: %d\n' "$stage3_compiled"
+        debug_print 'Compilation failures:  %d\n' "$stage3_failed"
+        debug_print 'Metadata unavailable:  %d\n' "$stage3_unverified"
+        debug_print 'Accounting check:      %d + %d + %d = %d\n' \
+            "$stage3_skipped" \
+            "$stage3_compiled" \
+            "$stage3_failed" \
+            "$((stage3_skipped + stage3_compiled + stage3_failed))"
+        debug_print '%s\n\n' '--- end DEBUG STAGE 3 ---'
     fi
 
     # ========================================================================
