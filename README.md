@@ -414,6 +414,8 @@ process_packages() {
     fi
     if [ "$DEBUG" -eq 1 ]; then
         debug_print '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
+        debug_print 'Packages: '
+        wc -l <"$pkg_list"
         debug_print '--- first 10 records ---\n'
         debug_print '%s\n' "$pkg_list" | head -n 10
         debug_print '%s\n\n' '--- end DEBUG NORMALIZED PACKAGE LIST ---'
@@ -467,9 +469,9 @@ process_packages() {
         xargs -0 -r stat -c '%n=%Y:%s:%i' \
             >"$STAGE_STATS"
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print '\n===== DEBUG STAGE_STATS =====\n'
+        debug_print '\n===== DEBUG STAGE 1b: STAGE_STATS =====\n'
         debug_print 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
-        debug_print 'Lines: '
+        debug_print 'Stats: '
         wc -l <"$STAGE_STATS"
         debug_print '%s\n' '--- first 10 records ---'
         head -n 10 "$STAGE_STATS"
@@ -520,9 +522,9 @@ process_packages() {
         }
     ' >"$STAGE_MERGED"
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print '\n===== DEBUG STAGE_MERGED =====\n'
+        debug_print '\n===== DEBUG STAGE 2: STAGE_MERGED =====\n'
         debug_print 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
-        debug_print 'Lines: '
+        debug_print 'Merged: '
         wc -l <"$STAGE_MERGED"
         debug_print '%s\n' '--- first 10 records ---'
         head -n 10 "$STAGE_MERGED"
@@ -610,6 +612,15 @@ $fingerprint
             fi
         fi
     done <"$STAGE_MERGED"
+    if [ "$DEBUG" -eq 1 ]; then
+        debug_print '\n===== DEBUG STAGE 3: Compilation =====\n'
+        debug_print 'Compiled Apps: [%s]\n' "$STAGE_MERGED"
+        debug_print 'Compiled: '
+        wc -l <"$STAGE_MERGED"
+        debug_print '%s\n' '--- first 20 paths ---'
+        head -n 20 "$STAGE_MERGED"
+        debug_print '%s\n\n' '--- end DEBUG STAGE 1 PATHS ---'
+    fi
     exec 3>&-
     if [ "$default_mode" = "system" ]; then
         SYSTEM_PKGS_COUNT="$total_pkgs"
