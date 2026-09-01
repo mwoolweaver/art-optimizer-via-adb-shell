@@ -416,10 +416,10 @@ process_packages() {
     if [ "$DEBUG" -eq 1 ]; then
         debug_print '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
         debug_print 'Packages: '
-        printf '%s\n' "$pkg_list" | wc -l
+        echo "$pkg_list" | wc -l
         debug_print '--- first 10 records ---\n'
-        debug_print '%s\n' "$pkg_list" | head -n 10
-        debug_print '%s\n\n' '--- end DEBUG NORMALIZED PACKAGE LIST ---'
+        echo "$pkg_list" | head -n 10
+        debug_print '--- end DEBUG NORMALIZED PACKAGE LIST ---'
     fi
     total_pkgs=0
     OLD_IFS="$IFS"
@@ -458,12 +458,11 @@ process_packages() {
     ' >"$STAGE_PATHS"
     if [ "$DEBUG" -eq 1 ]; then
         debug_print '\n===== DEBUG STAGE 1 PATHS =====\n'
-        debug_print 'PATH FILE: [%s]\n' "$STAGE_PATHS"
         debug_print 'Paths: '
         wc -l <"$STAGE_PATHS"
-        debug_print '%s\n' '--- first 20 paths ---'
+        debug_print '--- first 20 paths ---'
         head -n 20 "$STAGE_PATHS"
-        debug_print '%s\n\n' '--- end DEBUG STAGE 1 PATHS ---'
+        debug_print'--- end DEBUG STAGE 1 PATHS ---'
     fi
     debug_print "Running stat on unique paths..."
     tr '\n' '\0' <"$STAGE_PATHS" |
@@ -476,16 +475,15 @@ process_packages() {
     STAGE_STAT_COUNT=$(wc -l <"$STAGE_STATS")
     if [ "$DEBUG" -eq 1 ]; then
         debug_print '\n===== DEBUG STAGE 1b: STAT ACCOUNTING =====\n'
-        debug_print 'Unique paths submitted to stat: %d\n' "$STAGE_PATH_COUNT"
-        debug_print 'Stat records produced:          %d\n' "$STAGE_STAT_COUNT"
+        debug_print "Unique paths submitted to stat: $STAGE_PATH_COUNT"
+        debug_print "Stat records produced:          $STAGE_STAT_COUNT"
         if [ "$STAGE_STAT_COUNT" -ne "$STAGE_PATH_COUNT" ]; then
             debug_print '[!] WARNING: stat record count differs from path count.\n'
-            debug_print '    Missing/failed stat records: %d\n' \
-                "$((STAGE_PATH_COUNT - STAGE_STAT_COUNT))"
+            debug_print "    Missing/failed stat records: $((STAGE_PATH_COUNT - STAGE_STAT_COUNT))"
         else
             debug_print '[+] Stat accounting: path count matches stat count.\n'
         fi
-        debug_print '%s\n\n' '--- end DEBUG STAGE 1b ACCOUNTING ---'
+        debug_print '--- end DEBUG STAGE 1b ACCOUNTING ---'
     fi
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
     printf '%s\n' "$pkg_list" |
@@ -715,16 +713,12 @@ $fingerprint
     done <"$STAGE_MERGED"
     if [ "$DEBUG" -eq 1 ]; then
         debug_print '\n===== DEBUG STAGE 3: COMPILATION =====\n'
-        debug_print 'Stage 3 input records: %d\n' "$current"
-        debug_print 'Skipped unchanged:     %d\n' "$stage3_skipped"
-        debug_print 'Compiled successfully: %d\n' "$stage3_compiled"
-        debug_print 'Compilation failures:  %d\n' "$stage3_failed"
-        debug_print 'Metadata unavailable:  %d\n' "$stage3_unverified"
-        debug_print 'Accounting check:      %d + %d + %d = %d\n' \
-            "$stage3_skipped" \
-            "$stage3_compiled" \
-            "$stage3_failed" \
-            "$((stage3_skipped + stage3_compiled + stage3_failed))"
+        debug_print "Stage 3 input records: $current"
+        debug_print "Skipped unchanged:     $stage3_skipped"
+        debug_print "Compiled successfully: $stage3_compiled"
+        debug_print "Compilation failures:  $stage3_failed"
+        debug_print "Metadata unavailable:  $stage3_unverified"
+        debug_print "Accounting check:      $stage3_skipped + $stage3_compiled + $stage3_failed = $((stage3_skipped + stage3_compiled + stage3_failed))"
         debug_print '%s\n\n' '--- end DEBUG STAGE 3 ---'
     fi
     exec 3>&-
