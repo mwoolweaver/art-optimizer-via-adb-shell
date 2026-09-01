@@ -586,7 +586,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Step 1: (DRY RUN) Would trim system and app caches...\n'
 else
     printf '[+] Step 1: Trimming system and app caches...\n'
-    trim_out=$(pm trim-caches 100G 2>&1)
+    trim_out=$(pm trim-caches 99999999999 2>&1)
     trim_exit=$?
     if [ $trim_exit -ne 0 ]; then
         printf '    [!] WARNING: Cache trim failed (Exit Code: %d).\n' "$trim_exit" >&2
