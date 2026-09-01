@@ -72,7 +72,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
 else
     printf '[+] Starting ART Smart Maintenance on Android %s (SDK %s)...\n' "$android_version" "$sdk_version"
 fi
-export TMPDIR=/data/local/tmp
+export TMPDIR="${TMPDIR:-/data/local/tmp}"
 debug_print "Set TMPDIR to $TMPDIR"
 if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
     printf '[!] FATAL: Temporary directory '\''%s'\'' is missing or not writable. Aborting.\n' "$TMPDIR" >&2
