@@ -160,7 +160,7 @@ debug_print "Set TMPDIR to $TMPDIR"
 
 # Validate that TMPDIR exists and is actually writable
 if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
-    echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting." 
+    echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting."
     exit 1
 fi
 
