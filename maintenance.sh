@@ -1067,7 +1067,7 @@ else
 
     # Tell package manager to clean app caches
     # Argument 100G indicates target cache size (aggressively frees everything)
-    trim_out=$(pm trim-caches 100G 2>&1)
+    trim_out=$(pm trim-caches 99999999999 2>&1)
     trim_exit=$?
 
     if [ $trim_exit -ne 0 ]; then
