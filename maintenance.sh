@@ -833,7 +833,7 @@ process_packages() {
         # Build fingerprint
         # ====================================================================
 
-        fingerprint="${pkg_name}:${apk_path}:${file_meta}"
+        fingerprint="${pkg_name}|${apk_path}|${file_meta}"
 
         case "$fingerprint" in
 
