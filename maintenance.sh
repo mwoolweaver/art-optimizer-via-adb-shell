@@ -812,8 +812,6 @@ process_packages() {
     # ========================================================================
     debug_print "Running STAGE 3: Processing package compilation sequence..."
 
-    
-
     current=0
     stage3_skipped=0
     stage3_compiled=0
