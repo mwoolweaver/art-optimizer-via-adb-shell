@@ -668,6 +668,11 @@ process_packages() {
         xargs -0 -r stat -c '%n=%Y:%s:%i' \
             >"$STAGE_STATS"
 
+    # Validate stat produced output
+    if [ ! -s "$STAGE_STATS" ]; then
+        printf '[!] WARNING: stat produced no output. Run with --debug for more info.\n' >&2
+    fi
+
     # ========================================================================
     # DEBUG STAGE 1b: STATS
     # ========================================================================
