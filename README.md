@@ -416,7 +416,7 @@ process_packages() {
     if [ "$DEBUG" -eq 1 ]; then
         debug_print '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
         debug_print 'Packages: '
-        wc -l <"$pkg_list"
+        printf '%s\n' "$pkg_list" | wc -l
         debug_print '--- first 10 records ---\n'
         debug_print '%s\n' "$pkg_list" | head -n 10
         debug_print '%s\n\n' '--- end DEBUG NORMALIZED PACKAGE LIST ---'
