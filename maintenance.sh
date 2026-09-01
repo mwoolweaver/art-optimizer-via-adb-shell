@@ -574,7 +574,7 @@ process_packages() {
     if [ "$DEBUG" -eq 1 ]; then
         debug_print '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
         debug_print 'Packages: '
-        wc -l <"$pkg_list"
+        printf '%s\n' "$pkg_list" | wc -l
         debug_print '--- first 10 records ---\n'
         debug_print '%s\n' "$pkg_list" | head -n 10
         debug_print '%s\n\n' '--- end DEBUG NORMALIZED PACKAGE LIST ---'
@@ -851,7 +851,7 @@ process_packages() {
         # Build fingerprint
         # ====================================================================
 
-        # Fingerprint format: package:path:metadata
+        # Fingerprint format: package|path|metadata
         # Uses '|' as delimiter (consistent with normalized package|path format above).
         # This unique combination identifies if a package has changed since last optimization.
         # Unchanged fingerprints skip recompilation; changed ones trigger fresh compilation.
