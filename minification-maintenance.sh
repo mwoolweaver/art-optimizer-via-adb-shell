@@ -22,7 +22,7 @@ fi
 SCRIPT_UID=${USER_ID:-1}
 debug_print "Checked user ID: $SCRIPT_UID"
 if [ "$SCRIPT_UID" -ne 0 ] && [ "$SCRIPT_UID" -ne 2000 ]; then
-    printf '[!] FATAL: Elevated privileges required (root or adb shell). Aborting.\n' >&2
+    echo "[!] FATAL: Elevated privileges required (root or adb shell). Aborting.\n"
     exit 1
 fi
 BOOT_WAIT_ELAPSED=0
@@ -33,7 +33,7 @@ while [ $BOOT_WAIT_ELAPSED -lt 300 ]; do
     debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
 done
 if [ "$(getprop sys.boot_completed)" != "1" ]; then
-    printf '[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting.\n' >&2
+    echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting.\n"
     exit 1
 fi
 check_deps() {
@@ -45,14 +45,14 @@ check_deps() {
         fi
     done
     if [ -n "$missing" ]; then
-        printf '[!] FATAL: Required commands missing: %s\n' "$missing" >&2
+        echo "[!] FATAL: Required commands missing: $missing"
         exit 1
     fi
 }
 check_deps
 case "$(service check package 2>/dev/null)" in
 *"not found"* | "")
-    printf '[!] FATAL: Package manager service is not running or unresponsive. Aborting.\n' >&2
+    echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting.\n"
     exit 1
     ;;
 esac
@@ -64,18 +64,18 @@ sdk_version="${sdk_version:-0}"
 debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
 MIN_SDK=24
 if [ "$sdk_version" -lt "$MIN_SDK" ]; then
-    printf '[!] FATAL: Android 7.0 (API %d) or higher required. Current API: %s\n' "$MIN_SDK" "$sdk_version" >&2
+    echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version\n"
     exit 1
 fi
 if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[+] Starting ART Smart Maintenance (DRY RUN) on Android %s (SDK %s)...\n' "$android_version" "$sdk_version"
+    echo "[+] Starting ART Smart Maintenance (DRY RUN) on Android $android_version (SDK $sdk_version)..."
 else
-    printf '[+] Starting ART Smart Maintenance on Android %s (SDK %s)...\n' "$android_version" "$sdk_version"
+    echo "[+] Starting ART Smart Maintenance (DRY RUN) on Android $android_version (SDK $sdk_version)..."
 fi
 export TMPDIR="${TMPDIR:-/data/local/tmp}"
 debug_print "Set TMPDIR to $TMPDIR"
 if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
-    printf '[!] FATAL: Temporary directory '\''%s'\'' is missing or not writable. Aborting.\n' "$TMPDIR" >&2
+    echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting." 
     exit 1
 fi
 case "$0" in
@@ -85,7 +85,7 @@ esac
 readonly SCRIPT_DIR
 debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
 if ! [ -w "$SCRIPT_DIR" ]; then
-    printf '[!] FATAL: Script directory '\''%s'\'' is not writable. Aborting.\n' "$SCRIPT_DIR" >&2
+    echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting.\n"
     exit 1
 fi
 STATE_FILE="${SCRIPT_DIR}/.last_optimized"
@@ -374,28 +374,28 @@ process_packages() {
         wc -l <"$STAGE_PATHS"
         debug_print '--- first 20 paths ---'
         head -n 20 "$STAGE_PATHS"
-        debug_print'--- end DEBUG STAGE 1 PATHS ---'
+        debug_print '--- end DEBUG STAGE 1 PATHS ---'
     fi
     debug_print "Running stat on unique paths..."
     tr '\n' '\0' <"$STAGE_PATHS" |
         xargs -0 -r stat -c '%n=%Y:%s:%i' \
             >"$STAGE_STATS"
     if [ ! -s "$STAGE_STATS" ]; then
-        printf '[!] WARNING: stat produced no output. Run with --debug for more info.\n' >&2
+        echo "[!] WARNING: stat produced no output. Run with --debug for more info.\n"
     fi
     STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
     STAGE_STAT_COUNT=$(wc -l <"$STAGE_STATS")
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print '\n===== DEBUG STAGE 1b: STAT ACCOUNTING =====\n'
+        debug_print "\n===== DEBUG STAGE 1b: STAT ACCOUNTING =====\n"
         debug_print "Unique paths submitted to stat: $STAGE_PATH_COUNT"
         debug_print "Stat records produced:          $STAGE_STAT_COUNT"
         if [ "$STAGE_STAT_COUNT" -ne "$STAGE_PATH_COUNT" ]; then
-            debug_print '[!] WARNING: stat record count differs from path count.\n'
+            debug_print "[!] WARNING: stat record count differs from path count.\n"
             debug_print "    Missing/failed stat records: $((STAGE_PATH_COUNT - STAGE_STAT_COUNT))"
         else
-            debug_print '[+] Stat accounting: path count matches stat count.\n'
+            debug_print "[+] Stat accounting: path count matches stat count.\n"
         fi
-        debug_print '--- end DEBUG STAGE 1b ACCOUNTING ---'
+        debug_print "--- end DEBUG STAGE 1b ACCOUNTING ---"
     fi
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
     printf '%s\n' "$pkg_list" |
@@ -502,9 +502,7 @@ process_packages() {
                         accepted_packages,
                         invalid_package_records > "/dev/stderr"
                 }
-                resolved_packages = direct_matches +
-                                    directory_fallbacks +
-                                    unavailable
+                resolved_packages = direct_matches + directory_fallbacks + unavailable
                 if (accepted_packages == resolved_packages) {
                     print "[+] Metadata-resolution accounting verified." > "/dev/stderr"
                 } else {
@@ -525,13 +523,13 @@ process_packages() {
         }
     ' >"$STAGE_MERGED"
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print '\n===== DEBUG STAGE 2: STAGE_MERGED =====\n'
-        debug_print 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
-        debug_print 'Merged: '
+        debug_print "\n===== DEBUG STAGE 2: STAGE_MERGED =====\n"
+        debug_print "STAGE_MERGED: $STAGE_MERGED\n"
+        debug_print "Merged: "
         wc -l <"$STAGE_MERGED"
-        debug_print '%s\n' '--- first 10 records ---'
+        debug_print "--- first 10 records ---"
         head -n 10 "$STAGE_MERGED"
-        debug_print '%s\n\n' '--- end DEBUG STAGE_MERGED ---'
+        debug_print "--- end DEBUG STAGE_MERGED ---"
     fi
     debug_print "Running STAGE 3: Processing package compilation sequence..."
     current=0
@@ -580,26 +578,22 @@ $fingerprint
         esac
         if [ "$compile_mode" = "speed" ]; then
             if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
+                printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' "$current" "$total_pkgs" "$pkg_name"
             fi
             actual_mode="speed"
         elif [ "$default_mode" = "system" ]; then
             if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [-] (%d/%d) Play Store update compile (-m speed-profile): %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
+                printf '    [-] (%d/%d) Play Store update compile (-m speed-profile): %s\n' "$current" "$total_pkgs" "$pkg_name"
             fi
             actual_mode="speed-profile"
         else
             if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
+                printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' "$current" "$total_pkgs" "$pkg_name"
             fi
             actual_mode="speed-profile"
         fi
         if [ "$DRY_RUN" -eq 1 ]; then
-            printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' \
-                "$current" "$total_pkgs" "$actual_mode" "$pkg_name"
+            printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' "$current" "$total_pkgs" "$actual_mode" "$pkg_name"
             TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
         else
             debug_print "Executing command: cmd package compile -m $actual_mode -f $pkg_name"
@@ -618,20 +612,20 @@ $fingerprint
                 if ! printf 'FAIL (%d): %s\n%s\n' \
                     "$compile_exit" "$pkg_name" "$err_output" \
                     >>"$ERROR_TMPFILE" 2>/dev/null; then
-                    printf '    [!] CRITICAL: Failed to write to error log! Storage may be full.\n' >&2
+                    printf "    [!] CRITICAL: Failed to write to error log! Storage may be full.\n" >&2
                 fi
             fi
         fi
     done <"$STAGE_MERGED"
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print '\n===== DEBUG STAGE 3: COMPILATION =====\n'
+        debug_print "\n===== DEBUG STAGE 3: COMPILATION =====\n"
         debug_print "Stage 3 input records: $current"
         debug_print "Skipped unchanged:     $stage3_skipped"
         debug_print "Compiled successfully: $stage3_compiled"
         debug_print "Compilation failures:  $stage3_failed"
         debug_print "Metadata unavailable:  $stage3_unverified"
         debug_print "Accounting check:      $stage3_skipped + $stage3_compiled + $stage3_failed = $((stage3_skipped + stage3_compiled + stage3_failed))"
-        debug_print '%s\n\n' '--- end DEBUG STAGE 3 ---'
+        debug_print "--- end DEBUG STAGE 3 ---"
     fi
     exec 3>&-
     if [ "$default_mode" = "system" ]; then
