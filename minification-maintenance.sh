@@ -75,7 +75,7 @@ fi
 export TMPDIR="${TMPDIR:-/data/local/tmp}"
 debug_print "Set TMPDIR to $TMPDIR"
 if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
-    echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting." 
+    echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting."
     exit 1
 fi
 case "$0" in
