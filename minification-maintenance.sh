@@ -147,7 +147,7 @@ CR=$(printf '\r')
 readonly CR
 get_thermal_status() {
     if command -v dumpsys >/dev/null 2>&1; then
-        local therm_status
+        therm_status=""
         therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
         if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
             debug_print "Parsed global thermal status code: $therm_status"
@@ -226,7 +226,8 @@ get_thermal_status() {
 }
 get_memory_pressure() {
     if [ -r /proc/meminfo ]; then
-        local t="" a=""
+        t=""
+        a=""
         while read -r key val _rest; do
             case "$key" in
             MemTotal:) t="$val" ;;
