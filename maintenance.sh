@@ -721,7 +721,7 @@ process_packages() {
     # ========================================================================
 
     printf '%s\n' "$pkg_list" |
-        awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" '
+        awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DEBUG" '
         BEGIN {
             # Load stat cache into memory.
             #
@@ -732,6 +732,7 @@ process_packages() {
             # "=" rather than the first one.
 
             while ((getline line < sf) > 0) {
+                stat_records++
                 idx = 0
 
                 for (i = 1; i <= length(line); i++) {
@@ -743,7 +744,27 @@ process_packages() {
                     p = substr(line, 1, idx - 1)
                     m = substr(line, idx + 1)
 
-                    stats[p] = m
+                    # Validate expected stat metadata:
+                    #
+                    #   mtime:size:inode
+                    #
+                    # %Y (mtime) may theoretically be negative for dates
+                    # before the Unix epoch. Size and inode are non-negative.
+                    n = split(m, stat_meta, ":")
+
+                    if (p != "" &&
+                        n == 3 &&
+                        stat_meta[1] ~ /^-?[0-9]+$/ &&
+                        stat_meta[2] ~ /^[0-9]+$/ &&
+                        stat_meta[3] ~ /^[0-9]+$/) {
+
+                        stats[p] = m
+                        valid_stat_records++
+                    } else {
+                        invalid_stat_records++
+                    }
+                } else {
+                    invalid_stat_records++
                 }
             }
 
@@ -751,19 +772,29 @@ process_packages() {
         }
 
         {
-            if (NF < 2)
+            input_records++
+
+            if (NF < 2) {
+                invalid_package_records++
                 next
+            }
 
             pkg  = $1
             path = $2
 
-            if (pkg == "" || path == "")
+            if (pkg == "" || path == "") {
+                invalid_package_records++
                 next
+            }
 
-            # Look up metadata for the APK itself.
+            accepted_packages++
+
+            # Look up metadata for the exact APK path.
             meta = stats[path]
 
-            if (meta == "") {
+            if (meta != "") {
+                direct_matches++
+            } else {
                 # APK metadata unavailable.
                 #
                 # Fall back to parent directory metadata so that changes to
@@ -775,22 +806,60 @@ process_packages() {
                 d_meta = stats[dir]
 
                 if (d_meta != "") {
-                    split(d_meta, arr, ":")
+                    n = split(d_meta, dir_meta, ":")
 
-                    if (length(arr) >= 3) {
+                    if (n == 3 &&
+                        dir_meta[1] ~ /^-?[0-9]+$/ &&
+                        dir_meta[2] ~ /^[0-9]+$/ &&
+                        dir_meta[3] ~ /^[0-9]+$/) {
+
                         # Preserve directory mtime and inode.
-                        # Use zero for file size because this is directory
+                        # Use zero for size because this is directory
                         # fallback metadata.
-                        meta = arr[1] ":0:" arr[3]
+                        meta = dir_meta[1] ":0:" dir_meta[3]
+                        directory_fallbacks++
                     } else {
                         meta = "UNAVAILABLE"
+                        unavailable++
                     }
                 } else {
                     meta = "UNAVAILABLE"
+                    unavailable++
                 }
             }
 
             print pkg, path, meta
+            merged_records++
+        }
+
+        END {
+            # Debug diagnostics go to stderr so they never contaminate
+            # STAGE_MERGED, which receives stdout.
+
+            if (debug == 1) {
+                print "" > "/dev/stderr"
+                print "===== DEBUG STAGE 2: MATCH ACCOUNTING =====" > "/dev/stderr"
+                printf "Stat records read:          %d\n", stat_records > "/dev/stderr"
+                printf "Valid stat records:         %d\n", valid_stat_records > "/dev/stderr"
+                printf "Invalid stat records:       %d\n", invalid_stat_records > "/dev/stderr"
+                printf "Package records received:   %d\n", input_records > "/dev/stderr"
+                printf "Package records accepted:   %d\n", accepted_packages > "/dev/stderr"
+                printf "Invalid package records:    %d\n", invalid_package_records > "/dev/stderr"
+                printf "Direct APK matches:         %d\n", direct_matches > "/dev/stderr"
+                printf "Parent directory fallbacks: %d\n", directory_fallbacks > "/dev/stderr"
+                printf "Unavailable metadata:       %d\n", unavailable > "/dev/stderr"
+                printf "Merged records produced:    %d\n", merged_records > "/dev/stderr"
+
+                if (accepted_packages == merged_records) {
+                    print "[+] Merge accounting verified." > "/dev/stderr"
+                } else {
+                    printf "[!] WARNING: %d accepted package(s) were not merged.\n",
+                        accepted_packages - merged_records > "/dev/stderr"
+                }
+
+                print "===== END DEBUG STAGE 2 ACCOUNTING =====" > "/dev/stderr"
+                print "" > "/dev/stderr"
+            }
         }
     ' >"$STAGE_MERGED"
 
