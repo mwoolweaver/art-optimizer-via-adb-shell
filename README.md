@@ -469,6 +469,9 @@ process_packages() {
     tr '\n' '\0' <"$STAGE_PATHS" |
         xargs -0 -r stat -c '%n=%Y:%s:%i' \
             >"$STAGE_STATS"
+    if [ ! -s "$STAGE_STATS" ]; then
+        printf '[!] WARNING: stat produced no output. Run with --debug for more info.\n' >&2
+    fi
     if [ "$DEBUG" -eq 1 ]; then
         debug_print '\n===== DEBUG STAGE 1b: STAGE_STATS =====\n'
         debug_print 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
