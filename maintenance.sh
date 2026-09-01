@@ -281,7 +281,7 @@ readonly CR
 get_thermal_status() {
     # Attempt 1: dumpsys thermalservice (Modern OS Status Code)
     if command -v dumpsys >/dev/null 2>&1; then
-        local therm_status
+        therm_status=""
         therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
 
         # Verify output is a valid integer
@@ -382,7 +382,8 @@ get_thermal_status() {
 # ============================================================================
 get_memory_pressure() {
     if [ -r /proc/meminfo ]; then
-        local t="" a=""
+        t=""
+        a=""
         # Read file natively line-by-line without cat or awk
         while read -r key val _rest; do
             case "$key" in
