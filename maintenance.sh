@@ -856,7 +856,6 @@ process_packages() {
         # This unique combination identifies if a package has changed since last optimization.
         # Unchanged fingerprints skip recompilation; changed ones trigger fresh compilation.
 
-
         fingerprint="${pkg_name}|${apk_path}|${file_meta}"
 
         case "$fingerprint" in
