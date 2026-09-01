@@ -310,7 +310,7 @@ cleanup() {
     fi
 
     # Remove all volatile temporary files that STILL EXIST on disk
-    for tmpfile in "${CURRENT_RUN_STATE:-}" "${STAGE_STATS:-}" "${STAGE_MERGED:-}" "${ERROR_TMPFILE:-}"; do
+    for tmpfile in "${CURRENT_RUN_STATE:-}" "${STAGE_PATHS:-}" "${STAGE_STATS:-}" "${STAGE_MERGED:-}" "${ERROR_TMPFILE:-}"; do
         # Skip empty variable strings or files that have already been moved/removed
         if [ -n "$tmpfile" ] && [ -e "$tmpfile" ]; then
             debug_print "Cleaning up temporary file: $tmpfile"
@@ -356,6 +356,9 @@ SUCCESSFUL_RUN=0
 SYSTEM_PKGS_COUNT=0
 USER_PKGS_COUNT=0
 TOTAL_COMPILED=0
+TOTAL_SKIPPED=0
+TOTAL_FAILED=0
+TOTAL_INVALID=0
 
 # Define a literal carriage return safely for POSIX compliance globally
 CR=$(printf '\r')
@@ -1023,6 +1026,7 @@ process_packages() {
     stage3_failed=0
     stage3_unverified=0
     stage3_invalid=0
+    stage3_would_compile=0
 
     exec 3>>"$CURRENT_RUN_STATE"
 
@@ -1034,7 +1038,10 @@ process_packages() {
 
         current=$((current + 1))
 
-        [ -z "$pkg_name" ] && continue
+        if [ -z "$pkg_name" ]; then
+            stage3_invalid=$((stage3_invalid + 1))
+            continue
+        fi
 
         # Sanity check: package names should contain no whitespace.
         case "$pkg_name" in
@@ -1147,7 +1154,7 @@ $fingerprint
 
             printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' "$current" "$total_pkgs" "$actual_mode" "$pkg_name"
 
-            TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
+            stage3_would_compile=$((stage3_would_compile + 1))
 
         else
 
@@ -1164,7 +1171,6 @@ $fingerprint
                 # Only commit successful compilations.
                 echo "$fingerprint" >&3
 
-                TOTAL_COMPILED=$((TOTAL_COMPILED + 1))
                 stage3_compiled=$((stage3_compiled + 1))
 
             else
@@ -1193,11 +1199,23 @@ $fingerprint
         debug_print "\n===== DEBUG STAGE 3: COMPILATION =====\n"
         debug_print "Stage 3 input records: $current"
         debug_print "Skipped unchanged:     $stage3_skipped"
-        debug_print "Compiled successfully: $stage3_compiled"
-        debug_print "Compilation failures:  $stage3_failed"
+
+        if [ "$DRY_RUN" -eq 1 ]; then
+            debug_print "Would compile:          $stage3_would_compile"
+        else
+            debug_print "Compiled successfully: $stage3_compiled"
+            debug_print "Compilation failures:  $stage3_failed"
+        fi
+
         debug_print "Metadata unavailable:  $stage3_unverified"
         debug_print "Metadata invalid:      $stage3_invalid"
-        debug_print "Accounting check:      $stage3_skipped + $stage3_compiled + $stage3_failed = $((stage3_skipped + stage3_compiled + stage3_failed))"
+
+        if [ "$DRY_RUN" -eq 1 ]; then
+            debug_print "Accounting check:      $stage3_skipped + $stage3_would_compile + $stage3_invalid = $((stage3_skipped + stage3_would_compile + stage3_invalid))"
+        else
+            debug_print "Accounting check:      $stage3_skipped + $stage3_compiled + $stage3_failed + $stage3_invalid = $((stage3_skipped + stage3_compiled + stage3_failed + stage3_invalid))"
+        fi
+
         debug_print "--- end DEBUG STAGE 3 ---"
     fi
 
@@ -1208,7 +1226,7 @@ $fingerprint
     exec 3>&-
 
     # ========================================================================
-    # Expose package count globally
+    # Expose package and Stage 3 counts globally
     # ========================================================================
 
     if [ "$default_mode" = "system" ]; then
@@ -1216,6 +1234,11 @@ $fingerprint
     else
         USER_PKGS_COUNT="$total_pkgs"
     fi
+
+    TOTAL_COMPILED=$((TOTAL_COMPILED + stage3_compiled))
+    TOTAL_SKIPPED=$((TOTAL_SKIPPED + stage3_skipped))
+    TOTAL_FAILED=$((TOTAL_FAILED + stage3_failed))
+    TOTAL_INVALID=$((TOTAL_INVALID + stage3_invalid))
 }
 
 # MAIN EXECUTION !!!!!!!!!! MAIN EXECUTION !!!!!!!!! MAIN EXECUTION !!!!!!!!!!
