@@ -297,6 +297,11 @@ get_thermal_status() {
         out=$(dumpsys hardware_properties 2>/dev/null || true)
         if [ -n "$out" ]; then
             debug_print "Parsed thermal status from hardware_properties dumpsys."
+            # Complex regex to extract temperatures from various dumpsys formats:
+            # - Looks for [...] bracket notation containing comma-separated values
+            # - Extracts all numeric values between brackets
+            # - Filters out unrealistic temps (>120°C) and invalid data
+            # - Returns maximum temperature found to detect hottest sensor
             temp=$(printf "%s\n" "$out" | awk '
                 /CPU temperatures:/ {
                     if (match($0, /\[[^]]*\]/)) {
@@ -334,6 +339,9 @@ get_thermal_status() {
         # shellcheck disable=SC2046
         set -- $(dumpsys battery 2>/dev/null)
         set +f
+        # dumpsys battery output is key-value pairs: "temperature: 350"
+        # When we find the "temperature:" key, the NEXT value is our temperature.
+        # We track prev1 to know when we've found it.
         for i in "$@"; do
             if [ "${prev1:-}" = "temperature:" ]; then
                 bat_temp=$((i / 10))
@@ -363,6 +371,8 @@ get_thermal_status() {
         case "$val_out" in *[!0-9]*) continue ;; esac
 
         debug_print "Read thermal zone from sysfs: $f = $val_out"
+        # Some thermal zones report temperature in millidegrees (multiply by 1000),
+        # others in raw degrees. Normalize to Celsius by dividing large values.
         if [ "$val_out" -gt 1000 ]; then
             printf '%d\n' $((val_out / 1000))
         else
@@ -1083,7 +1093,9 @@ else
     printf '[+] Step 1: Trimming system and app caches...\n'
 
     # Tell package manager to clean app caches
-    # Argument 100G indicates target cache size (aggressively frees everything)
+    # Argument is requested cache size (bytes). Using 99999999999 (~92GB) ensures
+    # aggressive cleanup of all user app caches. On mobile, this is larger than
+    # any partition, forcing complete cache eviction.
     trim_out=$(pm trim-caches 99999999999 2>&1)
     trim_exit=$?
 
@@ -1199,7 +1211,7 @@ fi
 # Mark the run as fully successful
 SUCCESSFUL_RUN=1
 
-#Calculate package counts
+# Calculate package counts
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 TOTAL_SKIPPED=$((TOTAL_SCANNED - TOTAL_COMPILED))
 
