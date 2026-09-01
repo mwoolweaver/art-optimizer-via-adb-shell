@@ -562,6 +562,8 @@ process_packages() {
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
         debug_print '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
+        debug_print 'Packages: '
+        wc -l <"$pkg_list"
         debug_print '--- first 10 records ---\n'
         debug_print '%s\n' "$pkg_list" | head -n 10
         debug_print '%s\n\n' '--- end DEBUG NORMALIZED PACKAGE LIST ---'
@@ -637,7 +639,7 @@ process_packages() {
     ' >"$STAGE_PATHS"
 
     # ========================================================================
-    # DEBUG STAGE 1 PATHS
+    # DEBUG STAGE 1: PATHS
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
         debug_print '\n===== DEBUG STAGE 1 PATHS =====\n'
@@ -650,7 +652,7 @@ process_packages() {
     fi
 
     # ========================================================================
-    # STAGE 1b: STAT
+    # STAGE 1b: STATS
     # ========================================================================
     #
     # STAGE_PATHS contains ONLY paths.
@@ -666,12 +668,12 @@ process_packages() {
             >"$STAGE_STATS"
 
     # ========================================================================
-    # DEBUG STAGE_STATS
+    # DEBUG STAGE 1b: STATS
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print '\n===== DEBUG STAGE_STATS =====\n'
+        debug_print '\n===== DEBUG STAGE 1b: STAGE_STATS =====\n'
         debug_print 'STAGE_STATS: [%s]\n' "$STAGE_STATS"
-        debug_print 'Lines: '
+        debug_print 'Stats: '
         wc -l <"$STAGE_STATS"
         debug_print '%s\n' '--- first 10 records ---'
         head -n 10 "$STAGE_STATS"
@@ -679,7 +681,7 @@ process_packages() {
     fi
 
     # ========================================================================
-    # STAGE 2: Match packages to stat metadata
+    # STAGE 2: Match packages to stat metadata (STAGE_MERGED)
     # ========================================================================
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
 
@@ -771,12 +773,12 @@ process_packages() {
     ' >"$STAGE_MERGED"
 
     # ========================================================================
-    # DEBUG STAGE_MERGED
+    # DEBUG STAGE 2: STAGE_MERGED
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print '\n===== DEBUG STAGE_MERGED =====\n'
+        debug_print '\n===== DEBUG STAGE 2: STAGE_MERGED =====\n'
         debug_print 'STAGE_MERGED: [%s]\n' "$STAGE_MERGED"
-        debug_print 'Lines: '
+        debug_print 'Merged: '
         wc -l <"$STAGE_MERGED"
         debug_print '%s\n' '--- first 10 records ---'
         head -n 10 "$STAGE_MERGED"
@@ -944,6 +946,17 @@ $fingerprint
         fi
 
     done <"$STAGE_MERGED"
+
+    if [ "$DEBUG" -eq 1 ]; then
+        debug_print '\n===== DEBUG STAGE 3: Compilation =====\n'
+        debug_print 'Compiled Apps: [%s]\n' "$STAGE_MERGED"
+        debug_print 'Compiled: '
+        wc -l <"$STAGE_MERGED"
+        debug_print '%s\n' '--- first 20 paths ---'
+        head -n 20 "$STAGE_MERGED"
+        debug_print '%s\n\n' '--- end DEBUG STAGE 1 PATHS ---'
+    fi
+
 
     # ========================================================================
     # Close current-run state file
