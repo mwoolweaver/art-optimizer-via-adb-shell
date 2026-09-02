@@ -235,6 +235,7 @@ TOTAL_SKIPPED=0
 TOTAL_FAILED=0
 TOTAL_INVALID=0
 TOTAL_WOULD_COMPILE=0
+STATE_COMMIT_SAFE=1
 CR=$(printf '\r')
 readonly CR
 get_thermal_status() {
@@ -614,6 +615,12 @@ process_packages() {
             }
         }
     ' >"$STAGE_MERGED"
+    stage2_exit=$?
+    if [ "$stage2_exit" -ne 0 ]; then
+        printf '    [!] ERROR: Stage 2 metadata merge failed (Exit Code: %d).\n' "$stage2_exit" >&2
+        STATE_COMMIT_SAFE=0
+        return 1
+    fi
     if [ "$DEBUG" -eq 1 ]; then
         debug_print "\n===== DEBUG STAGE 2: STAGE_MERGED =====\n"
         debug_print "STAGE_MERGED: $STAGE_MERGED\n"
@@ -816,8 +823,11 @@ if [ $sys_exit -ne 0 ]; then
         printf '        Output: %s\n' "$system_package_list" >&2
     fi
     SYSTEM_PKGS_COUNT=0
+    STATE_COMMIT_SAFE=0
 else
-    process_packages "$system_package_list" "system"
+    if ! process_packages "$system_package_list" "system"; then
+        STATE_COMMIT_SAFE=0
+    fi
 fi
 STEP2_DURATION=$((SECONDS - STEP2_START))
 printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
@@ -836,13 +846,18 @@ if [ $user_exit -ne 0 ]; then
         printf '        Output: %s\n' "$user_package_list" >&2
     fi
     USER_PKGS_COUNT=0
+    STATE_COMMIT_SAFE=0
 else
-    process_packages "$user_package_list" "speed-profile"
+    if ! process_packages "$user_package_list" "speed-profile"; then
+        STATE_COMMIT_SAFE=0
+    fi
 fi
 STEP3_DURATION=$((SECONDS - STEP3_START))
 printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Dry-run mode: Persistent state file and error logs were not modified.\n'
+elif [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
+    printf '    [!] WARNING: Run was incomplete. Persistent state file was NOT updated.\n' >&2
 else
     if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
         printf '[+] State unchanged. Persistent state file left untouched.\n'
@@ -858,14 +873,8 @@ else
             printf '[+] Persistent state file updated.\n'
         fi
     fi
-    if [ -s "$ERROR_TMPFILE" ]; then
-        if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
-            printf '    [!] WARNING: Failed to save error log to %s\n' "$ERROR_LOG" >&2
-        fi
-    fi
 fi
 SUCCESSFUL_RUN=1
-TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 error_notice=""
 if [ -s "$ERROR_LOG" ] && [ "$DRY_RUN" -eq 0 ]; then
@@ -873,8 +882,10 @@ if [ -s "$ERROR_LOG" ] && [ "$DRY_RUN" -eq 0 ]; then
 fi
 printf '\n==========================================\n'
 if [ "$DRY_RUN" -eq 1 ]; then
+    TOTAL_SCANNED == TOTAL_WOULD_COMPILE + TOTAL_SKIPPED + TOTAL_INVALID
     printf '[+] Maintenance Summary (DRY RUN):\n'
 else
+    TOTAL_SCANNED == TOTAL_COMPILED + TOTAL_SKIPPED + TOTAL_FAILED + TOTAL_INVALID
     printf '[+] Maintenance Summary:\n'
 fi
 printf '    - Step 1 (Cache Trim):     %ss\n' "$STEP1_DURATION"
@@ -885,11 +896,13 @@ printf '    - Grand Total:             %ss\n' "$TOTAL_DURATION"
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '    - Packages Would Compile:  %d\n' "$TOTAL_WOULD_COMPILE"
     printf '    - Packages Would Skip:     %d\n' "$TOTAL_SKIPPED"
+    printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
 else
     printf '    - Packages Compiled:         %d\n' "$TOTAL_COMPILED"
     printf '    - Packages Skipped (Cached): %d\n' "$TOTAL_SKIPPED"
     printf '    - Packages Failed:           %d\n' "$TOTAL_FAILED"
     printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
+    printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
 fi
 [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
 printf '==========================================\n'
