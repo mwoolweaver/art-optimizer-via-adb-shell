@@ -794,10 +794,20 @@ if [ -s "$ERROR_LOG" ] && [ "$DRY_RUN" -eq 0 ]; then
 fi
 printf '\n==========================================\n'
 if [ "$DRY_RUN" -eq 1 ]; then
-    TOTAL_SCANNED == TOTAL_WOULD_COMPILE + TOTAL_SKIPPED + TOTAL_INVALID
-    printf '[+] Maintenance Summary (DRY RUN):\n'
+    Tdebug_total=$((TOTAL_WOULD_COMPILE + TOTAL_SKIPPED + TOTAL_INVALID))
+    if [ "$TOTAL_SCANNED" -eq "$debug_total" ]; then
+        debug_print "[+] Final dry-run accounting verified."
+    else
+        debug_print "[!] WARNING: Final dry-run accounting mismatch."
+    fi
+        printf '[+] Maintenance Summary (DRY RUN):\n'
 else
-    TOTAL_SCANNED == TOTAL_COMPILED + TOTAL_SKIPPED + TOTAL_FAILED + TOTAL_INVALID
+    debug_total=$((TOTAL_COMPILED + TOTAL_SKIPPED + TOTAL_FAILED + TOTAL_INVALID))
+    if [ "$TOTAL_SCANNED" -eq "$debug_total" ]; then
+        debug_print "[+] Final accounting verified."
+    else
+        debug_print "[!] WARNING: Final accounting mismatch."
+    fi
     printf '[+] Maintenance Summary:\n'
 fi
 printf '    - Step 1 (Cache Trim):     %ss\n' "$STEP1_DURATION"
