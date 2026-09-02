@@ -551,9 +551,9 @@ process_packages() {
         return 1
     fi
     if [ "$DEBUG" -eq 1 ]; then
-        path_line_count=$(wc -l <"$STAGE_PATHS")
+        STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
         debug_print "===== DEBUG STAGE 1 PATHS ====="
-        debug_print "Paths: $path_line_count"
+        debug_print "Paths: $STAGE_PATH_COUNT"
         debug_print "--- first 20 paths ---"
         head -n 20 "$STAGE_PATHS"
         debug_print "--- end DEBUG STAGE 1 PATHS ---"
@@ -572,7 +572,6 @@ process_packages() {
         return 1
     fi
     if [ "$DEBUG" -eq 1 ]; then
-        STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
         STAGE_STAT_COUNT=$(wc -l <"$STAGE_STATS")
         debug_print "===== DEBUG STAGE 1b: STAT ACCOUNTING ====="
         debug_print "Unique paths submitted to stat: $STAGE_PATH_COUNT"
