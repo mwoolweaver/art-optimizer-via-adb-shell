@@ -24,7 +24,11 @@ show_help() {
         '    NO_USER=0|1'
 }
 for setting in DEBUG DRY_RUN NO_USER; do
-    eval "setting_value=\${$setting}"
+    case "$setting" in
+    DEBUG) setting_value="$DEBUG" ;;
+    DRY_RUN) setting_value="$DRY_RUN" ;;
+    NO_USER) setting_value="$NO_USER" ;;
+    esac
     case "$setting_value" in
     0 | 1)
         ;;
