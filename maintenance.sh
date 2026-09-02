@@ -240,23 +240,22 @@ cleanup() {
 
         # compile_errors.log represents the most recent real run attempt.
         if [ -n "${ERROR_TMPFILE:-}" ] &&
-            [ -f "$ERROR_TMPFILE" ]; then
+            [ -f "$ERROR_TMPFILE" ] &&
+            [ -s "$ERROR_TMPFILE" ]; then
 
-            if [ -s "$ERROR_TMPFILE" ]; then
-                debug_print "Saving latest run error log to: $ERROR_LOG"
+            debug_print "Saving latest run error log to: $ERROR_LOG"
 
-                if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
-                    printf '    [!] Warning: Failed to save error log to %s\n' \
-                        "$ERROR_LOG" >&2
-                fi
+            if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
+                printf '    [!] Warning: Failed to save error log to %s\n' \
+                    "$ERROR_LOG" >&2
+            fi
 
-            elif [ -f "$ERROR_LOG" ]; then
-                debug_print "Removing stale error log from previous run: $ERROR_LOG"
+        elif [ -f "$ERROR_LOG" ]; then
+            debug_print "Removing stale error log from previous run: $ERROR_LOG"
 
-                if ! rm -f "$ERROR_LOG" 2>/dev/null; then
-                    printf '    [!] Warning: Failed to remove stale error log %s\n' \
-                        "$ERROR_LOG" >&2
-                fi
+            if ! rm -f "$ERROR_LOG" 2>/dev/null; then
+                printf '    [!] Warning: Failed to remove stale error log %s\n' \
+                    "$ERROR_LOG" >&2
             fi
         fi
     fi
@@ -308,9 +307,6 @@ fi
 
 # Set the EXIT trap to run the unified cleanup function
 trap 'cleanup' EXIT
-
-# Initialize a flag to track successful completion
-SUCCESSFUL_RUN=0
 
 # Package counting variables
 SYSTEM_PKGS_COUNT=0
