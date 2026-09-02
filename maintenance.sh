@@ -104,7 +104,7 @@ done
 
 debug_print() {
     if [ "$DEBUG" -eq 1 ]; then
-        echo "[DEBUG] $1"
+        echo "[DEBUG] $1" >&2
     fi
 }
 
@@ -1590,7 +1590,11 @@ debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, m
 
 # Verify all temporary files were successfully created (safety check)
 if [ -z "$CURRENT_RUN_STATE" ] || [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ] || [ -z "$ERROR_TMPFILE" ]; then
-    report_error "[!] FATAL: Failed to create temporary state files in $TMPDIR. Aborting."
+    report_error "[!] FATAL: One or more temporary file paths are empty. Aborting."
+    exit 1
+
+elif [ ! -f "$CURRENT_RUN_STATE" ] || [ ! -f "$STAGE_STATS" ] || [ ! -f "$STAGE_MERGED" ] || [ ! -f "$ERROR_TMPFILE" ]; then
+    report_error "[!] FATAL: Failed to create one or more temporary files in $TMPDIR. Aborting."
     exit 1
 fi
 
