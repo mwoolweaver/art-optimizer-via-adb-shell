@@ -12,21 +12,19 @@
 #
 # Key Features:
 #   1. Dry-run simulation mode (--dry-run) for safe workflow testing.
-#   2. Built in debugging output (--debug) to help diagnose script failure.
+#   2. Built-in debugging output (--debug) to help diagnose script failure.
 #   3. Thermal and memory pressure safety checks to prevent thermal throttling.
 #   4. Incremental fingerprint-based tracking (.last_optimized, saved in same dir as script)
 #      to skip unchanged application packages and reduce CPU wake locks.
 #   5. Atomic temporary file handling and robust signal cleanup traps.
 # ============================================================================
 
-set -u # Exit immediately if any variable is unset
+set -u # Treat unset variable expansions as errors.
 
-# SECURITY: Restrict file creation umask to owner-only (rw-------)
-# This prevents accidental world-readable sensitive files
+# SECURITY: Restrict created files to owner access (rw-------).
 umask 077
 
-# PERFORMANCE: Force C locale (POSIX) instead of system locale
-# Avoids locale-specific string sorting/regex issues and speeds up text processing
+# PERFORMANCE: Use the C locale for predictable, faster text processing.
 export LC_ALL=C
 
 # ============================================================================
@@ -469,8 +467,8 @@ readonly CR
 
 # ============================================================================
 # FUNCTION: get_thermal_status()
-# Purpose: Retrieve current device temperature from dumpsys or sysfs
-# Returns: Temperature in Celsius, or "N/A" if unavailable
+# Purpose: Retrieve Android thermal status or fallback temperature
+# Returns: Status code (0-6), Celsius temperature, or "N/A"
 # ============================================================================
 get_thermal_status() {
     # Attempt 1: dumpsys thermalservice (Modern OS Status Code)
@@ -577,7 +575,7 @@ get_thermal_status() {
     for f in /sys/class/thermal/thermal_zone*/temp; do
         [ -r "$f" ] || continue
 
-        # Group the redirection to safely catch SELinux or read errors
+        # Capture read errors for debug output.
         val_out=$(<"$f" 2>&1)
         val_exit=$?
 
@@ -608,7 +606,7 @@ get_thermal_status() {
 
 # ============================================================================
 # FUNCTION: get_memory_pressure()
-# Purpose: Calculate memory pressure from MemTotal and MemAvailable using shell arithmetic
+# Purpose: Calculate memory pressure from MemTotal and MemAvailable
 # Returns: Percentage (0-100), or "N/A" if unavailable
 # ============================================================================
 get_memory_pressure() {
@@ -644,7 +642,7 @@ get_battery_level() {
     # Most Android devices expose battery capacity at physical sysfs path
     batt_path="/sys/class/power_supply/battery/capacity"
     if [ -f "$batt_path" ]; then
-        # Group the read operation to capture stderr via subshell redirection
+        # Capture read errors for debug output.
         cap_out=$(<"$batt_path" 2>&1)
         cap_exit=$?
 
@@ -722,9 +720,7 @@ process_packages() {
     pkg_list="$1"
     default_mode="$2"
 
-    # A successful package-manager query should not produce an empty list.
-    # Treat an unexpected empty enumeration as unsafe so persistent state
-    # cannot be replaced by an incomplete run.
+    # An empty package list is unsafe because it could replace valid state.
     if [ -z "$pkg_list" ]; then
         report_error "    [!] ERROR: Package list for mode '$default_mode' is unexpectedly empty."
         return 1
@@ -835,8 +831,7 @@ process_packages() {
 
     debug_print "Total packages parsed for '$default_mode': $total_pkgs"
 
-    # Expose the successfully parsed package count before later processing.
-    # This preserves the input count even if a later stage fails.
+    # Preserve the parsed package count even if a later stage fails.
     if [ "$default_mode" = "system" ]; then
         SYSTEM_PKGS_COUNT="$total_pkgs"
     else
@@ -923,10 +918,7 @@ process_packages() {
     # STAGE 1b: STATS
     # ========================================================================
     #
-    # STAGE_PATHS contains ONLY paths.
-    #
-    # We deliberately leave stderr visible while debugging so stat failures
-    # are not hidden.
+    # STAGE_PATHS contains only paths; keep stat errors visible in debug output.
     # ========================================================================
 
     debug_print "Running stat on unique paths..."
@@ -1593,14 +1585,10 @@ fi
 # Previous run's package fingerprints.
 PREV_STATE=""
 
-# Select the best baseline state for this run.
-#
-# Normal runs always use the authoritative complete .last_optimized state.
-#
-# --no-user runs prefer their own system-only state. On the first --no-user
-# run after a successful full run, no system-only state exists, so fall back
-# to .last_optimized as the baseline. Exact full-fingerprint matching means
-# user-app records in the full state do not interfere with system processing.
+## Select the state baseline.
+# Normal runs use .last_optimized. --no-user prefers its system-only state,
+# falling back to .last_optimized when none exists. Exact fingerprint matching
+# prevents user-app records from affecting system processing.
 STATE_READ_FILE="$STATE_FILE"
 
 if [ "$NO_USER" -eq 1 ] && [ ! -r "$NO_USER_STATE_FILE" ]; then
@@ -1633,10 +1621,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
 else
     printf '[+] Step 1: Trimming system and app caches...\n'
 
-    # Ask Package Manager to trim app caches until the requested amount of
-    # free storage is available. Using 99999999999 bytes sets a deliberately
-    # unreachable free-space target on typical devices, encouraging aggressive
-    # cache trimming.
+    # Use an intentionally unreachable free-space target to encourage aggressive
+    # Package Manager cache trimming.
     trim_out=$(pm trim-caches 99999999999 2>&1)
     trim_exit=$?
 
@@ -1649,7 +1635,6 @@ else
     fi
 fi
 
-# Calculate elapsed time for this step
 STEP1_DURATION=$((SECONDS - STEP1_START))
 printf '[+] Cache trim finished in %ss.\n' "$STEP1_DURATION"
 
@@ -1742,7 +1727,6 @@ fi
 # FINAL ACCOUNTING PREPARATION
 # ============================================================================
 
-# Calculate total package count.
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 
 # Prepare error notice based only on failures from THIS run.
@@ -1910,7 +1894,6 @@ if [ "$DRY_RUN" -eq 0 ] &&
     run_error_notice="    - [!] Maintenance errors occurred. See $RUN_ERROR_LOG"
 fi
 
-# Calculate total execution time.
 TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 
 printf '\n==========================================\n'
