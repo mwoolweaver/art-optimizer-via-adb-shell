@@ -193,50 +193,97 @@ readonly ERROR_LOG
 cleanup() {
     debug_print "Executing cleanup handler (SUCCESSFUL_RUN=$SUCCESSFUL_RUN)..."
 
-    if [ "$SUCCESSFUL_RUN" -eq 0 ]; then
-        # --- ABORTED OR FAILED RUN ---
-        # Save an early exit snapshot for debugging so we can see where it died
-        if [ -n "${CURRENT_RUN_STATE:-}" ] && [ -f "$CURRENT_RUN_STATE" ] && [ -s "$CURRENT_RUN_STATE" ]; then
-            debug_print "Saving early exit snapshot to: ${SCRIPT_DIR}/.early_exit"
-            if ! cp "$CURRENT_RUN_STATE" "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
-                printf '    [!] Warning: Failed to save early exit snapshot to %s\n' "${SCRIPT_DIR}/.early_exit" >&2
+    # Persistent diagnostic files are only modified by real runs.
+    if [ "${DRY_RUN:-0}" -eq 0 ]; then
+
+        if [ "$SUCCESSFUL_RUN" -eq 0 ]; then
+            # --- ABORTED OR FAILED REAL RUN ---
+
+            # .early_exit represents the most recent failed/aborted run.
+            if [ -n "${CURRENT_RUN_STATE:-}" ] &&
+                [ -f "$CURRENT_RUN_STATE" ] &&
+                [ -s "$CURRENT_RUN_STATE" ]; then
+
+                debug_print "Saving latest failed-run snapshot to: ${SCRIPT_DIR}/.early_exit"
+
+                if ! cp "$CURRENT_RUN_STATE" "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
+                    printf '    [!] Warning: Failed to save early exit snapshot to %s\n' \
+                        "${SCRIPT_DIR}/.early_exit" >&2
+                fi
+
+            elif [ -f "${SCRIPT_DIR}/.early_exit" ]; then
+                # Latest failed run produced no usable state snapshot, so an
+                # older .early_exit must not masquerade as the latest failure.
+                debug_print "Removing stale early-exit snapshot: ${SCRIPT_DIR}/.early_exit"
+
+                if ! rm -f "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
+                    printf '    [!] Warning: Failed to remove stale early exit snapshot %s\n' \
+                        "${SCRIPT_DIR}/.early_exit" >&2
+                fi
+            fi
+
+        else
+            # --- SUCCESSFUL COMPLETED REAL RUN ---
+
+            # A successful run supersedes any previous failed-run snapshot.
+            if [ -f "${SCRIPT_DIR}/.early_exit" ]; then
+                debug_print "Removing stale early-exit snapshot: ${SCRIPT_DIR}/.early_exit"
+
+                if ! rm -f "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
+                    printf '    [!] Warning: Failed to remove stale early exit snapshot %s\n' \
+                        "${SCRIPT_DIR}/.early_exit" >&2
+                fi
             fi
         fi
 
-        # Move error tempfile to final log if errors exist
-        if [ -n "${ERROR_TMPFILE:-}" ] && [ -f "$ERROR_TMPFILE" ] && [ -s "$ERROR_TMPFILE" ]; then
-            debug_print "Saving error log to: $ERROR_LOG"
-            if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
-                printf '    [!] Warning: Failed to save error log to %s\n' "$ERROR_LOG" >&2
-            fi
-        fi
-    else
-        # --- SUCCESSFUL RUN ---
-        # Nuke the debugging autopsy file since this run completed perfectly
-        if [ -f "${SCRIPT_DIR}/.early_exit" ]; then
-            debug_print "Cleaning up old autopsy file: ${SCRIPT_DIR}/.early_exit"
-            if ! rm -f "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
-                printf '    [!] Warning: Failed to clean up %s\n' "${SCRIPT_DIR}/.early_exit" >&2
+        # compile_errors.log represents the most recent real run attempt.
+        if [ -n "${ERROR_TMPFILE:-}" ] &&
+            [ -f "$ERROR_TMPFILE" ]; then
+
+            if [ -s "$ERROR_TMPFILE" ]; then
+                debug_print "Saving latest run error log to: $ERROR_LOG"
+
+                if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
+                    printf '    [!] Warning: Failed to save error log to %s\n' \
+                        "$ERROR_LOG" >&2
+                fi
+
+            elif [ -f "$ERROR_LOG" ]; then
+                debug_print "Removing stale error log from previous run: $ERROR_LOG"
+
+                if ! rm -f "$ERROR_LOG" 2>/dev/null; then
+                    printf '    [!] Warning: Failed to remove stale error log %s\n' \
+                        "$ERROR_LOG" >&2
+                fi
             fi
         fi
     fi
 
-    # Remove all volatile temporary files that STILL EXIST on disk
-    for tmpfile in "${CURRENT_RUN_STATE:-}" "${STAGE_PATHS:-}" "${STAGE_STATS:-}" "${STAGE_MERGED:-}" "${ERROR_TMPFILE:-}"; do
-        # Skip empty variable strings or files that have already been moved/removed
+    # Remove all volatile temporary files that still exist.
+    for tmpfile in \
+        "${CURRENT_RUN_STATE:-}" \
+        "${STAGE_PATHS:-}" \
+        "${STAGE_STATS:-}" \
+        "${STAGE_MERGED:-}" \
+        "${ERROR_TMPFILE:-}"
+    do
         if [ -n "$tmpfile" ] && [ -e "$tmpfile" ]; then
             debug_print "Cleaning up temporary file: $tmpfile"
+
             if ! rm -f "$tmpfile" 2>/dev/null; then
-                printf '    [!] Warning: Failed to clean up %s\n' "$tmpfile" >&2
+                printf '    [!] Warning: Failed to clean up %s\n' \
+                    "$tmpfile" >&2
             fi
         fi
     done
 
-    # Release the concurrency lock if it exists
+    # Release the concurrency lock if it exists.
     if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
         debug_print "Releasing concurrency lock at $LOCK_DIR"
+
         if ! rmdir "$LOCK_DIR" 2>/dev/null; then
-            printf '    [!] CRITICAL: Failed to release lock at %s. Manual deletion required.\n' "$LOCK_DIR" >&2
+            printf '    [!] CRITICAL: Failed to release lock at %s. Manual deletion required.\n' \
+                "$LOCK_DIR" >&2
         fi
     fi
 }
@@ -1481,6 +1528,9 @@ fi
 # ============================================================================
 # Mark the run as fully successful
 SUCCESSFUL_RUN=1
+
+# Calculate total package count
+TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 
 # Calculate total execution time
 TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
