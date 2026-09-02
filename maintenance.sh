@@ -146,8 +146,7 @@ fi
 # ============================================================================
 # Wait for Android Boot to Complete
 # ============================================================================
-# The system needs to finish booting before running optimizations
-# Sometimes optimizations are triggered by boot scripts before init completes
+# Wait for Android boot completion before optimization.
 BOOT_WAIT_ELAPSED=0
 while [ $BOOT_WAIT_ELAPSED -lt 300 ]; do
     [ "$(getprop sys.boot_completed)" = "1" ] && break
@@ -156,7 +155,7 @@ while [ $BOOT_WAIT_ELAPSED -lt 300 ]; do
     debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
 done
 
-# Explicitly abort if we timed out without booting
+# Abort on boot timeout.
 if [ "$(getprop sys.boot_completed)" != "1" ]; then
     echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
     exit 1
@@ -164,10 +163,7 @@ fi
 
 # ============================================================================
 # FUNCTION: check_deps()
-# Purpose: Verify all required shell commands are available on the system
-# Note: Assumes an Android device shell environment containing host tools
-#       like pm, cmd, dumpsys, getprop, and standard POSIX utilities. Collects
-#       all missing dependencies before failing so you can fix them at once.
+# Purpose: Verify required commands and report all missing dependencies.
 # ============================================================================
 check_deps() {
     missing=""
@@ -182,7 +178,7 @@ check_deps() {
         exit 1
     fi
 }
-# Verify all required commands are installed as soon as possible
+
 check_deps
 
 # ============================================================================
@@ -233,11 +229,11 @@ fi
 # ============================================================================
 # TEMP FILE & STATE MANAGEMENT VARIABLES
 # ============================================================================
-# Most Android systems have /data/local/tmp available; ensures temp files go to writable location
+# Default temporary files to Android's writable /data/local/tmp.
 export TMPDIR="${TMPDIR:-/data/local/tmp}"
 debug_print "Set TMPDIR to $TMPDIR"
 
-# Validate that TMPDIR exists and is actually writable
+# Require a writable temporary directory.
 if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
     echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting." >&2
     exit 1
@@ -554,9 +550,7 @@ get_thermal_status() {
         set +f
     fi
 
-    # dumpsys battery output is key-value pairs: "temperature: 350"
-    # When we find the "temperature:" key, the NEXT value is our temperature.
-    # Reset parser state so values from earlier calls cannot affect this pass.
+    # Parse the value following "temperature:"; reset parser state first.
     prev1=""
 
     for i in "$@"; do
@@ -621,17 +615,16 @@ get_memory_pressure() {
     if [ -r /proc/meminfo ]; then
         t=""
         a=""
-        # Read file natively line-by-line without cat or awk
+        # Read natively and stop once both values are found.
         while read -r key val _rest; do
             case "$key" in
             MemTotal:) t="$val" ;;
             MemAvailable:) a="$val" ;;
             esac
-            # Break early once both values are found to save cycles
             [ -n "$t" ] && [ -n "$a" ] && break
         done </proc/meminfo
 
-        # Perform pure integer math in the shell: ((Total - Available) * 100 / Total)
+        # Calculate memory pressure with shell arithmetic.
         if [ -n "$t" ] && [ -n "$a" ] && [ "$t" -gt 0 ]; then
             printf '%d\n' "$(((t - a) * 100 / t))"
         else
@@ -1273,10 +1266,8 @@ process_packages() {
         # Build fingerprint
         # ====================================================================
 
-        # Fingerprint format: package|path|metadata
-        # Uses '|' as delimiter (consistent with normalized package|path format above).
-        # This unique combination identifies if a package has changed since last optimization.
-        # Unchanged fingerprints skip recompilation; changed ones trigger fresh compilation.
+        # Fingerprint: package|path|metadata.
+        # Unchanged fingerprints skip recompilation.
 
         state_writable=1
         preserved_fingerprint=""
@@ -1413,12 +1404,8 @@ $fingerprint
                     "$current" "$total_pkgs" "$pkg_name"
 
                 # Write state only after successful compilation.
-                #
-                # With trustworthy current metadata, store the current
-                # fingerprint. If metadata was unavailable, carry forward a
-                # previous trustworthy fingerprint only now that compilation
-                # has succeeded. Failed compilations write no state and will
-                # therefore be retried on the next run.
+                # Use current metadata when trustworthy; otherwise preserve a previous
+                # trustworthy fingerprint. Failures write no state and are retried.
                 if [ "$state_writable" -eq 1 ]; then
                     echo "$fingerprint" >&3
                 elif [ -n "$preserved_fingerprint" ]; then
