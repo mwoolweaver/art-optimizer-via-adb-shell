@@ -122,7 +122,7 @@ esac
 # ============================================================================
 # INITIALIZATION: Timing and System Detection
 # ============================================================================
-# Record script start time for total duration calculation (in Unix epoch seconds)
+# Record the shell's elapsed-seconds counter for total duration calculation.
 TOTAL_START_TIME=$SECONDS
 
 # Query device properties (fail gracefully if unavailable)
@@ -437,7 +437,7 @@ get_thermal_status() {
 
 # ============================================================================
 # FUNCTION: get_memory_pressure()
-# Purpose: Calculate memory pressure as percentage of used memory directly via awk
+# Purpose: Calculate memory pressure from MemTotal and MemAvailable using shell arithmetic
 # Returns: Percentage (0-100), or "N/A" if unavailable
 # ============================================================================
 get_memory_pressure() {
@@ -1404,10 +1404,10 @@ if [ "$DRY_RUN" -eq 1 ]; then
 else
     printf '[+] Step 1: Trimming system and app caches...\n'
 
-    # Tell package manager to clean app caches
-    # Argument is requested cache size (bytes). Using 99999999999 (~92GB) ensures
-    # aggressive cleanup of all user app caches. On mobile, this is larger than
-    # any partition, forcing complete cache eviction.
+    # Ask Package Manager to trim app caches until the requested amount of
+    # free storage is available. Using 99999999999 bytes sets a deliberately
+    # unreachable free-space target on typical devices, encouraging aggressive
+    # cache trimming..
     trim_out=$(pm trim-caches 99999999999 2>&1)
     trim_exit=$?
 
