@@ -1571,7 +1571,7 @@ case "$FREE_KB" in
     ;;
 esac
 
-debug_print "Available storage on /data: ${FREE_KB:-0} KB"
+debug_print "Available storage on /data: ${FREE_KB:-N/A} KB"
 
 if [ -z "$FREE_KB" ]; then
     report_error "    [!] WARNING: Could not determine free storage on /data. Proceeding with caution."
