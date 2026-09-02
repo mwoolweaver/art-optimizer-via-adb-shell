@@ -1589,7 +1589,7 @@ CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
 STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
 STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
 ERROR_TMPFILE=$(mktemp "${TMPDIR}/errors.$$.XXXXXX")
-debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED errors=$ERROR_TMPFILE"
+debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED, errors=$ERROR_TMPFILE"
 
 # Verify all temporary files were successfully created (safety check)
 if [ -z "$CURRENT_RUN_STATE" ] || [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ] || [ -z "$ERROR_TMPFILE" ]; then
