@@ -210,19 +210,18 @@ cleanup() {
             fi
         fi
         if [ -n "${ERROR_TMPFILE:-}" ] &&
-            [ -f "$ERROR_TMPFILE" ]; then
-            if [ -s "$ERROR_TMPFILE" ]; then
-                debug_print "Saving latest run error log to: $ERROR_LOG"
-                if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
-                    printf '    [!] Warning: Failed to save error log to %s\n' \
-                        "$ERROR_LOG" >&2
-                fi
-            elif [ -f "$ERROR_LOG" ]; then
-                debug_print "Removing stale error log from previous run: $ERROR_LOG"
-                if ! rm -f "$ERROR_LOG" 2>/dev/null; then
-                    printf '    [!] Warning: Failed to remove stale error log %s\n' \
-                        "$ERROR_LOG" >&2
-                fi
+            [ -f "$ERROR_TMPFILE" ] &&
+            [ -s "$ERROR_TMPFILE" ]; then
+            debug_print "Saving latest run error log to: $ERROR_LOG"
+            if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
+                printf '    [!] Warning: Failed to save error log to %s\n' \
+                    "$ERROR_LOG" >&2
+            fi
+        elif [ -f "$ERROR_LOG" ]; then
+            debug_print "Removing stale error log from previous run: $ERROR_LOG"
+            if ! rm -f "$ERROR_LOG" 2>/dev/null; then
+                printf '    [!] Warning: Failed to remove stale error log %s\n' \
+                    "$ERROR_LOG" >&2
             fi
         fi
     fi
@@ -257,7 +256,6 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     exit 1
 fi
 trap 'cleanup' EXIT
-SUCCESSFUL_RUN=0
 SYSTEM_PKGS_COUNT=0
 USER_PKGS_COUNT=0
 TOTAL_COMPILED=0
