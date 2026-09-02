@@ -2,9 +2,9 @@
 set -u # Exit immediately if any variable is unset
 umask 077
 export LC_ALL=C
-DEBUG="${DEBUG:-0}"
-DRY_RUN="${DRY_RUN:-0}"
-NO_USER="${NO_USER:-0}"
+DEBUG="${DEBUG-0}"
+DRY_RUN="${DRY_RUN-0}"
+NO_USER="${NO_USER-0}"
 show_help() {
     printf '%s\n' \
         'ART Smart Maintenance Script' \
