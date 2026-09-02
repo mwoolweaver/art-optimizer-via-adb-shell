@@ -1169,7 +1169,7 @@ process_packages() {
         preserved_fingerprint=""
         fingerprint="${pkg_name}|${apk_path}|${file_meta}"
 
-        case "$fingerprint" in
+        case "${file_meta}" in
 
         *UNAVAILABLE*)
 
