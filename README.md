@@ -121,8 +121,7 @@ for setting in DEBUG DRY_RUN NO_USER; do
     0 | 1)
         ;;
     *)
-        printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' \
-            "$setting" "$setting_value"
+        printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' "$setting" "$setting_value" >&2
         show_help
         exit 1
         ;;
@@ -144,7 +143,7 @@ for arg in "$@"; do
         exit 0
         ;;
     *)
-        printf '[!] FATAL: Unknown option: %s\n\n' "$arg"
+        printf '[!] FATAL: Unknown option: %s\n\n' "$arg" >&2
         show_help
         exit 1
         ;;
@@ -175,7 +174,7 @@ fi
 SCRIPT_UID=${USER_ID:-1}
 debug_print "Checked user ID: $SCRIPT_UID"
 if [ "$SCRIPT_UID" -ne 0 ] && [ "$SCRIPT_UID" -ne 2000 ]; then
-    echo "[!] FATAL: Elevated privileges required (root or adb shell). Aborting."
+    echo "[!] FATAL: Elevated privileges required (root or adb shell). Aborting." >&2
     exit 1
 fi
 BOOT_WAIT_ELAPSED=0
@@ -186,7 +185,7 @@ while [ $BOOT_WAIT_ELAPSED -lt 300 ]; do
     debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
 done
 if [ "$(getprop sys.boot_completed)" != "1" ]; then
-    echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting."
+    echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
     exit 1
 fi
 check_deps() {
@@ -198,14 +197,14 @@ check_deps() {
         fi
     done
     if [ -n "$missing" ]; then
-        echo "[!] FATAL: Required commands missing: $missing"
+        echo "[!] FATAL: Required commands missing: $missing" >&2
         exit 1
     fi
 }
 check_deps
 case "$(service check package 2>/dev/null)" in
 *"not found"* | "")
-    echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting."
+    echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting." >&2
     exit 1
     ;;
 esac
@@ -217,7 +216,7 @@ sdk_version="${sdk_version:-0}"
 debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
 MIN_SDK=24
 if [ "$sdk_version" -lt "$MIN_SDK" ]; then
-    echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version"
+    echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version" >&2
     exit 1
 fi
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -228,7 +227,7 @@ fi
 export TMPDIR="${TMPDIR:-/data/local/tmp}"
 debug_print "Set TMPDIR to $TMPDIR"
 if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
-    echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting."
+    echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting." >&2
     exit 1
 fi
 case "$0" in
@@ -238,7 +237,7 @@ esac
 readonly SCRIPT_DIR
 debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
 if ! [ -w "$SCRIPT_DIR" ]; then
-    echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting."
+    echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting." >&2
     exit 1
 fi
 FULL_STATE_FILE="${SCRIPT_DIR}/.last_optimized"
@@ -348,14 +347,13 @@ trap 'report_error "    [!] Terminated by system (SIGTERM). Cleaning up..."; exi
 LOCK_DIR="${TMPDIR}/art_maintenance.lock"
 debug_print "Acquiring lock directory at $LOCK_DIR"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n'
+    printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n' >&2
     exit 1
 fi
 trap 'cleanup' EXIT
 RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX")
 if [ -z "$RUN_ERROR_TMPFILE" ] || [ ! -f "$RUN_ERROR_TMPFILE" ]; then
-    printf '[!] FATAL: Failed to create maintenance error tempfile in %s. Aborting.\n' \
-        "$TMPDIR" >&2
+    printf '[!] FATAL: Failed to create maintenance error tempfile in %s. Aborting.\n' "$TMPDIR" >&2
     exit 1
 fi
 debug_print "Created maintenance error tempfile: $RUN_ERROR_TMPFILE"
@@ -370,84 +368,80 @@ STATE_COMMIT_SAFE=1
 CR=$(printf '\r')
 readonly CR
 get_thermal_status() {
-    if command -v dumpsys >/dev/null 2>&1; then
-        therm_status=""
-        therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
-        if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
-            debug_print "Parsed global thermal status code: $therm_status"
-            printf '%s\n' "$therm_status"
-            return 0
-        fi
+    therm_status=""
+    therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
+    if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
+        debug_print "Parsed global thermal status code: $therm_status"
+        printf '%s\n' "$therm_status"
+        return 0
     fi
-    if command -v dumpsys >/dev/null 2>&1; then
-        out=$(dumpsys hardware_properties 2>/dev/null || true)
-        if [ -n "$out" ]; then
-            debug_print "Parsed thermal status from hardware_properties dumpsys."
-            temp=$(printf "%s\n" "$out" | awk '
-                /CPU temperatures:/ {
-                    if (match($0, /\[[^]]*\]/)) {
-                        line = substr($0, RSTART + 1, RLENGTH - 2)
-                        n = split(line, temps, ",[ ]*")
-                        max_t = 0
-                        for (i = 1; i <= n; i++) {
-                            if (temps[i] ~ /^[0-9]+$/) {
-                                t = temps[i] + 0
-                                if (t > max_t && t < 120)
-                                    max_t = t
-                            }
+    out=$(dumpsys hardware_properties 2>/dev/null || true)
+    if [ -n "$out" ]; then
+        debug_print "Parsed thermal status from hardware_properties dumpsys."
+        temp=$(printf "%s\n" "$out" | awk '
+            /CPU temperatures:/ {
+                if (match($0, /\[[^]]*\]/)) {
+                    line = substr($0, RSTART + 1, RLENGTH - 2)
+                    n = split(line, temps, ",[ ]*")
+                    max_t = 0
+                    for (i = 1; i <= n; i++) {
+                        if (temps[i] ~ /^[0-9]+$/) {
+                            t = temps[i] + 0
+                            if (t > max_t && t < 120)
+                                max_t = t
                         }
-                        if (max_t > 0) {
-                            printf "%d", max_t
+                    }
+                    if (max_t > 0) {
+                        printf "%d", max_t
+                        exit
+                    }
+                }
+            }
+            /Skin temperatures:/ {
+                if (match($0, /\[[^]]*\]/)) {
+                    line = substr($0, RSTART + 1, RLENGTH - 2)
+                    if (line ~ /^[0-9]+$/) {
+                        t = line + 0
+                        if (t > 0 && t < 120) {
+                            printf "%d", t
                             exit
                         }
                     }
                 }
-                /Skin temperatures:/ {
-                    if (match($0, /\[[^]]*\]/)) {
-                        line = substr($0, RSTART + 1, RLENGTH - 2)
-                        if (line ~ /^[0-9]+$/) {
-                            t = line + 0
-                            if (t > 0 && t < 120) {
-                                printf "%d", t
-                                exit
-                            }
-                        }
-                    }
-                }
-            ')
-            if [ -n "$temp" ]; then
-                printf '%s\n' "$temp"
-                return 0
-            fi
+            }
+        ')
+        if [ -n "$temp" ]; then
+            printf '%s\n' "$temp"
+            return 0
         fi
-        case "$-" in
-        *f*) battery_noglob_was_set=1 ;;
-        *) battery_noglob_was_set=0 ;;
-        esac
-        set -f
-        set -- $(dumpsys battery 2>/dev/null)
-        if [ "$battery_noglob_was_set" -eq 0 ]; then
-            set +f
-        fi
-        prev1=""
-        for i in "$@"; do
-            if [ "$prev1" = "temperature:" ]; then
-                case "$i" in
-                '' | *[!0-9]*)
-                    debug_print "Invalid battery temperature value from dumpsys battery: $i"
-                    ;;
-                *)
-                    bat_temp=$((i / 10))
-                    if [ "$bat_temp" -gt 0 ]; then
-                        printf '%d\n' "$bat_temp"
-                        return 0
-                    fi
-                    ;;
-                esac
-            fi
-            prev1="$i"
-        done
     fi
+    case "$-" in
+    *f*) battery_noglob_was_set=1 ;;
+    *) battery_noglob_was_set=0 ;;
+    esac
+    set -f
+    set -- $(dumpsys battery 2>/dev/null)
+    if [ "$battery_noglob_was_set" -eq 0 ]; then
+        set +f
+    fi
+    prev1=""
+    for i in "$@"; do
+        if [ "$prev1" = "temperature:" ]; then
+            case "$i" in
+            '' | *[!0-9]*)
+                debug_print "Invalid battery temperature value from dumpsys battery: $i"
+                ;;
+            *)
+                bat_temp=$((i / 10))
+                if [ "$bat_temp" -gt 0 ]; then
+                    printf '%d\n' "$bat_temp"
+                    return 0
+                fi
+                ;;
+            esac
+        fi
+        prev1="$i"
+    done
     for f in /sys/class/thermal/thermal_zone*/temp; do
         [ -r "$f" ] || continue
         val_out=$(<"$f" 2>&1)
