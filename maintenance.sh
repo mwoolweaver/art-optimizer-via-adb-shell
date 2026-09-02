@@ -32,24 +32,71 @@ export LC_ALL=C
 # ============================================================================
 # DEBUG, DRY_RUN & NO_USER CONFIGURATION
 # Purpose: Enable debug logging, dry-run ability, or explicit user-app skipping
-#          via environment variables or command-line flags.
+#          via validated environment variables or command-line flags.
 # ============================================================================
+
 DEBUG="${DEBUG:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 NO_USER="${NO_USER:-0}"
-for arg in "$@"; do
-    case "$arg" in
-    --debug) DEBUG=1 ;;
-    --dry-run) DRY_RUN=1 ;;
-    --no-user) NO_USER=1 ;;
+
+show_help() {
+    printf '%s\n' \
+        'ART Smart Maintenance Script' \
+        '' \
+        'Usage:' \
+        '    maintenance.sh [OPTIONS]' \
+        '' \
+        'Options:' \
+        '    --no-user     Skip user/third-party app optimization and use the system-only state cache.' \
+        '    --dry-run     Simulate maintenance without compiling packages or modifying persistent state.' \
+        '    --debug       Enable verbose debug output.' \
+        '    --help        Display this help text and exit.' \
+        '' \
+        'Environment variables:' \
+        '    DEBUG=0|1' \
+        '    DRY_RUN=0|1' \
+        '    NO_USER=0|1'
+}
+
+# Validate environment-variable configuration before any numeric comparisons.
+for setting in DEBUG DRY_RUN NO_USER; do
+    eval "setting_value=\${$setting}"
+
+    case "$setting_value" in
+    0 | 1)
+        ;;
+    *)
+        printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' \
+            "$setting" "$setting_value" >&2
+        show_help >&2
+        exit 1
+        ;;
     esac
 done
 
-debug_print() {
-    if [ "$DEBUG" -eq 1 ]; then
-        echo "[DEBUG] $1" >&2
-    fi
-}
+# Parse command-line options.
+for arg in "$@"; do
+    case "$arg" in
+    --debug)
+        DEBUG=1
+        ;;
+    --dry-run)
+        DRY_RUN=1
+        ;;
+    --no-user)
+        NO_USER=1
+        ;;
+    --help)
+        show_help
+        exit 0
+        ;;
+    *)
+        printf '[!] FATAL: Unknown option: %s\n\n' "$arg" >&2
+        show_help >&2
+        exit 1
+        ;;
+    esac
+done
 
 # Print an operational/runtime error to stderr and, when available, append it
 # to the current real run's maintenance error log tempfile.
