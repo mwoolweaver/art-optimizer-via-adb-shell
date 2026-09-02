@@ -93,18 +93,59 @@ export LC_ALL=C
 DEBUG="${DEBUG:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 NO_USER="${NO_USER:-0}"
-for arg in "$@"; do
-    case "$arg" in
-    --debug) DEBUG=1 ;;
-    --dry-run) DRY_RUN=1 ;;
-    --no-user) NO_USER=1 ;;
+show_help() {
+    printf '%s\n' \
+        'ART Smart Maintenance Script' \
+        '' \
+        'Usage:' \
+        '    maintenance.sh [OPTIONS]' \
+        '' \
+        'Options:' \
+        '    --no-user     Skip user/third-party app optimization and use the system-only state cache.' \
+        '    --dry-run     Simulate maintenance without compiling packages or modifying persistent state.' \
+        '    --debug       Enable verbose debug output.' \
+        '    --help        Display this help text and exit.' \
+        '' \
+        'Environment variables:' \
+        '    DEBUG=0|1' \
+        '    DRY_RUN=0|1' \
+        '    NO_USER=0|1'
+}
+for setting in DEBUG DRY_RUN NO_USER; do
+    eval "setting_value=\${$setting}"
+    case "$setting_value" in
+    0 | 1)
+        ;;
+    *)
+        printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' \
+            "$setting" "$setting_value" >&2
+        show_help >&2
+        exit 1
+        ;;
     esac
 done
-debug_print() {
-    if [ "$DEBUG" -eq 1 ]; then
-        echo "[DEBUG] $1" >&2
-    fi
-}
+for arg in "$@"; do
+    case "$arg" in
+    --debug)
+        DEBUG=1
+        ;;
+    --dry-run)
+        DRY_RUN=1
+        ;;
+    --no-user)
+        NO_USER=1
+        ;;
+    --help)
+        show_help
+        exit 0
+        ;;
+    *)
+        printf '[!] FATAL: Unknown option: %s\n\n' "$arg" >&2
+        show_help >&2
+        exit 1
+        ;;
+    esac
+done
 report_error() {
     printf '%s\n' "$1" >&2
     if [ "${DRY_RUN:-0}" -eq 0 ] &&
