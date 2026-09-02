@@ -810,7 +810,7 @@ process_packages() {
         debug_print "===== DEBUG NORMALIZED PACKAGE LIST ====="
         debug_print "Packages: $PACKAGE_LINE_COUNT"
         debug_print "--- first 10 records ---"
-        echo "$pkg_list" | head -n 10
+        echo "$pkg_list" | head -n 10 >&2
         debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
     fi
 
@@ -921,7 +921,7 @@ process_packages() {
         debug_print "===== DEBUG STAGE 1 PATHS ====="
         debug_print "Paths: $STAGE_PATH_COUNT"
         debug_print "--- first 20 paths ---"
-        head -n 20 "$STAGE_PATHS"
+        head -n 20 "$STAGE_PATHS" >&2
         debug_print "--- end DEBUG STAGE 1 PATHS ---"
     fi
 
@@ -1200,12 +1200,12 @@ process_packages() {
     # DEBUG STAGE 2: STAGE_MERGED
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
-        merged_line_count=$(wc -l <"$STAGE_MERGED")
+        MERGED_LINE_COUNT=$(wc -l <"$STAGE_MERGED")
         debug_print "===== DEBUG STAGE 2: STAGE_MERGED ====="
         debug_print "STAGE_MERGED: $STAGE_MERGED"
-        debug_print "Merged: $merged_line_count"
+        debug_print "Merged: $MERGED_LINE_COUNT"
         debug_print "--- first 10 records ---"
-        head -n 10 "$STAGE_MERGED"
+        head -n 10 "$STAGE_MERGED" >&2
         debug_print "--- end DEBUG STAGE_MERGED ---"
     fi
 
