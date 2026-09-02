@@ -146,6 +146,7 @@ cleanup() {
     fi
     for tmpfile in \
         "${CURRENT_RUN_STATE:-}" \
+        "${STATE_STAGE_TMP:-}" \
         "${STAGE_PATHS:-}" \
         "${STAGE_STATS:-}" \
         "${STAGE_MERGED:-}" \
@@ -809,10 +810,12 @@ if ! print_system_status "PRE-FLIGHT CHECK"; then
     report_error "[!] FATAL: Pre-flight system health check failed. Aborting."
     exit 1
 fi
+FREE_KB=""
+prev1=""
+prev2=""
 set -f
 set -- $(df -k /data 2>/dev/null)
 set +f
-FREE_KB=""
 for i in "$@"; do
     case "$i" in
     /data*)
@@ -959,16 +962,36 @@ else
     if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
         printf '[+] State unchanged. Persistent state file left untouched.\n'
     else
-        mv_out=$(mv "$CURRENT_RUN_STATE" "$STATE_FILE" 2>&1)
-        mv_exit=$?
-        if [ "$mv_exit" -ne 0 ]; then
-            report_error "    [!] WARNING: Failed to update persistent state file (Exit Code: $mv_exit)."
-            if [ -n "$mv_out" ]; then
-                report_error "        Output: $mv_out"
-            fi
+        STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized.$$.XXXXXX")
+        state_stage_exit=$?
+        if [ "$state_stage_exit" -ne 0 ] ||
+            [ -z "$STATE_STAGE_TMP" ] ||
+            [ ! -f "$STATE_STAGE_TMP" ]; then
+            report_error "    [!] WARNING: Failed to create same-filesystem state staging file."
             STATE_COMMIT_SAFE=0
         else
-            printf '[+] Persistent state file updated.\n'
+            cp_out=$(cp "$CURRENT_RUN_STATE" "$STATE_STAGE_TMP" 2>&1)
+            cp_exit=$?
+            if [ "$cp_exit" -ne 0 ]; then
+                report_error "    [!] WARNING: Failed to stage persistent state (Exit Code: $cp_exit)."
+                if [ -n "$cp_out" ]; then
+                    report_error "        Output: $cp_out"
+                fi
+                STATE_COMMIT_SAFE=0
+            else
+                mv_out=$(mv "$STATE_STAGE_TMP" "$STATE_FILE" 2>&1)
+                mv_exit=$?
+                if [ "$mv_exit" -ne 0 ]; then
+                    report_error "    [!] WARNING: Failed to atomically update persistent state file (Exit Code: $mv_exit)."
+                    if [ -n "$mv_out" ]; then
+                        report_error "        Output: $mv_out"
+                    fi
+                    STATE_COMMIT_SAFE=0
+                else
+                    STATE_STAGE_TMP=""
+                    printf '[+] Persistent state file updated atomically.\n'
+                fi
+            fi
         fi
     fi
 fi
