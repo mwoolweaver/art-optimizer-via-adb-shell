@@ -70,8 +70,7 @@ for setting in DEBUG DRY_RUN NO_USER; do
     0 | 1)
         ;;
     *)
-        printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' \
-            "$setting" "$setting_value"
+        printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' "$setting" "$setting_value" >&2
         show_help
         exit 1
         ;;
@@ -95,7 +94,7 @@ for arg in "$@"; do
         exit 0
         ;;
     *)
-        printf '[!] FATAL: Unknown option: %s\n\n' "$arg"
+        printf '[!] FATAL: Unknown option: %s\n\n' "$arg" >&2
         show_help
         exit 1
         ;;
@@ -140,7 +139,7 @@ fi
 SCRIPT_UID=${USER_ID:-1}
 debug_print "Checked user ID: $SCRIPT_UID"
 if [ "$SCRIPT_UID" -ne 0 ] && [ "$SCRIPT_UID" -ne 2000 ]; then
-    echo "[!] FATAL: Elevated privileges required (root or adb shell). Aborting."
+    echo "[!] FATAL: Elevated privileges required (root or adb shell). Aborting." >&2
     exit 1
 fi
 
@@ -159,7 +158,7 @@ done
 
 # Explicitly abort if we timed out without booting
 if [ "$(getprop sys.boot_completed)" != "1" ]; then
-    echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting."
+    echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
     exit 1
 fi
 
@@ -179,7 +178,7 @@ check_deps() {
         fi
     done
     if [ -n "$missing" ]; then
-        echo "[!] FATAL: Required commands missing: $missing"
+        echo "[!] FATAL: Required commands missing: $missing" >&2
         exit 1
     fi
 }
@@ -192,7 +191,7 @@ check_deps
 # ============================================================================
 case "$(service check package 2>/dev/null)" in
 *"not found"* | "")
-    echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting."
+    echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting." >&2
     exit 1
     ;;
 esac
@@ -219,7 +218,7 @@ debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
 MIN_SDK=24
 
 if [ "$sdk_version" -lt "$MIN_SDK" ]; then
-    echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version"
+    echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version" >&2
     exit 1
 fi
 
@@ -238,7 +237,7 @@ debug_print "Set TMPDIR to $TMPDIR"
 
 # Validate that TMPDIR exists and is actually writable
 if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
-    echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting."
+    echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting." >&2
     exit 1
 fi
 
@@ -252,7 +251,7 @@ debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
 
 # Validate that SCRIPT_DIR is writable for persistent state files
 if ! [ -w "$SCRIPT_DIR" ]; then
-    echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting."
+    echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting." >&2
     exit 1
 fi
 
@@ -434,7 +433,7 @@ LOCK_DIR="${TMPDIR}/art_maintenance.lock"
 debug_print "Acquiring lock directory at $LOCK_DIR"
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n'
+    printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n' >&2
     exit 1
 fi
 
@@ -446,8 +445,7 @@ trap 'cleanup' EXIT
 RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX")
 
 if [ -z "$RUN_ERROR_TMPFILE" ] || [ ! -f "$RUN_ERROR_TMPFILE" ]; then
-    printf '[!] FATAL: Failed to create maintenance error tempfile in %s. Aborting.\n' \
-        "$TMPDIR" >&2
+    printf '[!] FATAL: Failed to create maintenance error tempfile in %s. Aborting.\n' "$TMPDIR" >&2
     exit 1
 fi
 
@@ -475,113 +473,110 @@ readonly CR
 # ============================================================================
 get_thermal_status() {
     # Attempt 1: dumpsys thermalservice (Modern OS Status Code)
-    if command -v dumpsys >/dev/null 2>&1; then
-        therm_status=""
-        therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
+    therm_status=""
+    therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
 
-        # Verify output is a valid integer
-        if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
-            debug_print "Parsed global thermal status code: $therm_status"
-            printf '%s\n' "$therm_status"
-            return 0
-        fi
+    # Verify output is a valid integer
+    if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
+        debug_print "Parsed global thermal status code: $therm_status"
+        printf '%s\n' "$therm_status"
+        return 0
     fi
 
     # Attempt 2: dumpsys hardware_properties (Best for root, often denied for ADB)
-    if command -v dumpsys >/dev/null 2>&1; then
-        out=$(dumpsys hardware_properties 2>/dev/null || true)
-        if [ -n "$out" ]; then
-            debug_print "Parsed thermal status from hardware_properties dumpsys."
+    out=$(dumpsys hardware_properties 2>/dev/null || true)
 
-            # Complex regex to extract temperatures from various dumpsys formats:
-            # - Looks for [...] bracket notation containing comma-separated values
-            # - Extracts all numeric values between brackets
-            # - Filters out unrealistic temps (>120°C) and invalid data
-            # - Returns maximum temperature found to detect hottest sensor
-            temp=$(printf "%s\n" "$out" | awk '
-                /CPU temperatures:/ {
-                    if (match($0, /\[[^]]*\]/)) {
-                        line = substr($0, RSTART + 1, RLENGTH - 2)
-                        n = split(line, temps, ",[ ]*")
-                        max_t = 0
+    if [ -n "$out" ]; then
+        debug_print "Parsed thermal status from hardware_properties dumpsys."
 
-                        for (i = 1; i <= n; i++) {
-                            if (temps[i] ~ /^[0-9]+$/) {
-                                t = temps[i] + 0
-                                if (t > max_t && t < 120)
-                                    max_t = t
-                            }
+        # Complex regex to extract temperatures from various dumpsys formats:
+        # - Looks for [...] bracket notation containing comma-separated values
+        # - Extracts all numeric values between brackets
+        # - Filters out unrealistic temps (>120°C) and invalid data
+        # - Returns maximum temperature found to detect hottest sensor
+        temp=$(printf "%s\n" "$out" | awk '
+            /CPU temperatures:/ {
+                if (match($0, /\[[^]]*\]/)) {
+                    line = substr($0, RSTART + 1, RLENGTH - 2)
+                    n = split(line, temps, ",[ ]*")
+                    max_t = 0
+
+                    for (i = 1; i <= n; i++) {
+                        if (temps[i] ~ /^[0-9]+$/) {
+                            t = temps[i] + 0
+                            if (t > max_t && t < 120)
+                                max_t = t
                         }
+                    }
 
-                        if (max_t > 0) {
-                            printf "%d", max_t
+                    if (max_t > 0) {
+                        printf "%d", max_t
+                        exit
+                    }
+                }
+            }
+
+            /Skin temperatures:/ {
+                if (match($0, /\[[^]]*\]/)) {
+                    line = substr($0, RSTART + 1, RLENGTH - 2)
+
+                    if (line ~ /^[0-9]+$/) {
+                        t = line + 0
+
+                        if (t > 0 && t < 120) {
+                            printf "%d", t
                             exit
                         }
                     }
                 }
+            }
+        ')
 
-                /Skin temperatures:/ {
-                    if (match($0, /\[[^]]*\]/)) {
-                        line = substr($0, RSTART + 1, RLENGTH - 2)
-
-                        if (line ~ /^[0-9]+$/) {
-                            t = line + 0
-
-                            if (t > 0 && t < 120) {
-                                printf "%d", t
-                                exit
-                            }
-                        }
-                    }
-                }
-            ')
-
-            if [ -n "$temp" ]; then
-                printf '%s\n' "$temp"
-                return 0
-            fi
+        if [ -n "$temp" ]; then
+            printf '%s\n' "$temp"
+            return 0
         fi
-
-        # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
-        # Battery temperature is in tenths of a degree (e.g. 350 = 35.0 C)
-        case "$-" in
-        *f*) battery_noglob_was_set=1 ;;
-        *) battery_noglob_was_set=0 ;;
-        esac
-
-        set -f
-        # shellcheck disable=SC2046
-        set -- $(dumpsys battery 2>/dev/null)
-
-        if [ "$battery_noglob_was_set" -eq 0 ]; then
-            set +f
-        fi
-
-        # dumpsys battery output is key-value pairs: "temperature: 350"
-        # When we find the "temperature:" key, the NEXT value is our temperature.
-        # Reset parser state so values from earlier calls cannot affect this pass.
-        prev1=""
-
-        for i in "$@"; do
-            if [ "$prev1" = "temperature:" ]; then
-                case "$i" in
-                '' | *[!0-9]*)
-                    debug_print "Invalid battery temperature value from dumpsys battery: $i"
-                    ;;
-                *)
-                    bat_temp=$((i / 10))
-
-                    if [ "$bat_temp" -gt 0 ]; then
-                        printf '%d\n' "$bat_temp"
-                        return 0
-                    fi
-                    ;;
-                esac
-            fi
-
-            prev1="$i"
-        done
     fi
+
+    # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
+    # Battery temperature is in tenths of a degree (e.g. 350 = 35.0 C)
+    case "$-" in
+    *f*) battery_noglob_was_set=1 ;;
+    *) battery_noglob_was_set=0 ;;
+    esac
+
+    set -f
+    # shellcheck disable=SC2046
+    set -- $(dumpsys battery 2>/dev/null)
+
+    if [ "$battery_noglob_was_set" -eq 0 ]; then
+        set +f
+    fi
+
+    # dumpsys battery output is key-value pairs: "temperature: 350"
+    # When we find the "temperature:" key, the NEXT value is our temperature.
+    # Reset parser state so values from earlier calls cannot affect this pass.
+    prev1=""
+
+    for i in "$@"; do
+        if [ "$prev1" = "temperature:" ]; then
+            case "$i" in
+            '' | *[!0-9]*)
+                debug_print "Invalid battery temperature value from dumpsys battery: $i"
+                ;;
+            *)
+                bat_temp=$((i / 10))
+
+                if [ "$bat_temp" -gt 0 ]; then
+                    printf '%d\n' "$bat_temp"
+                    return 0
+                fi
+                ;;
+            esac
+        fi
+
+        prev1="$i"
+    done
 
     # Fallback: sysfs (Good for root, fails for ADB due to Android SELinux rules)
     for f in /sys/class/thermal/thermal_zone*/temp; do
