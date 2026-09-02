@@ -287,6 +287,14 @@ SUCCESSFUL_RUN=0
 # SIGNAL HANDLERS & CLEANUP
 # ============================================================================
 cleanup() {
+    cleanup_exit=$?
+    # Preserve the incoming status, prevent EXIT recursion, and keep cleanup
+    # from being interrupted before persistent files and the lock are finalized.
+
+    # Disarm EXIT trap before cleanup can call exit itself.
+    trap - EXIT
+    trap '' INT TERM
+    
     debug_print "Executing cleanup handler (SUCCESSFUL_RUN=$SUCCESSFUL_RUN)..."
 
     # Persistent diagnostic files are only modified by real runs.
@@ -402,8 +410,6 @@ cleanup() {
         fi
     fi
 
-    # Release the concurrency lock LAST, after all persistent state/log
-    # finalization and volatile cleanup are complete.
     if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
         debug_print "Releasing concurrency lock at $LOCK_DIR"
 
@@ -411,15 +417,17 @@ cleanup() {
             lock_error="    [!] CRITICAL: Failed to release lock at $LOCK_DIR. Manual deletion required."
             printf '%s\n' "$lock_error" >&2
 
-            # RUN_ERROR_TMPFILE may already have been moved or removed above.
-            # Because the lock still exists when rmdir fails, it is safe to
-            # append this final cleanup failure directly to the persistent
-            # maintenance error log.
             if [ "${DRY_RUN:-0}" -eq 0 ]; then
                 printf '%s\n' "$lock_error" >>"$RUN_ERROR_LOG" 2>/dev/null || true
             fi
+
+            if [ "$cleanup_exit" -eq 0 ]; then
+                cleanup_exit=1
+            fi
         fi
     fi
+
+    exit "$cleanup_exit"
 }
 
 # Handle SIGINT (Ctrl+C) and SIGTERM (kill) gracefully with distinct exit codes
@@ -1759,9 +1767,6 @@ fi
 # Calculate total package count.
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 
-# Calculate total execution time.
-TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
-
 # Prepare error notice based only on failures from THIS run.
 #
 # cleanup() will later move ERROR_TMPFILE to ERROR_LOG, so checking ERROR_LOG
@@ -1926,6 +1931,9 @@ if [ "$DRY_RUN" -eq 0 ] &&
 
     run_error_notice="    - [!] Maintenance errors occurred. See $RUN_ERROR_LOG"
 fi
+
+# Calculate total execution time.
+TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 
 printf '\n==========================================\n'
 
