@@ -21,7 +21,7 @@ show_help() {
         'Environment variables:' \
         '    DEBUG=0|1' \
         '    DRY_RUN=0|1' \
-        '    NO_USER=0|1' >&2
+        '    NO_USER=0|1'
 }
 for setting in DEBUG DRY_RUN NO_USER; do
     case "$setting" in
@@ -34,7 +34,7 @@ for setting in DEBUG DRY_RUN NO_USER; do
         ;;
     *)
         printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' "$setting" "$setting_value" >&2
-        show_help
+        show_help >&2
         exit 1
         ;;
     esac
@@ -56,7 +56,7 @@ for arg in "$@"; do
         ;;
     *)
         printf '[!] FATAL: Unknown option: %s\n\n' "$arg" >&2
-        show_help
+        show_help >&2
         exit 1
         ;;
     esac
