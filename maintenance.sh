@@ -208,7 +208,9 @@ sdk_version=$(getprop ro.build.version.sdk 2>/dev/null)
 
 # Safe fallback assignments
 android_version="${android_version:-Unknown}"
-sdk_version="${sdk_version:-0}"
+case "$sdk_version" in
+'' | *[!0-9]*) sdk_version=0 ;;
+esac
 debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
 
 # ============================================================================
@@ -1563,6 +1565,12 @@ for i in "$@"; do
     prev1="$i"
 done
 
+case "$FREE_KB" in
+'' | *[!0-9]*)
+    FREE_KB=""
+    ;;
+esac
+
 debug_print "Available storage on /data: ${FREE_KB:-0} KB"
 
 if [ -z "$FREE_KB" ]; then
@@ -1581,7 +1589,7 @@ CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
 STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
 STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
 ERROR_TMPFILE=$(mktemp "${TMPDIR}/errors.$$.XXXXXX")
-debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
+debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED errors=$ERROR_TMPFILE"
 
 # Verify all temporary files were successfully created (safety check)
 if [ -z "$CURRENT_RUN_STATE" ] || [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ] || [ -z "$ERROR_TMPFILE" ]; then
