@@ -1379,6 +1379,7 @@ fi
 # ============================================================================
 # Mark the run as fully successful
 SUCCESSFUL_RUN=1
+TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 
 # Calculate total execution time
 TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
