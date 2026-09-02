@@ -157,12 +157,6 @@ cleanup() {
             fi
         fi
     done
-    if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
-        debug_print "Releasing concurrency lock at $LOCK_DIR"
-        if ! rmdir "$LOCK_DIR" 2>/dev/null; then
-            report_error "    [!] CRITICAL: Failed to release lock at $LOCK_DIR. Manual deletion required."
-        fi
-    fi
     if [ "${DRY_RUN:-0}" -eq 0 ]; then
         if [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
             [ -f "$RUN_ERROR_TMPFILE" ] &&
@@ -185,6 +179,16 @@ cleanup() {
         if ! rm -f "$RUN_ERROR_TMPFILE" 2>/dev/null; then
             printf '    [!] Warning: Failed to clean up %s\n' \
                 "$RUN_ERROR_TMPFILE" >&2
+        fi
+    fi
+    if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
+        debug_print "Releasing concurrency lock at $LOCK_DIR"
+        if ! rmdir "$LOCK_DIR" 2>/dev/null; then
+            lock_error="    [!] CRITICAL: Failed to release lock at $LOCK_DIR. Manual deletion required."
+            printf '%s\n' "$lock_error" >&2
+            if [ "${DRY_RUN:-0}" -eq 0 ]; then
+                printf '%s\n' "$lock_error" >>"$RUN_ERROR_LOG" 2>/dev/null || true
+            fi
         fi
     fi
 }
@@ -363,10 +367,10 @@ print_system_status() {
 process_packages() {
     pkg_list="$1"
     default_mode="$2"
-    [ -z "$pkg_list" ] && {
-        debug_print "Package list for mode '$default_mode' is empty."
-        return 0
-    }
+    if [ -z "$pkg_list" ]; then
+        report_error "    [!] ERROR: Package list for mode '$default_mode' is unexpectedly empty."
+        return 1
+    fi
     debug_print "Normalizing package list to package|path format..."
     pkg_list="${pkg_list//package:/}"
     pkg_list="${pkg_list//$CR/}"
@@ -668,6 +672,7 @@ process_packages() {
             fi
         fi
         state_writable=1
+        preserved_fingerprint=""
         fingerprint="${pkg_name}|${apk_path}|${file_meta}"
         case "$fingerprint" in
         *UNAVAILABLE*)
@@ -687,8 +692,8 @@ process_packages() {
                     *UNAVAILABLE*)
                         ;;
                     *)
-                        echo "$prev_fingerprint" >&3
-                        debug_print "Preserved previous trustworthy fingerprint for [$pkg_name]."
+                        preserved_fingerprint="$prev_fingerprint"
+                        debug_print "Found previous trustworthy fingerprint for [$pkg_name]; preserving only after successful compilation."
                         ;;
                     esac
                     break
@@ -744,6 +749,9 @@ $fingerprint
                     "$current" "$total_pkgs" "$pkg_name"
                 if [ "$state_writable" -eq 1 ]; then
                     echo "$fingerprint" >&3
+                elif [ -n "$preserved_fingerprint" ]; then
+                    echo "$preserved_fingerprint" >&3
+                    debug_print "Preserved previous trustworthy fingerprint for [$pkg_name] after successful compilation."
                 fi
                 stage3_compiled=$((stage3_compiled + 1))
             else
