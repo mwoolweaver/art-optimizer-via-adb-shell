@@ -192,7 +192,7 @@ done
 
 debug_print() {
     if [ "$DEBUG" -eq 1 ]; then
-        echo "[DEBUG] $1"
+        echo "[DEBUG] $1" >&2
     fi
 }
 
@@ -899,9 +899,9 @@ process_packages() {
     # DEBUG NORMALIZED INPUT
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
+        package_line_count=$(printf '%s\n' "$pkg_list" | wc -l)
         debug_print "===== DEBUG NORMALIZED PACKAGE LIST ====="
-        debug_print "Packages: "
-        echo "$pkg_list" | wc -l
+        debug_print "Packages: $package_line_count"
         debug_print "--- first 10 records ---"
         echo "$pkg_list" | head -n 10
         debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
@@ -1010,9 +1010,9 @@ process_packages() {
     # DEBUG STAGE 1: PATHS
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
+        STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
         debug_print "===== DEBUG STAGE 1 PATHS ====="
-        debug_print "Paths: "
-        wc -l <"$STAGE_PATHS"
+        debug_print "Paths: $STAGE_PATH_COUNT"
         debug_print "--- first 20 paths ---"
         head -n 20 "$STAGE_PATHS"
         debug_print "--- end DEBUG STAGE 1 PATHS ---"
@@ -1048,7 +1048,6 @@ process_packages() {
     fi
 
     if [ "$DEBUG" -eq 1 ]; then
-        STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
         STAGE_STAT_COUNT=$(wc -l <"$STAGE_STATS")
         debug_print "===== DEBUG STAGE 1b: STAT ACCOUNTING ====="
         debug_print "Unique paths submitted to stat: $STAGE_PATH_COUNT"
@@ -1294,10 +1293,10 @@ process_packages() {
     # DEBUG STAGE 2: STAGE_MERGED
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
+        merged_line_count=$(wc -l <"$STAGE_MERGED")
         debug_print "===== DEBUG STAGE 2: STAGE_MERGED ====="
         debug_print "STAGE_MERGED: $STAGE_MERGED"
-        debug_print "Merged: "
-        wc -l <"$STAGE_MERGED"
+        debug_print "Merged: $merged_line_count"
         debug_print "--- first 10 records ---"
         head -n 10 "$STAGE_MERGED"
         debug_print "--- end DEBUG STAGE_MERGED ---"
@@ -1679,7 +1678,11 @@ debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, m
 
 # Verify all temporary files were successfully created (safety check)
 if [ -z "$CURRENT_RUN_STATE" ] || [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ] || [ -z "$ERROR_TMPFILE" ]; then
-    report_error "[!] FATAL: Failed to create temporary state files in $TMPDIR. Aborting."
+    report_error "[!] FATAL: One or more temporary file paths are empty. Aborting."
+    exit 1
+
+elif [ ! -f "$CURRENT_RUN_STATE" ] || [ ! -f "$STAGE_STATS" ] || [ ! -f "$STAGE_MERGED" ] || [ ! -f "$ERROR_TMPFILE" ]; then
+    report_error "[!] FATAL: Failed to create one or more temporary files in $TMPDIR. Aborting."
     exit 1
 fi
 
