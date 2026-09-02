@@ -118,24 +118,73 @@ umask 077
 export LC_ALL=C
 
 # ============================================================================
-# DEBUG & DRY_RUN CONFIGURATION
-# Purpose: Enable debug logging or dry-run ability
-#          via environment variable (DEBUG=1) or flags (--debug)
+# DEBUG, DRY_RUN & NO_USER CONFIGURATION
+# Purpose: Enable debug logging, dry-run ability, or explicit user-app skipping
+#          via validated environment variables or command-line flags.
 # ============================================================================
-DEBUG="${DEBUG:-0}"
-DRY_RUN="${DRY_RUN:-0}"
-for arg in "$@"; do
-    case "$arg" in
-    --debug) DEBUG=1 ;;
-    --dry-run) DRY_RUN=1 ;;
+
+DEBUG="${DEBUG-0}"
+DRY_RUN="${DRY_RUN-0}"
+NO_USER="${NO_USER-0}"
+
+show_help() {
+    printf '%s\n' \
+        'ART Smart Maintenance Script' \
+        '' \
+        'Usage:' \
+        '    maintenance.sh [OPTIONS]' \
+        '' \
+        'Options:' \
+        '    --no-user     Skip user/third-party app optimization and use the system-only state cache.' \
+        '    --dry-run     Simulate maintenance without compiling packages or modifying persistent state.' \
+        '    --debug       Enable verbose debug output.' \
+        '    --help        Display this help text and exit.' \
+        '' \
+        'Environment variables:' \
+        '    DEBUG=0|1' \
+        '    DRY_RUN=0|1' \
+        '    NO_USER=0|1'
+}
+
+# Validate environment-variable configuration before any numeric comparisons.
+for setting in DEBUG DRY_RUN NO_USER; do
+    eval "setting_value=\${$setting}"
+
+    case "$setting_value" in
+    0 | 1)
+        ;;
+    *)
+        printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' \
+            "$setting" "$setting_value" >&2
+        show_help >&2
+        exit 1
+        ;;
     esac
 done
 
-debug_print() {
-    if [ "$DEBUG" -eq 1 ]; then
-        echo "[DEBUG] $1" >&2
-    fi
-}
+# Parse command-line options.
+for arg in "$@"; do
+    case "$arg" in
+    --debug)
+        DEBUG=1
+        ;;
+    --dry-run)
+        DRY_RUN=1
+        ;;
+    --no-user)
+        NO_USER=1
+        ;;
+    --help)
+        show_help
+        exit 0
+        ;;
+    *)
+        printf '[!] FATAL: Unknown option: %s\n\n' "$arg" >&2
+        show_help >&2
+        exit 1
+        ;;
+    esac
+done
 
 # Print an operational/runtime error to stderr and, when available, append it
 # to the current real run's maintenance error log tempfile.
@@ -156,6 +205,10 @@ debug_print "Debug/Verbose mode initialized."
 
 if [ "$DRY_RUN" -eq 1 ]; then
     debug_print "Dry-run mode enabled."
+fi
+
+if [ "$NO_USER" -eq 1 ]; then
+    debug_print "User app optimization disabled (--no-user)."
 fi
 
 # ============================================================================
@@ -281,9 +334,20 @@ if ! [ -w "$SCRIPT_DIR" ]; then
     exit 1
 fi
 
-# Persistent file tracking package fingerprints from previous run
-# Used to skip recompiling unchanged packages
-STATE_FILE="${SCRIPT_DIR}/.last_optimized"
+# Persistent state files used to skip recompiling unchanged packages.
+#
+# .last_optimized is the authoritative complete state from a normal full run.
+# .last_optimized_system is used only by --no-user runs.
+FULL_STATE_FILE="${SCRIPT_DIR}/.last_optimized"
+NO_USER_STATE_FILE="${SCRIPT_DIR}/.last_optimized_system"
+readonly FULL_STATE_FILE NO_USER_STATE_FILE
+
+# Select the state file this run is allowed to update.
+if [ "$NO_USER" -eq 1 ]; then
+    STATE_FILE="$NO_USER_STATE_FILE"
+else
+    STATE_FILE="$FULL_STATE_FILE"
+fi
 readonly STATE_FILE
 
 # Log file for package compilation errors from the most recent real run.
@@ -366,6 +430,7 @@ cleanup() {
     # RUN_ERROR_TMPFILE is finalized last so cleanup failures can be logged too.
     for tmpfile in \
         "${CURRENT_RUN_STATE:-}" \
+        "${STATE_STAGE_TMP:-}" \
         "${STAGE_PATHS:-}" \
         "${STAGE_STATS:-}" \
         "${STAGE_MERGED:-}" \
@@ -379,17 +444,9 @@ cleanup() {
         fi
     done
 
-    # Release the concurrency lock if it exists.
-    if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
-        debug_print "Releasing concurrency lock at $LOCK_DIR"
-
-        if ! rmdir "$LOCK_DIR" 2>/dev/null; then
-            report_error "    [!] CRITICAL: Failed to release lock at $LOCK_DIR. Manual deletion required."
-        fi
-    fi
-
     # maintenance_errors.log represents the most recent real run attempt.
-    # Finalize it last so errors produced by cleanup itself are included.
+    # Finalize it while the concurrency lock is still held so another
+    # invocation cannot modify persistent logs during this cleanup.
     if [ "${DRY_RUN:-0}" -eq 0 ]; then
         if [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
             [ -f "$RUN_ERROR_TMPFILE" ] &&
@@ -419,6 +476,25 @@ cleanup() {
         if ! rm -f "$RUN_ERROR_TMPFILE" 2>/dev/null; then
             printf '    [!] Warning: Failed to clean up %s\n' \
                 "$RUN_ERROR_TMPFILE" >&2
+        fi
+    fi
+
+    # Release the concurrency lock LAST, after all persistent state/log
+    # finalization and volatile cleanup are complete.
+    if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
+        debug_print "Releasing concurrency lock at $LOCK_DIR"
+
+        if ! rmdir "$LOCK_DIR" 2>/dev/null; then
+            lock_error="    [!] CRITICAL: Failed to release lock at $LOCK_DIR. Manual deletion required."
+            printf '%s\n' "$lock_error" >&2
+
+            # RUN_ERROR_TMPFILE may already have been moved or removed above.
+            # Because the lock still exists when rmdir fails, it is safe to
+            # append this final cleanup failure directly to the persistent
+            # maintenance error log.
+            if [ "${DRY_RUN:-0}" -eq 0 ]; then
+                printf '%s\n' "$lock_error" >>"$RUN_ERROR_LOG" 2>/dev/null || true
+            fi
         fi
     fi
 }
@@ -494,6 +570,7 @@ get_thermal_status() {
         out=$(dumpsys hardware_properties 2>/dev/null || true)
         if [ -n "$out" ]; then
             debug_print "Parsed thermal status from hardware_properties dumpsys."
+
             # Complex regex to extract temperatures from various dumpsys formats:
             # - Looks for [...] bracket notation containing comma-separated values
             # - Extracts all numeric values between brackets
@@ -505,29 +582,42 @@ get_thermal_status() {
                         line = substr($0, RSTART + 1, RLENGTH - 2)
                         n = split(line, temps, ",[ ]*")
                         max_t = 0
+
                         for (i = 1; i <= n; i++) {
                             if (temps[i] ~ /^[0-9]+$/) {
                                 t = temps[i] + 0
-                                if (t > max_t && t < 120) max_t = t
+                                if (t > max_t && t < 120)
+                                    max_t = t
                             }
                         }
-                        if (max_t > 0) { printf "%d", max_t; exit }
+
+                        if (max_t > 0) {
+                            printf "%d", max_t
+                            exit
+                        }
                     }
                 }
+
                 /Skin temperatures:/ {
                     if (match($0, /\[[^]]*\]/)) {
                         line = substr($0, RSTART + 1, RLENGTH - 2)
+
                         if (line ~ /^[0-9]+$/) {
                             t = line + 0
-                            if (t > 0 && t < 120) { printf "%d", t; exit }
+
+                            if (t > 0 && t < 120) {
+                                printf "%d", t
+                                exit
+                            }
                         }
                     }
                 }
             ')
-            [ -n "$temp" ] && {
+
+            if [ -n "$temp" ]; then
                 printf '%s\n' "$temp"
                 return 0
-            }
+            fi
         fi
 
         # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
@@ -536,17 +626,29 @@ get_thermal_status() {
         # shellcheck disable=SC2046
         set -- $(dumpsys battery 2>/dev/null)
         set +f
+
         # dumpsys battery output is key-value pairs: "temperature: 350"
         # When we find the "temperature:" key, the NEXT value is our temperature.
-        # We track prev1 to know when we've found it.
+        # Reset parser state so values from earlier calls cannot affect this pass.
+        prev1=""
+
         for i in "$@"; do
-            if [ "${prev1:-}" = "temperature:" ]; then
-                bat_temp=$((i / 10))
-                if [ "$bat_temp" -gt 0 ]; then
-                    printf '%d\n' "$bat_temp"
-                    return 0
-                fi
+            if [ "$prev1" = "temperature:" ]; then
+                case "$i" in
+                '' | *[!0-9]*)
+                    debug_print "Invalid battery temperature value from dumpsys battery: $i"
+                    ;;
+                *)
+                    bat_temp=$((i / 10))
+
+                    if [ "$bat_temp" -gt 0 ]; then
+                        printf '%d\n' "$bat_temp"
+                        return 0
+                    fi
+                    ;;
+                esac
             fi
+
             prev1="$i"
         done
     fi
@@ -559,7 +661,7 @@ get_thermal_status() {
         val_out=$(<"$f" 2>&1)
         val_exit=$?
 
-        if [ $val_exit -ne 0 ]; then
+        if [ "$val_exit" -ne 0 ]; then
             debug_print "Failed to read thermal zone $f (Exit: $val_exit): $val_out"
             continue
         fi
@@ -568,13 +670,15 @@ get_thermal_status() {
         case "$val_out" in *[!0-9]*) continue ;; esac
 
         debug_print "Read thermal zone from sysfs: $f = $val_out"
-        # Some thermal zones report temperature in millidegrees (multiply by 1000),
-        # others in raw degrees. Normalize to Celsius by dividing large values.
+
+        # Some thermal zones report temperature in millidegrees,
+        # others in raw degrees. Normalize to Celsius.
         if [ "$val_out" -gt 1000 ]; then
             printf '%d\n' $((val_out / 1000))
         else
             printf '%s\n' "$val_out"
         fi
+
         return 0
     done
 
@@ -699,11 +803,13 @@ process_packages() {
     pkg_list="$1"
     default_mode="$2"
 
-    # Exit early if package list is empty
-    [ -z "$pkg_list" ] && {
-        debug_print "Package list for mode '$default_mode' is empty."
-        return 0
-    }
+    # A successful package-manager query should not produce an empty list.
+    # Treat an unexpected empty enumeration as unsafe so persistent state
+    # cannot be replaced by an incomplete run.
+    if [ -z "$pkg_list" ]; then
+        report_error "    [!] ERROR: Package list for mode '$default_mode' is unexpectedly empty."
+        return 1
+    fi
 
     # ========================================================================
     # NORMALIZE PM OUTPUT
@@ -1240,9 +1346,10 @@ process_packages() {
         # Unchanged fingerprints skip recompilation; changed ones trigger fresh compilation.
 
         state_writable=1
+        preserved_fingerprint=""
         fingerprint="${pkg_name}|${apk_path}|${file_meta}"
 
-        case "$fingerprint" in
+        case "${file_meta}" in
 
         *UNAVAILABLE*)
 
@@ -1273,8 +1380,8 @@ process_packages() {
                     *UNAVAILABLE*)
                         ;;
                     *)
-                        echo "$prev_fingerprint" >&3
-                        debug_print "Preserved previous trustworthy fingerprint for [$pkg_name]."
+                        preserved_fingerprint="$prev_fingerprint"
+                        debug_print "Found previous trustworthy fingerprint for [$pkg_name]; preserving only after successful compilation."
                         ;;
                     esac
                     break
@@ -1365,10 +1472,18 @@ $fingerprint
                 printf '    [+] (%d/%d) Compiled: %s\n' \
                     "$current" "$total_pkgs" "$pkg_name"
 
-                # Only commit successful compilations when trustworthy
-                # filesystem metadata exists.
+                # Write state only after successful compilation.
+                #
+                # With trustworthy current metadata, store the current
+                # fingerprint. If metadata was unavailable, carry forward a
+                # previous trustworthy fingerprint only now that compilation
+                # has succeeded. Failed compilations write no state and will
+                # therefore be retried on the next run.
                 if [ "$state_writable" -eq 1 ]; then
                     echo "$fingerprint" >&3
+                elif [ -n "$preserved_fingerprint" ]; then
+                    echo "$preserved_fingerprint" >&3
+                    debug_print "Preserved previous trustworthy fingerprint for [$pkg_name] after successful compilation."
                 fi
 
                 stage3_compiled=$((stage3_compiled + 1))
@@ -1476,13 +1591,17 @@ if ! print_system_status "PRE-FLIGHT CHECK"; then
 fi
 
 # Validate available storage on /data (minimum 500MB required for compilation buffers)
-# Run df once, disable globbing, and assign output to positional parameters natively
+# Reset parser state so values left by earlier functions cannot affect df parsing.
+FREE_KB=""
+prev1=""
+prev2=""
+
+# Run df once, disable globbing, and assign output to positional parameters natively.
 set -f
 # shellcheck disable=SC2046
 set -- $(df -k /data 2>/dev/null)
 set +f
 
-FREE_KB=""
 # Parse df output: df outputs columns [filesystem, 1k-blocks, used, available, use%, mount]
 # We need the "available" column (index 3), so we track previous values as we iterate.
 # When we find /data*, prev2 contains the available space from two positions back.
@@ -1526,22 +1645,37 @@ fi
 # ============================================================================
 # RUNTIME TRACKING VARIABLES
 # ============================================================================
-# Previous run's package fingerprints (loaded from STATE_FILE if it exists)
+# Previous run's package fingerprints.
 PREV_STATE=""
 
-# Load the persistent state from disk natively (zero-fork).
-# Using $(< file) reads directly into RAM without spawning an external 'cat'
-# process, which maximizes performance and eliminates $PATH execution risks.
-# Note: The data is intentionally wrapped in leading and trailing newlines.
-# This guarantees that our 'case' statement later matches exact whole lines,
-# preventing partial string collisions (e.g., matching "app" inside "app.pro").
-if [ -r "$STATE_FILE" ]; then
-    debug_print "Loading persistent state file from $STATE_FILE"
+# Select the best baseline state for this run.
+#
+# Normal runs always use the authoritative complete .last_optimized state.
+#
+# --no-user runs prefer their own system-only state. On the first --no-user
+# run after a successful full run, no system-only state exists, so fall back
+# to .last_optimized as the baseline. Exact full-fingerprint matching means
+# user-app records in the full state do not interfere with system processing.
+STATE_READ_FILE="$STATE_FILE"
+
+if [ "$NO_USER" -eq 1 ] && [ ! -r "$NO_USER_STATE_FILE" ]; then
+    STATE_READ_FILE="$FULL_STATE_FILE"
+fi
+
+# Load the selected persistent state natively (zero-fork).
+# The data is intentionally wrapped in leading and trailing newlines so later
+# case matching operates on exact whole fingerprint lines.
+if [ -r "$STATE_READ_FILE" ]; then
+    debug_print "Loading persistent state baseline from $STATE_READ_FILE"
     PREV_STATE="
-$(<"$STATE_FILE")
+$(<"$STATE_READ_FILE")
 "
 else
-    debug_print "No existing state file found at $STATE_FILE. Full optimization run expected."
+    if [ "$NO_USER" -eq 1 ]; then
+        debug_print "No system-only or complete state file found. Full system optimization expected."
+    else
+        debug_print "No existing complete state file found. Full optimization run expected."
+    fi
 fi
 
 # ============================================================================
@@ -1613,33 +1747,51 @@ printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
 # ============================================================================
 STEP3_START=$SECONDS
 
-if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
-else
-    printf '[+] Step 3: Smart-optimizing user apps...\n'
-fi
+if [ "$NO_USER" -eq 1 ]; then
+    USER_PKGS_COUNT=0
 
-debug_print "Querying user packages via pm list packages -f -3..."
-user_package_list=$(pm list packages -f -3 2>&1)
-user_exit=$?
-
-if [ "$user_exit" -ne 0 ]; then
-    report_error "    [!] WARNING: Failed to query user packages (Exit Code: $user_exit)."
-
-    if [ -n "$user_package_list" ]; then
-        report_error "        Output: $user_package_list"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[+] Step 3: (DRY RUN) User app optimization disabled (--no-user).\n'
+    else
+        printf '[+] Step 3: User app optimization disabled (--no-user).\n'
     fi
 
-    USER_PKGS_COUNT=0
-    STATE_COMMIT_SAFE=0
+    debug_print "Skipping user package query and processing because --no-user is enabled."
+
 else
-    if ! process_packages "$user_package_list" "speed-profile"; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
+    else
+        printf '[+] Step 3: Smart-optimizing user apps...\n'
+    fi
+
+    debug_print "Querying user packages via pm list packages -f -3..."
+    user_package_list=$(pm list packages -f -3 2>&1)
+    user_exit=$?
+
+    if [ "$user_exit" -ne 0 ]; then
+        report_error "    [!] WARNING: Failed to query user packages (Exit Code: $user_exit)."
+
+        if [ -n "$user_package_list" ]; then
+            report_error "        Output: $user_package_list"
+        fi
+
+        USER_PKGS_COUNT=0
         STATE_COMMIT_SAFE=0
+    else
+        if ! process_packages "$user_package_list" "speed-profile"; then
+            STATE_COMMIT_SAFE=0
+        fi
     fi
 fi
 
 STEP3_DURATION=$((SECONDS - STEP3_START))
-printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
+
+if [ "$NO_USER" -eq 1 ]; then
+    printf '[+] User app optimization skipped in %ss.\n' "$STEP3_DURATION"
+else
+    printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
+fi
 
 # ============================================================================
 # FINAL ACCOUNTING PREPARATION
@@ -1702,8 +1854,8 @@ fi
 # ============================================================================
 # FINAL SYSTEM HEALTH CHECK
 # ============================================================================
-# The final health check must succeed BEFORE .last_optimized can be committed.
-# This ensures persistent state represents only a fully completed healthy run.
+# The final health check must succeed BEFORE persistent state can be committed.
+# This ensures either state file represents only a fully completed healthy run.
 if ! print_system_status "FINAL STATUS"; then
     report_error "    [!] ERROR: Final system health check failed. Persistent state will not be updated."
     printf '==========================================\n'
@@ -1713,8 +1865,9 @@ fi
 # ============================================================================
 # POST-OPTIMIZATION: State Management
 # ============================================================================
-# .last_optimized represents the most recent successfully completed,
-# state-safe real run.
+# Normal runs commit the complete state to .last_optimized.
+# --no-user runs commit system-only state to .last_optimized_system and never
+# modify the authoritative complete .last_optimized file.
 #
 # Dry runs never modify persistent state.
 # Incomplete or unsafe runs preserve the previous trusted state.
@@ -1728,22 +1881,77 @@ else
     if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
         printf '[+] State unchanged. Persistent state file left untouched.\n'
     else
-        mv_out=$(mv "$CURRENT_RUN_STATE" "$STATE_FILE" 2>&1)
-        mv_exit=$?
-
-        if [ "$mv_exit" -ne 0 ]; then
-            report_error "    [!] WARNING: Failed to update persistent state file (Exit Code: $mv_exit)."
-
-            if [ -n "$mv_out" ]; then
-                report_error "        Output: $mv_out"
-            fi
-
-            # Processing completed, but the trusted persistent state could
-            # not be committed. The overall run is therefore incomplete.
-            STATE_COMMIT_SAFE=0
+        # Stage the completed state in SCRIPT_DIR first. The final mv then
+        # renames a file within the same directory/filesystem as STATE_FILE,
+        # making replacement of the selected persistent state file atomic.
+        if [ "$NO_USER" -eq 1 ]; then
+            STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized_system.$$.XXXXXX")
         else
-            printf '[+] Persistent state file updated.\n'
+            STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized.$$.XXXXXX")
         fi
+        state_stage_exit=$?
+
+        if [ "$state_stage_exit" -ne 0 ] ||
+            [ -z "$STATE_STAGE_TMP" ] ||
+            [ ! -f "$STATE_STAGE_TMP" ]; then
+
+            report_error "    [!] WARNING: Failed to create same-filesystem state staging file."
+            STATE_COMMIT_SAFE=0
+
+        else
+            cp_out=$(cp "$CURRENT_RUN_STATE" "$STATE_STAGE_TMP" 2>&1)
+            cp_exit=$?
+
+            if [ "$cp_exit" -ne 0 ]; then
+                report_error "    [!] WARNING: Failed to stage persistent state (Exit Code: $cp_exit)."
+
+                if [ -n "$cp_out" ]; then
+                    report_error "        Output: $cp_out"
+                fi
+
+                STATE_COMMIT_SAFE=0
+
+            else
+                mv_out=$(mv "$STATE_STAGE_TMP" "$STATE_FILE" 2>&1)
+                mv_exit=$?
+
+                if [ "$mv_exit" -ne 0 ]; then
+                    report_error "    [!] WARNING: Failed to atomically update persistent state file (Exit Code: $mv_exit)."
+
+                    if [ -n "$mv_out" ]; then
+                        report_error "        Output: $mv_out"
+                    fi
+
+                    # Processing completed, but the trusted persistent state
+                    # could not be committed atomically.
+                    STATE_COMMIT_SAFE=0
+                else
+                    # The staging path no longer exists after a successful rename.
+                    STATE_STAGE_TMP=""
+                    if [ "$NO_USER" -eq 1 ]; then
+                        printf '[+] System-only persistent state updated atomically.\n'
+                    else
+                        printf '[+] Complete persistent state updated atomically.\n'
+                    fi
+                fi
+            fi
+        fi
+    fi
+fi
+
+# A successful normal/full run supersedes any older --no-user state cache.
+# Remove it only after the complete run has remained state-safe. This avoids
+# maintaining two state files on every normal run while guaranteeing the next
+# --no-user run starts from the authoritative complete state.
+if [ "$DRY_RUN" -eq 0 ] &&
+    [ "$NO_USER" -eq 0 ] &&
+    [ "$STATE_COMMIT_SAFE" -eq 1 ] &&
+    [ -f "$NO_USER_STATE_FILE" ]; then
+
+    debug_print "Removing superseded system-only state file: $NO_USER_STATE_FILE"
+
+    if ! rm -f "$NO_USER_STATE_FILE" 2>/dev/null; then
+        report_error "    [!] WARNING: Failed to remove superseded system-only state file $NO_USER_STATE_FILE"
     fi
 fi
 
@@ -1790,8 +1998,18 @@ fi
 [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
 [ -n "$run_error_notice" ] && printf '%s\n' "$run_error_notice"
 
+if [ "$NO_USER" -eq 1 ]; then
+    printf '    - User app stage:            Skipped (--no-user)\n'
+fi
+
 if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
     printf '    - [!] Run incomplete: trusted persistent state was not updated.\n'
+elif [ "$DRY_RUN" -eq 0 ]; then
+    if [ "$NO_USER" -eq 1 ]; then
+        printf '    - Persistent state:          System-only state current.\n'
+    else
+        printf '    - Persistent state:          Complete state current.\n'
+    fi
 fi
 
 printf '==========================================\n'
