@@ -1541,7 +1541,6 @@ main() {
     RUN_ERROR_LOG="${SCRIPT_DIR}/maintenance_errors.log"
     readonly RUN_ERROR_LOG
 
-
     # Handle SIGINT/SIGTERM with conventional exit codes; EXIT cleanup follows.
     trap 'report_error "    [!] Interrupted by user (SIGINT). Cleaning up..."; exit 130' INT
     trap 'report_error "    [!] Terminated by system (SIGTERM). Cleaning up..."; exit 143' TERM
@@ -1636,7 +1635,6 @@ main() {
         report_error "[!] FATAL: Insufficient storage on /data ($((FREE_KB / 1024)) MB available, 500 MB required). Aborting."
         exit 1
     fi
-
 
     # Create the temporary files required by process_packages().
     if ! package_pipeline_setup; then

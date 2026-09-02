@@ -107,14 +107,6 @@ cat << 'EOF' > /sdcard/monthly/maintenance.sh
 #   5. Atomic temporary file handling and robust signal cleanup traps.
 # ============================================================================
 
-set -u # Treat unset variable expansions as errors.
-
-# SECURITY: Restrict created files to owner access (rw-------).
-umask 077
-
-# PERFORMANCE: Use the C locale for predictable, faster text processing.
-export LC_ALL=C
-
 # ============================================================================
 # DEBUG, DRY_RUN & NO_USER CONFIGURATION
 # Purpose: Enable debug logging, dry-run ability, or explicit user-app skipping
@@ -144,49 +136,6 @@ show_help() {
         '    NO_USER=0|1'
 }
 
-# Validate environment-variable configuration before any numeric comparisons.
-for setting in DEBUG DRY_RUN NO_USER; do
-    case "$setting" in
-    DEBUG) setting_value="$DEBUG" ;;
-    DRY_RUN) setting_value="$DRY_RUN" ;;
-    NO_USER) setting_value="$NO_USER" ;;
-    esac
-
-    case "$setting_value" in
-    0 | 1)
-        ;;
-    *)
-        printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' "$setting" "$setting_value" >&2
-        show_help >&2
-        exit 1
-        ;;
-    esac
-done
-
-# Parse command-line options.
-for arg in "$@"; do
-    case "$arg" in
-    --debug)
-        DEBUG=1
-        ;;
-    --dry-run)
-        DRY_RUN=1
-        ;;
-    --no-user)
-        NO_USER=1
-        ;;
-    --help)
-        show_help
-        exit 0
-        ;;
-    *)
-        printf '[!] FATAL: Unknown option: %s\n\n' "$arg" >&2
-        show_help >&2
-        exit 1
-        ;;
-    esac
-done
-
 debug_print() {
     if [ "$DEBUG" -eq 1 ]; then
         echo "[DEBUG] $1" >&2
@@ -208,45 +157,6 @@ report_error() {
     fi
 }
 
-debug_print "Debug/Verbose mode initialized."
-
-if [ "$DRY_RUN" -eq 1 ]; then
-    debug_print "Dry-run mode enabled."
-fi
-
-if [ "$NO_USER" -eq 1 ]; then
-    debug_print "User app optimization disabled (--no-user)."
-fi
-
-# ============================================================================
-# EARLY PRIVILEGE GUARD
-# Purpose: Abort immediately if not running as root (UID 0) or Shell (UID 2000)
-# ============================================================================
-SCRIPT_UID=${USER_ID:-1}
-debug_print "Checked user ID: $SCRIPT_UID"
-if [ "$SCRIPT_UID" -ne 0 ] && [ "$SCRIPT_UID" -ne 2000 ]; then
-    echo "[!] FATAL: Elevated privileges required (root or adb shell). Aborting." >&2
-    exit 1
-fi
-
-# ============================================================================
-# Wait for Android Boot to Complete
-# ============================================================================
-# Wait for Android boot completion before optimization.
-BOOT_WAIT_ELAPSED=0
-while [ $BOOT_WAIT_ELAPSED -lt 300 ]; do
-    [ "$(getprop sys.boot_completed)" = "1" ] && break
-    sleep 2
-    BOOT_WAIT_ELAPSED=$((BOOT_WAIT_ELAPSED + 2))
-    debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
-done
-
-# Abort on boot timeout.
-if [ "$(getprop sys.boot_completed)" != "1" ]; then
-    echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
-    exit 1
-fi
-
 # ============================================================================
 # FUNCTION: check_deps()
 # Purpose: Verify required commands and report all missing dependencies.
@@ -264,106 +174,6 @@ check_deps() {
         exit 1
     fi
 }
-
-check_deps
-
-# ============================================================================
-# PACKAGE SERVICE GUARD
-# Purpose: Verify package manager IPC service is registered on the binder bus
-# ============================================================================
-case "$(service check package 2>/dev/null)" in
-*"not found"* | "")
-    echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting." >&2
-    exit 1
-    ;;
-esac
-
-# ============================================================================
-# INITIALIZATION: Timing and System Detection
-# ============================================================================
-# Start total runtime timer.
-TOTAL_START_TIME=$SECONDS
-
-# Query device properties (fail gracefully if unavailable)
-android_version=$(getprop ro.build.version.release 2>/dev/null)
-sdk_version=$(getprop ro.build.version.sdk 2>/dev/null)
-
-# Safe fallback assignments
-android_version="${android_version:-Unknown}"
-case "$sdk_version" in
-'' | *[!0-9]*) sdk_version=0 ;;
-esac
-debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
-
-# ============================================================================
-# API LEVEL GUARD
-# Purpose: Require Android 7.0+ (API 24)+ for 'cmd package compile' support
-# ============================================================================
-MIN_SDK=24
-
-if [ "$sdk_version" -lt "$MIN_SDK" ]; then
-    echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version" >&2
-    exit 1
-fi
-
-if [ "$DRY_RUN" -eq 1 ]; then
-    echo "[+] Starting ART Smart Maintenance (DRY RUN) on Android $android_version (SDK $sdk_version)..."
-else
-    echo "[+] Starting ART Smart Maintenance on Android $android_version (SDK $sdk_version)..."
-fi
-
-# ============================================================================
-# TEMP FILE & STATE MANAGEMENT VARIABLES
-# ============================================================================
-# Default temporary files to Android's writable /data/local/tmp.
-export TMPDIR="${TMPDIR:-/data/local/tmp}"
-debug_print "Set TMPDIR to $TMPDIR"
-
-# Require a writable temporary directory.
-if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
-    echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting." >&2
-    exit 1
-fi
-
-# Resolve the script directory and prevent later variable reassignment.
-case "$0" in
-*/*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
-*) SCRIPT_DIR="$(pwd)" ;;
-esac
-readonly SCRIPT_DIR
-debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
-
-# Validate that SCRIPT_DIR is writable for persistent state files
-if ! [ -w "$SCRIPT_DIR" ]; then
-    echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting." >&2
-    exit 1
-fi
-
-# Persistent state files used to skip recompiling unchanged packages.
-#
-# .last_optimized is the authoritative complete state from a normal full run.
-# .last_optimized_system is used only by --no-user runs.
-FULL_STATE_FILE="${SCRIPT_DIR}/.last_optimized"
-NO_USER_STATE_FILE="${SCRIPT_DIR}/.last_optimized_system"
-readonly FULL_STATE_FILE NO_USER_STATE_FILE
-
-# Select the state file this run is allowed to update.
-if [ "$NO_USER" -eq 1 ]; then
-    STATE_FILE="$NO_USER_STATE_FILE"
-else
-    STATE_FILE="$FULL_STATE_FILE"
-fi
-readonly STATE_FILE
-
-# Log file for package compilation errors from the most recent real run.
-ERROR_LOG="${SCRIPT_DIR}/compile_errors.log"
-readonly ERROR_LOG
-
-# Log file for operational/runtime errors from the most recent real run.
-RUN_ERROR_LOG="${SCRIPT_DIR}/maintenance_errors.log"
-readonly RUN_ERROR_LOG
-
-SUCCESSFUL_RUN=0
 
 # ============================================================================
 # SIGNAL HANDLERS & CLEANUP
@@ -508,50 +318,6 @@ cleanup() {
 
     exit "$cleanup_exit"
 }
-
-# Handle SIGINT/SIGTERM with conventional exit codes; EXIT cleanup follows.
-trap 'report_error "    [!] Interrupted by user (SIGINT). Cleaning up..."; exit 130' INT
-trap 'report_error "    [!] Terminated by system (SIGTERM). Cleaning up..."; exit 143' TERM
-
-# ============================================================================
-# CONCURRENCY GUARD
-# ============================================================================
-LOCK_DIR="${TMPDIR}/art_maintenance.lock"
-debug_print "Acquiring lock directory at $LOCK_DIR"
-
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n' >&2
-    exit 1
-fi
-
-# Set the EXIT trap to run the unified cleanup function
-trap 'cleanup' EXIT
-
-# Create the operational/runtime error tempfile early so pre-flight and all
-# subsequent real-run failures can be captured persistently.
-RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX")
-
-if [ -z "$RUN_ERROR_TMPFILE" ] || [ ! -f "$RUN_ERROR_TMPFILE" ]; then
-    printf '[!] FATAL: Failed to create maintenance error tempfile in %s. Aborting.\n' "$TMPDIR" >&2
-    exit 1
-fi
-
-debug_print "Created maintenance error tempfile: $RUN_ERROR_TMPFILE"
-
-# Package counting variables
-SYSTEM_PKGS_COUNT=0
-USER_PKGS_COUNT=0
-TOTAL_COMPILED=0
-TOTAL_SKIPPED=0
-TOTAL_FAILED=0
-TOTAL_INVALID=0
-TOTAL_WOULD_COMPILE=0
-
-STATE_COMMIT_SAFE=1
-
-# Literal carriage return for PM output normalization.
-CR=$(printf '\r')
-readonly CR
 
 # ============================================================================
 # FUNCTION: get_thermal_status()
@@ -797,6 +563,7 @@ print_system_status() {
     printf '[*] Battery:  %s%%\n    ─────────────────────────────────\n\n' "$(get_battery_level)"
     return 0
 }
+
 # ============================================================================
 # FUNCTION: process_packages()
 # Purpose: Compile a list of packages with intelligent change detection
@@ -1580,467 +1347,762 @@ $fingerprint
     return 0
 }
 
-# MAIN EXECUTION !!!!!!!!!! MAIN EXECUTION !!!!!!!!! MAIN EXECUTION !!!!!!!!!!
 # ============================================================================
-# MAIN EXECUTION !!!!!!!!!! MAIN EXECUTION !!!!!!!!! MAIN EXECUTION !!!!!!!!!!
+# FUNCTION: runtime_setup()
+# Purpose: Initialize shell policy, environment defaults, and shared runtime
+#          state without performing device checks or maintenance work.
 # ============================================================================
-# MAIN EXECUTION !!!!!!!!!! MAIN EXECUTION !!!!!!!!! MAIN EXECUTION !!!!!!!!!!
+runtime_setup() {
+    set -u # Treat unset variable expansions as errors.
+
+    # SECURITY: Restrict created files to owner access (rw-------).
+    umask 077
+
+    # PERFORMANCE: Use the C locale for predictable, faster text processing.
+    export LC_ALL=C
+
+    DEBUG="${DEBUG-0}"
+    DRY_RUN="${DRY_RUN-0}"
+    NO_USER="${NO_USER-0}"
+
+    # Default temporary files to Android's writable /data/local/tmp.
+    export TMPDIR="${TMPDIR:-/data/local/tmp}"
+
+    MIN_SDK=24
+    SUCCESSFUL_RUN=0
+    STATE_COMMIT_SAFE=1
+
+    # Package accounting shared by process_packages().
+    SYSTEM_PKGS_COUNT=0
+    USER_PKGS_COUNT=0
+    TOTAL_COMPILED=0
+    TOTAL_SKIPPED=0
+    TOTAL_FAILED=0
+    TOTAL_INVALID=0
+    TOTAL_WOULD_COMPILE=0
+
+    # Package-pipeline state shared by process_packages().
+    PREV_STATE=""
+    CURRENT_RUN_STATE=""
+    STAGE_PATHS=""
+    STAGE_STATS=""
+    STAGE_MERGED=""
+    ERROR_TMPFILE=""
+
+    # Other paths are initialized for safe cleanup after partial startup.
+    RUN_ERROR_TMPFILE=""
+    STATE_STAGE_TMP=""
+    LOCK_DIR=""
+
+    # Literal carriage return for PM output normalization.
+    CR=$(printf '\r')
+    readonly CR
+}
 
 # ============================================================================
-# PRE-FLIGHT CHECKS
+# FUNCTION: package_pipeline_setup()
+# Purpose: Create the temporary files required by process_packages().
 # ============================================================================
+package_pipeline_setup() {
+    if ! command -v mktemp >/dev/null 2>&1; then
+        report_error "[!] FATAL: Required command missing: mktemp"
+        return 1
+    fi
 
-# Display and verify system health before proceeding.
-# Exit immediately if thermal or memory conditions are critical.
-if ! print_system_status "PRE-FLIGHT CHECK"; then
-    report_error "[!] FATAL: Pre-flight system health check failed. Aborting."
-    exit 1
-fi
+    if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
+        report_error "[!] FATAL: Temporary directory $TMPDIR is missing or not writable."
+        return 1
+    fi
 
-# Validate available storage on /data (minimum 500MB required for compilation buffers)
-# Reset parser state so values left by earlier functions cannot affect df parsing.
-FREE_KB=""
-prev1=""
-prev2=""
+    CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
+    STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
+    STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
+    ERROR_TMPFILE=$(mktemp "${TMPDIR}/errors.$$.XXXXXX")
 
-# Run df once, disable globbing, and assign output to positional parameters natively.
-case "$-" in
-*f*) df_noglob_was_set=1 ;;
-*) df_noglob_was_set=0 ;;
-esac
+    debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED, errors=$ERROR_TMPFILE"
 
-set -f
-# shellcheck disable=SC2046
-set -- $(df -k /data 2>/dev/null)
+    if [ -z "$CURRENT_RUN_STATE" ] ||
+        [ -z "$STAGE_STATS" ] ||
+        [ -z "$STAGE_MERGED" ] ||
+        [ -z "$ERROR_TMPFILE" ]; then
 
-if [ "$df_noglob_was_set" -eq 0 ]; then
-    set +f
-fi
+        report_error "[!] FATAL: One or more package-pipeline temporary file paths are empty."
+        return 1
+    fi
 
-# Parse df output: df outputs columns [filesystem, 1k-blocks, used, available, use%, mount]
-# We need the "available" column (index 3), so we track previous values as we iterate.
-# When we find /data*, prev2 contains the available space from two positions back.
-for i in "$@"; do
-    case "$i" in
-    /data*)
-        FREE_KB="$prev2"
-        break
+    if [ ! -f "$CURRENT_RUN_STATE" ] ||
+        [ ! -f "$STAGE_STATS" ] ||
+        [ ! -f "$STAGE_MERGED" ] ||
+        [ ! -f "$ERROR_TMPFILE" ]; then
+
+        report_error "[!] FATAL: Failed to create one or more package-pipeline temporary files in $TMPDIR."
+        return 1
+    fi
+
+    return 0
+}
+
+# ============================================================================
+# FUNCTION: main()
+# Purpose: Run normal ART maintenance.
+# ============================================================================
+main() {
+    runtime_setup
+
+    # Validate environment-variable configuration before any numeric comparisons.
+    for setting in DEBUG DRY_RUN NO_USER; do
+        case "$setting" in
+        DEBUG) setting_value="$DEBUG" ;;
+        DRY_RUN) setting_value="$DRY_RUN" ;;
+        NO_USER) setting_value="$NO_USER" ;;
+        esac
+
+        case "$setting_value" in
+        0 | 1)
+            ;;
+        *)
+            printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' "$setting" "$setting_value" >&2
+            show_help >&2
+            exit 1
+            ;;
+        esac
+    done
+
+    # Parse command-line options.
+    for arg in "$@"; do
+        case "$arg" in
+        --debug)
+            DEBUG=1
+            ;;
+        --dry-run)
+            DRY_RUN=1
+            ;;
+        --no-user)
+            NO_USER=1
+            ;;
+        --help)
+            show_help
+            exit 0
+            ;;
+        *)
+            printf '[!] FATAL: Unknown option: %s\n\n' "$arg" >&2
+            show_help >&2
+            exit 1
+            ;;
+        esac
+    done
+
+    debug_print "Debug/Verbose mode initialized."
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        debug_print "Dry-run mode enabled."
+    fi
+
+    if [ "$NO_USER" -eq 1 ]; then
+        debug_print "User app optimization disabled (--no-user)."
+    fi
+
+    # ============================================================================
+    # EARLY PRIVILEGE GUARD
+    # Purpose: Abort immediately if not running as root (UID 0) or Shell (UID 2000)
+    # ============================================================================
+    SCRIPT_UID=${USER_ID:-1}
+    debug_print "Checked user ID: $SCRIPT_UID"
+    if [ "$SCRIPT_UID" -ne 0 ] && [ "$SCRIPT_UID" -ne 2000 ]; then
+        echo "[!] FATAL: Elevated privileges required (root or adb shell). Aborting." >&2
+        exit 1
+    fi
+
+    # ============================================================================
+    # Wait for Android Boot to Complete
+    # ============================================================================
+    # Wait for Android boot completion before optimization.
+    BOOT_WAIT_ELAPSED=0
+    while [ $BOOT_WAIT_ELAPSED -lt 300 ]; do
+        [ "$(getprop sys.boot_completed)" = "1" ] && break
+        sleep 2
+        BOOT_WAIT_ELAPSED=$((BOOT_WAIT_ELAPSED + 2))
+        debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
+    done
+
+    # Abort on boot timeout.
+    if [ "$(getprop sys.boot_completed)" != "1" ]; then
+        echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
+        exit 1
+    fi
+
+    check_deps
+
+    # ============================================================================
+    # PACKAGE SERVICE GUARD
+    # Purpose: Verify package manager IPC service is registered on the binder bus
+    # ============================================================================
+    case "$(service check package 2>/dev/null)" in
+    *"not found"* | "")
+        echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting." >&2
+        exit 1
         ;;
     esac
-    prev2="${prev1:-}"
-    prev1="$i"
-done
 
-case "$FREE_KB" in
-'' | *[!0-9]*)
-    FREE_KB=""
-    ;;
-esac
+    # ============================================================================
+    # INITIALIZATION: Timing and System Detection
+    # ============================================================================
+    # Start total runtime timer.
+    TOTAL_START_TIME=$SECONDS
 
-debug_print "Available storage on /data: ${FREE_KB:-N/A} KB"
+    # Query device properties (fail gracefully if unavailable)
+    android_version=$(getprop ro.build.version.release 2>/dev/null)
+    sdk_version=$(getprop ro.build.version.sdk 2>/dev/null)
 
-if [ -z "$FREE_KB" ]; then
-    report_error "    [!] WARNING: Could not determine free storage on /data. Proceeding with caution."
-elif [ "$FREE_KB" -lt 512000 ]; then
-    report_error "[!] FATAL: Insufficient storage on /data ($((FREE_KB / 1024)) MB available, 500 MB required). Aborting."
-    exit 1
-fi
+    # Safe fallback assignments
+    android_version="${android_version:-Unknown}"
+    case "$sdk_version" in
+    '' | *[!0-9]*) sdk_version=0 ;;
+    esac
+    debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
 
-# Temporary files for current run state (using explicit $TMPDIR path for Android/Toybox reliability)
-# opt_state: fingerprints of packages processed in this run
-# opt_stats: cached stat output (mtime, size, inode) for files
-# opt_merged: merged package list with metadata for processing
-# errors: batch log for compilation errors
-CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
-STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
-STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
-ERROR_TMPFILE=$(mktemp "${TMPDIR}/errors.$$.XXXXXX")
-debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED, errors=$ERROR_TMPFILE"
+    # ============================================================================
+    # API LEVEL GUARD
+    # Purpose: Require Android 7.0+ (API 24)+ for 'cmd package compile' support
+    # ============================================================================
+    MIN_SDK=24
 
-# Verify all temporary files were successfully created (safety check)
-if [ -z "$CURRENT_RUN_STATE" ] || [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ] || [ -z "$ERROR_TMPFILE" ]; then
-    report_error "[!] FATAL: One or more temporary file paths are empty. Aborting."
-    exit 1
+    if [ "$sdk_version" -lt "$MIN_SDK" ]; then
+        echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version" >&2
+        exit 1
+    fi
 
-elif [ ! -f "$CURRENT_RUN_STATE" ] || [ ! -f "$STAGE_STATS" ] || [ ! -f "$STAGE_MERGED" ] || [ ! -f "$ERROR_TMPFILE" ]; then
-    report_error "[!] FATAL: Failed to create one or more temporary files in $TMPDIR. Aborting."
-    exit 1
-fi
+    if [ "$DRY_RUN" -eq 1 ]; then
+        echo "[+] Starting ART Smart Maintenance (DRY RUN) on Android $android_version (SDK $sdk_version)..."
+    else
+        echo "[+] Starting ART Smart Maintenance on Android $android_version (SDK $sdk_version)..."
+    fi
 
-# ============================================================================
-# RUNTIME TRACKING VARIABLES
-# ============================================================================
-# Previous run's package fingerprints.
-PREV_STATE=""
+    # ============================================================================
+    # TEMP FILE & STATE MANAGEMENT VARIABLES
+    # ============================================================================
+    # Default temporary files to Android's writable /data/local/tmp.
+    export TMPDIR="${TMPDIR:-/data/local/tmp}"
+    debug_print "Set TMPDIR to $TMPDIR"
 
-## Select the state baseline.
-# Normal runs use .last_optimized. --no-user prefers its system-only state,
-# falling back to .last_optimized when none exists. Exact fingerprint matching
-# prevents user-app records from affecting system processing.
-STATE_READ_FILE="$STATE_FILE"
+    # Require a writable temporary directory.
+    if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
+        echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting." >&2
+        exit 1
+    fi
 
-if [ "$NO_USER" -eq 1 ] && [ ! -r "$NO_USER_STATE_FILE" ]; then
-    STATE_READ_FILE="$FULL_STATE_FILE"
-fi
+    # Resolve the script directory and prevent later variable reassignment.
+    case "$0" in
+    */*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
+    *) SCRIPT_DIR="$(pwd)" ;;
+    esac
+    readonly SCRIPT_DIR
+    debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
 
-# Load the selected persistent state natively (zero-fork).
-# The data is intentionally wrapped in leading and trailing newlines so later
-# case matching operates on exact whole fingerprint lines.
-if [ -r "$STATE_READ_FILE" ]; then
-    debug_print "Loading persistent state baseline from $STATE_READ_FILE"
-    PREV_STATE="
-$(<"$STATE_READ_FILE")
-"
-else
+    # Validate that SCRIPT_DIR is writable for persistent state files
+    if ! [ -w "$SCRIPT_DIR" ]; then
+        echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting." >&2
+        exit 1
+    fi
+
+    # Persistent state files used to skip recompiling unchanged packages.
+    #
+    # .last_optimized is the authoritative complete state from a normal full run.
+    # .last_optimized_system is used only by --no-user runs.
+    FULL_STATE_FILE="${SCRIPT_DIR}/.last_optimized"
+    NO_USER_STATE_FILE="${SCRIPT_DIR}/.last_optimized_system"
+    readonly FULL_STATE_FILE NO_USER_STATE_FILE
+
+    # Select the state file this run is allowed to update.
     if [ "$NO_USER" -eq 1 ]; then
-        debug_print "No system-only or complete state file found. Full system optimization expected."
+        STATE_FILE="$NO_USER_STATE_FILE"
     else
-        debug_print "No existing complete state file found. Full optimization run expected."
+        STATE_FILE="$FULL_STATE_FILE"
     fi
-fi
+    readonly STATE_FILE
 
-# ============================================================================
-# STEP 1: Cache Trimming
-# ============================================================================
-STEP1_START=$SECONDS
+    # Log file for package compilation errors from the most recent real run.
+    ERROR_LOG="${SCRIPT_DIR}/compile_errors.log"
+    readonly ERROR_LOG
 
-if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[+] Step 1: (DRY RUN) Would trim system and app caches...\n'
-else
-    printf '[+] Step 1: Trimming system and app caches...\n'
+    # Log file for operational/runtime errors from the most recent real run.
+    RUN_ERROR_LOG="${SCRIPT_DIR}/maintenance_errors.log"
+    readonly RUN_ERROR_LOG
 
-    # Use an intentionally unreachable free-space target to encourage aggressive
-    # Package Manager cache trimming.
-    trim_out=$(pm trim-caches 99999999999 2>&1)
-    trim_exit=$?
+    # Handle SIGINT/SIGTERM with conventional exit codes; EXIT cleanup follows.
+    trap 'report_error "    [!] Interrupted by user (SIGINT). Cleaning up..."; exit 130' INT
+    trap 'report_error "    [!] Terminated by system (SIGTERM). Cleaning up..."; exit 143' TERM
 
-    if [ $trim_exit -ne 0 ]; then
-        report_error "    [!] WARNING: Cache trim failed (Exit Code: $trim_exit)."
-        # Only print the output if it actually contains text to avoid blank lines
-        if [ -n "$trim_out" ]; then
-            report_error "        Output: $trim_out"
-        fi
-    fi
-fi
+    # ============================================================================
+    # CONCURRENCY GUARD
+    # ============================================================================
+    LOCK_DIR="${TMPDIR}/art_maintenance.lock"
+    debug_print "Acquiring lock directory at $LOCK_DIR"
 
-STEP1_DURATION=$((SECONDS - STEP1_START))
-printf '[+] Cache trim finished in %ss.\n' "$STEP1_DURATION"
-
-# ============================================================================
-# STEP 2: System Package Optimization
-# ============================================================================
-STEP2_START=$SECONDS
-
-if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[+] Step 2: (DRY RUN) Smart-optimizing system packages...\n'
-else
-    printf '[+] Step 2: Smart-optimizing system packages...\n'
-fi
-
-# List all system packages (-s flag) with full paths (-f flag)
-debug_print "Querying system packages via pm list packages -f -s..."
-system_package_list=$(pm list packages -f -s 2>&1)
-sys_exit=$?
-
-if [ "$sys_exit" -ne 0 ]; then
-    report_error "    [!] WARNING: Failed to query system packages (Exit Code: $sys_exit)."
-
-    if [ -n "$system_package_list" ]; then
-        report_error "        Output: $system_package_list"
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+        printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n' >&2
+        exit 1
     fi
 
-    SYSTEM_PKGS_COUNT=0
-    STATE_COMMIT_SAFE=0
-else
-    if ! process_packages "$system_package_list" "system"; then
-        STATE_COMMIT_SAFE=0
+    # Set the EXIT trap to run the unified cleanup function
+    trap 'cleanup' EXIT
+
+    # Create the operational/runtime error tempfile early so pre-flight and all
+    # subsequent real-run failures can be captured persistently.
+    RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX")
+
+    if [ -z "$RUN_ERROR_TMPFILE" ] || [ ! -f "$RUN_ERROR_TMPFILE" ]; then
+        printf '[!] FATAL: Failed to create maintenance error tempfile in %s. Aborting.\n' "$TMPDIR" >&2
+        exit 1
     fi
-fi
 
-STEP2_DURATION=$((SECONDS - STEP2_START))
-printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
+    debug_print "Created maintenance error tempfile: $RUN_ERROR_TMPFILE"
 
-# ============================================================================
-# STEP 3: User App Optimization
-# ============================================================================
-STEP3_START=$SECONDS
+    # MAIN EXECUTION !!!!!!!!!! MAIN EXECUTION !!!!!!!!! MAIN EXECUTION !!!!!!!!!!
+    # ============================================================================
+    # MAIN EXECUTION !!!!!!!!!! MAIN EXECUTION !!!!!!!!! MAIN EXECUTION !!!!!!!!!!
+    # ============================================================================
+    # MAIN EXECUTION !!!!!!!!!! MAIN EXECUTION !!!!!!!!! MAIN EXECUTION !!!!!!!!!!
 
-if [ "$NO_USER" -eq 1 ]; then
-    USER_PKGS_COUNT=0
+    # ============================================================================
+    # PRE-FLIGHT CHECKS
+    # ============================================================================
 
-    if [ "$DRY_RUN" -eq 1 ]; then
-        printf '[+] Step 3: (DRY RUN) User app optimization disabled (--no-user).\n'
+    # Display and verify system health before proceeding.
+    # Exit immediately if thermal or memory conditions are critical.
+    if ! print_system_status "PRE-FLIGHT CHECK"; then
+        report_error "[!] FATAL: Pre-flight system health check failed. Aborting."
+        exit 1
+    fi
+
+    # Validate available storage on /data (minimum 500MB required for compilation buffers)
+    # Reset parser state so values left by earlier functions cannot affect df parsing.
+    FREE_KB=""
+    prev1=""
+    prev2=""
+
+    # Run df once, disable globbing, and assign output to positional parameters natively.
+    case "$-" in
+    *f*) df_noglob_was_set=1 ;;
+    *) df_noglob_was_set=0 ;;
+    esac
+
+    set -f
+    # shellcheck disable=SC2046
+    set -- $(df -k /data 2>/dev/null)
+
+    if [ "$df_noglob_was_set" -eq 0 ]; then
+        set +f
+    fi
+
+    # Parse df output: df outputs columns [filesystem, 1k-blocks, used, available, use%, mount]
+    # We need the "available" column (index 3), so we track previous values as we iterate.
+    # When we find /data*, prev2 contains the available space from two positions back.
+    for i in "$@"; do
+        case "$i" in
+        /data*)
+            FREE_KB="$prev2"
+            break
+            ;;
+        esac
+        prev2="${prev1:-}"
+        prev1="$i"
+    done
+
+    case "$FREE_KB" in
+    '' | *[!0-9]*)
+        FREE_KB=""
+        ;;
+    esac
+
+    debug_print "Available storage on /data: ${FREE_KB:-N/A} KB"
+
+    if [ -z "$FREE_KB" ]; then
+        report_error "    [!] WARNING: Could not determine free storage on /data. Proceeding with caution."
+    elif [ "$FREE_KB" -lt 512000 ]; then
+        report_error "[!] FATAL: Insufficient storage on /data ($((FREE_KB / 1024)) MB available, 500 MB required). Aborting."
+        exit 1
+    fi
+
+    # Create the temporary files required by process_packages().
+    if ! package_pipeline_setup; then
+        exit 1
+    fi
+
+    # Select the state baseline.
+    # Normal runs use .last_optimized. --no-user prefers its system-only state,
+    # falling back to .last_optimized when none exists. Exact fingerprint matching
+    # prevents user-app records from affecting system processing.
+    STATE_READ_FILE="$STATE_FILE"
+
+    if [ "$NO_USER" -eq 1 ] && [ ! -r "$NO_USER_STATE_FILE" ]; then
+        STATE_READ_FILE="$FULL_STATE_FILE"
+    fi
+
+    # Load the selected persistent state natively (zero-fork).
+    # The data is intentionally wrapped in leading and trailing newlines so later
+    # case matching operates on exact whole fingerprint lines.
+    if [ -r "$STATE_READ_FILE" ]; then
+        debug_print "Loading persistent state baseline from $STATE_READ_FILE"
+        PREV_STATE="
+    $(<"$STATE_READ_FILE")
+    "
     else
-        printf '[+] Step 3: User app optimization disabled (--no-user).\n'
-    fi
-
-    debug_print "Skipping user package query and processing because --no-user is enabled."
-
-else
-    if [ "$DRY_RUN" -eq 1 ]; then
-        printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
-    else
-        printf '[+] Step 3: Smart-optimizing user apps...\n'
-    fi
-
-    debug_print "Querying user packages via pm list packages -f -3..."
-    user_package_list=$(pm list packages -f -3 2>&1)
-    user_exit=$?
-
-    if [ "$user_exit" -ne 0 ]; then
-        report_error "    [!] WARNING: Failed to query user packages (Exit Code: $user_exit)."
-
-        if [ -n "$user_package_list" ]; then
-            report_error "        Output: $user_package_list"
-        fi
-
-        USER_PKGS_COUNT=0
-        STATE_COMMIT_SAFE=0
-    else
-        if ! process_packages "$user_package_list" "speed-profile"; then
-            STATE_COMMIT_SAFE=0
-        fi
-    fi
-fi
-
-STEP3_DURATION=$((SECONDS - STEP3_START))
-
-if [ "$NO_USER" -eq 1 ]; then
-    printf '[+] User app optimization skipped in %ss.\n' "$STEP3_DURATION"
-else
-    printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
-fi
-
-# ============================================================================
-# FINAL ACCOUNTING PREPARATION
-# ============================================================================
-
-TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
-
-# Prepare error notice based only on failures from THIS run.
-#
-# cleanup() will later move ERROR_TMPFILE to ERROR_LOG, so checking ERROR_LOG
-# here could incorrectly report errors from an older run.
-error_notice=""
-if [ "$TOTAL_FAILED" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
-    error_notice="    - [!] Errors occurred. See $ERROR_LOG"
-fi
-
-# ============================================================================
-# DEBUG FINAL ACCOUNTING
-# ============================================================================
-
-if [ "$DEBUG" -eq 1 ]; then
-    if [ "$DRY_RUN" -eq 1 ]; then
-        debug_total=$((TOTAL_WOULD_COMPILE + TOTAL_SKIPPED + TOTAL_INVALID))
-
-        debug_print "Final dry-run accounting:"
-        debug_print "    Scanned:       $TOTAL_SCANNED"
-        debug_print "    Would compile: $TOTAL_WOULD_COMPILE"
-        debug_print "    Skipped:       $TOTAL_SKIPPED"
-        debug_print "    Invalid:       $TOTAL_INVALID"
-        debug_print "    Accounted:     $debug_total"
-
-        if [ "$TOTAL_SCANNED" -eq "$debug_total" ]; then
-            debug_print "[+] Final dry-run accounting verified."
-        else
-            debug_print "[!] WARNING: Final dry-run accounting mismatch."
-        fi
-    else
-        debug_total=$((TOTAL_COMPILED + TOTAL_SKIPPED + TOTAL_FAILED + TOTAL_INVALID))
-
-        debug_print "Final accounting:"
-        debug_print "    Scanned:   $TOTAL_SCANNED"
-        debug_print "    Compiled:  $TOTAL_COMPILED"
-        debug_print "    Skipped:   $TOTAL_SKIPPED"
-        debug_print "    Failed:    $TOTAL_FAILED"
-        debug_print "    Invalid:   $TOTAL_INVALID"
-        debug_print "    Accounted: $debug_total"
-
-        if [ "$TOTAL_SCANNED" -eq "$debug_total" ]; then
-            debug_print "[+] Final accounting verified."
-        else
-            debug_print "[!] WARNING: Final accounting mismatch."
-        fi
-    fi
-fi
-
-# ============================================================================
-# FINAL SYSTEM HEALTH CHECK
-# ============================================================================
-# The final health check must succeed BEFORE persistent state can be committed.
-# This ensures either state file represents only a fully completed healthy run.
-if ! print_system_status "FINAL STATUS"; then
-    report_error "    [!] ERROR: Final system health check failed. Persistent state will not be updated."
-    printf '==========================================\n'
-    exit 1
-fi
-
-# ============================================================================
-# POST-OPTIMIZATION: State Management
-# ============================================================================
-# Normal runs commit the complete state to .last_optimized.
-# --no-user runs commit system-only state to .last_optimized_system and never
-# modify the authoritative complete .last_optimized file.
-#
-# Dry runs never modify persistent state.
-# Incomplete or unsafe runs preserve the previous trusted state.
-if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[+] Dry-run mode: Persistent state file and error logs were not modified.\n'
-
-elif [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
-    report_error "    [!] WARNING: Run was incomplete. Persistent state file was NOT updated."
-
-else
-    if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
-        printf '[+] State unchanged. Persistent state file left untouched.\n'
-    else
-        # Stage the completed state in SCRIPT_DIR first. The final mv then
-        # renames a file within the same directory/filesystem as STATE_FILE,
-        # making replacement of the selected persistent state file atomic.
         if [ "$NO_USER" -eq 1 ]; then
-            STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized_system.$$.XXXXXX")
+            debug_print "No system-only or complete state file found. Full system optimization expected."
         else
-            STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized.$$.XXXXXX")
+            debug_print "No existing complete state file found. Full optimization run expected."
         fi
-        state_stage_exit=$?
+    fi
 
-        if [ "$state_stage_exit" -ne 0 ] ||
-            [ -z "$STATE_STAGE_TMP" ] ||
-            [ ! -f "$STATE_STAGE_TMP" ]; then
+    # ============================================================================
+    # STEP 1: Cache Trimming
+    # ============================================================================
+    STEP1_START=$SECONDS
 
-            report_error "    [!] WARNING: Failed to create same-filesystem state staging file."
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[+] Step 1: (DRY RUN) Would trim system and app caches...\n'
+    else
+        printf '[+] Step 1: Trimming system and app caches...\n'
+
+        # Use an intentionally unreachable free-space target to encourage aggressive
+        # Package Manager cache trimming.
+        trim_out=$(pm trim-caches 99999999999 2>&1)
+        trim_exit=$?
+
+        if [ $trim_exit -ne 0 ]; then
+            report_error "    [!] WARNING: Cache trim failed (Exit Code: $trim_exit)."
+            # Only print the output if it actually contains text to avoid blank lines
+            if [ -n "$trim_out" ]; then
+                report_error "        Output: $trim_out"
+            fi
+        fi
+    fi
+
+    STEP1_DURATION=$((SECONDS - STEP1_START))
+    printf '[+] Cache trim finished in %ss.\n' "$STEP1_DURATION"
+
+    # ============================================================================
+    # STEP 2: System Package Optimization
+    # ============================================================================
+    STEP2_START=$SECONDS
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[+] Step 2: (DRY RUN) Smart-optimizing system packages...\n'
+    else
+        printf '[+] Step 2: Smart-optimizing system packages...\n'
+    fi
+
+    # List all system packages (-s flag) with full paths (-f flag)
+    debug_print "Querying system packages via pm list packages -f -s..."
+    system_package_list=$(pm list packages -f -s 2>&1)
+    sys_exit=$?
+
+    if [ "$sys_exit" -ne 0 ]; then
+        report_error "    [!] WARNING: Failed to query system packages (Exit Code: $sys_exit)."
+
+        if [ -n "$system_package_list" ]; then
+            report_error "        Output: $system_package_list"
+        fi
+
+        SYSTEM_PKGS_COUNT=0
+        STATE_COMMIT_SAFE=0
+    else
+        if ! process_packages "$system_package_list" "system"; then
             STATE_COMMIT_SAFE=0
+        fi
+    fi
 
+    STEP2_DURATION=$((SECONDS - STEP2_START))
+    printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
+
+    # ============================================================================
+    # STEP 3: User App Optimization
+    # ============================================================================
+    STEP3_START=$SECONDS
+
+    if [ "$NO_USER" -eq 1 ]; then
+        USER_PKGS_COUNT=0
+
+        if [ "$DRY_RUN" -eq 1 ]; then
+            printf '[+] Step 3: (DRY RUN) User app optimization disabled (--no-user).\n'
         else
-            cp_out=$(cp "$CURRENT_RUN_STATE" "$STATE_STAGE_TMP" 2>&1)
-            cp_exit=$?
+            printf '[+] Step 3: User app optimization disabled (--no-user).\n'
+        fi
 
-            if [ "$cp_exit" -ne 0 ]; then
-                report_error "    [!] WARNING: Failed to stage persistent state (Exit Code: $cp_exit)."
+        debug_print "Skipping user package query and processing because --no-user is enabled."
 
-                if [ -n "$cp_out" ]; then
-                    report_error "        Output: $cp_out"
-                fi
+    else
+        if [ "$DRY_RUN" -eq 1 ]; then
+            printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
+        else
+            printf '[+] Step 3: Smart-optimizing user apps...\n'
+        fi
 
+        debug_print "Querying user packages via pm list packages -f -3..."
+        user_package_list=$(pm list packages -f -3 2>&1)
+        user_exit=$?
+
+        if [ "$user_exit" -ne 0 ]; then
+            report_error "    [!] WARNING: Failed to query user packages (Exit Code: $user_exit)."
+
+            if [ -n "$user_package_list" ]; then
+                report_error "        Output: $user_package_list"
+            fi
+
+            USER_PKGS_COUNT=0
+            STATE_COMMIT_SAFE=0
+        else
+            if ! process_packages "$user_package_list" "speed-profile"; then
+                STATE_COMMIT_SAFE=0
+            fi
+        fi
+    fi
+
+    STEP3_DURATION=$((SECONDS - STEP3_START))
+
+    if [ "$NO_USER" -eq 1 ]; then
+        printf '[+] User app optimization skipped in %ss.\n' "$STEP3_DURATION"
+    else
+        printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
+    fi
+
+    # ============================================================================
+    # FINAL ACCOUNTING PREPARATION
+    # ============================================================================
+
+    TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
+
+    # Prepare error notice based only on failures from THIS run.
+    #
+    # cleanup() will later move ERROR_TMPFILE to ERROR_LOG, so checking ERROR_LOG
+    # here could incorrectly report errors from an older run.
+    error_notice=""
+    if [ "$TOTAL_FAILED" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
+        error_notice="    - [!] Errors occurred. See $ERROR_LOG"
+    fi
+
+    # ============================================================================
+    # DEBUG FINAL ACCOUNTING
+    # ============================================================================
+
+    if [ "$DEBUG" -eq 1 ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            debug_total=$((TOTAL_WOULD_COMPILE + TOTAL_SKIPPED + TOTAL_INVALID))
+
+            debug_print "Final dry-run accounting:"
+            debug_print "    Scanned:       $TOTAL_SCANNED"
+            debug_print "    Would compile: $TOTAL_WOULD_COMPILE"
+            debug_print "    Skipped:       $TOTAL_SKIPPED"
+            debug_print "    Invalid:       $TOTAL_INVALID"
+            debug_print "    Accounted:     $debug_total"
+
+            if [ "$TOTAL_SCANNED" -eq "$debug_total" ]; then
+                debug_print "[+] Final dry-run accounting verified."
+            else
+                debug_print "[!] WARNING: Final dry-run accounting mismatch."
+            fi
+        else
+            debug_total=$((TOTAL_COMPILED + TOTAL_SKIPPED + TOTAL_FAILED + TOTAL_INVALID))
+
+            debug_print "Final accounting:"
+            debug_print "    Scanned:   $TOTAL_SCANNED"
+            debug_print "    Compiled:  $TOTAL_COMPILED"
+            debug_print "    Skipped:   $TOTAL_SKIPPED"
+            debug_print "    Failed:    $TOTAL_FAILED"
+            debug_print "    Invalid:   $TOTAL_INVALID"
+            debug_print "    Accounted: $debug_total"
+
+            if [ "$TOTAL_SCANNED" -eq "$debug_total" ]; then
+                debug_print "[+] Final accounting verified."
+            else
+                debug_print "[!] WARNING: Final accounting mismatch."
+            fi
+        fi
+    fi
+
+    # ============================================================================
+    # FINAL SYSTEM HEALTH CHECK
+    # ============================================================================
+    # The final health check must succeed BEFORE persistent state can be committed.
+    # This ensures either state file represents only a fully completed healthy run.
+    if ! print_system_status "FINAL STATUS"; then
+        report_error "    [!] ERROR: Final system health check failed. Persistent state will not be updated."
+        printf '==========================================\n'
+        exit 1
+    fi
+
+    # ============================================================================
+    # POST-OPTIMIZATION: State Management
+    # ============================================================================
+    # Normal runs commit the complete state to .last_optimized.
+    # --no-user runs commit system-only state to .last_optimized_system and never
+    # modify the authoritative complete .last_optimized file.
+    #
+    # Dry runs never modify persistent state.
+    # Incomplete or unsafe runs preserve the previous trusted state.
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[+] Dry-run mode: Persistent state file and error logs were not modified.\n'
+
+    elif [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
+        report_error "    [!] WARNING: Run was incomplete. Persistent state file was NOT updated."
+
+    else
+        if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
+            printf '[+] State unchanged. Persistent state file left untouched.\n'
+        else
+            # Stage the completed state in SCRIPT_DIR first. The final mv then
+            # renames a file within the same directory/filesystem as STATE_FILE,
+            # making replacement of the selected persistent state file atomic.
+            if [ "$NO_USER" -eq 1 ]; then
+                STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized_system.$$.XXXXXX")
+            else
+                STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized.$$.XXXXXX")
+            fi
+            state_stage_exit=$?
+
+            if [ "$state_stage_exit" -ne 0 ] ||
+                [ -z "$STATE_STAGE_TMP" ] ||
+                [ ! -f "$STATE_STAGE_TMP" ]; then
+
+                report_error "    [!] WARNING: Failed to create same-filesystem state staging file."
                 STATE_COMMIT_SAFE=0
 
             else
-                mv_out=$(mv "$STATE_STAGE_TMP" "$STATE_FILE" 2>&1)
-                mv_exit=$?
+                cp_out=$(cp "$CURRENT_RUN_STATE" "$STATE_STAGE_TMP" 2>&1)
+                cp_exit=$?
 
-                if [ "$mv_exit" -ne 0 ]; then
-                    report_error "    [!] WARNING: Failed to atomically update persistent state file (Exit Code: $mv_exit)."
+                if [ "$cp_exit" -ne 0 ]; then
+                    report_error "    [!] WARNING: Failed to stage persistent state (Exit Code: $cp_exit)."
 
-                    if [ -n "$mv_out" ]; then
-                        report_error "        Output: $mv_out"
+                    if [ -n "$cp_out" ]; then
+                        report_error "        Output: $cp_out"
                     fi
 
-                    # Processing completed, but the trusted persistent state
-                    # could not be committed atomically.
                     STATE_COMMIT_SAFE=0
+
                 else
-                    # The staging path no longer exists after a successful rename.
-                    STATE_STAGE_TMP=""
-                    if [ "$NO_USER" -eq 1 ]; then
-                        printf '[+] System-only persistent state updated atomically.\n'
+                    mv_out=$(mv "$STATE_STAGE_TMP" "$STATE_FILE" 2>&1)
+                    mv_exit=$?
+
+                    if [ "$mv_exit" -ne 0 ]; then
+                        report_error "    [!] WARNING: Failed to atomically update persistent state file (Exit Code: $mv_exit)."
+
+                        if [ -n "$mv_out" ]; then
+                            report_error "        Output: $mv_out"
+                        fi
+
+                        # Processing completed, but the trusted persistent state
+                        # could not be committed atomically.
+                        STATE_COMMIT_SAFE=0
                     else
-                        printf '[+] Complete persistent state updated atomically.\n'
+                        # The staging path no longer exists after a successful rename.
+                        STATE_STAGE_TMP=""
+                        if [ "$NO_USER" -eq 1 ]; then
+                            printf '[+] System-only persistent state updated atomically.\n'
+                        else
+                            printf '[+] Complete persistent state updated atomically.\n'
+                        fi
                     fi
                 fi
             fi
         fi
     fi
-fi
 
-# A successful normal/full run supersedes any older --no-user state cache.
-# Remove it only after the complete run has remained state-safe. This avoids
-# maintaining two state files on every normal run while guaranteeing the next
-# --no-user run starts from the authoritative complete state.
-if [ "$DRY_RUN" -eq 0 ] &&
-    [ "$NO_USER" -eq 0 ] &&
-    [ "$STATE_COMMIT_SAFE" -eq 1 ] &&
-    [ -f "$NO_USER_STATE_FILE" ]; then
+    # A successful normal/full run supersedes any older --no-user state cache.
+    # Remove it only after the complete run has remained state-safe. This avoids
+    # maintaining two state files on every normal run while guaranteeing the next
+    # --no-user run starts from the authoritative complete state.
+    if [ "$DRY_RUN" -eq 0 ] &&
+        [ "$NO_USER" -eq 0 ] &&
+        [ "$STATE_COMMIT_SAFE" -eq 1 ] &&
+        [ -f "$NO_USER_STATE_FILE" ]; then
 
-    debug_print "Removing superseded system-only state file: $NO_USER_STATE_FILE"
+        debug_print "Removing superseded system-only state file: $NO_USER_STATE_FILE"
 
-    if ! rm -f "$NO_USER_STATE_FILE" 2>/dev/null; then
-        report_error "    [!] WARNING: Failed to remove superseded system-only state file $NO_USER_STATE_FILE"
+        if ! rm -f "$NO_USER_STATE_FILE" 2>/dev/null; then
+            report_error "    [!] WARNING: Failed to remove superseded system-only state file $NO_USER_STATE_FILE"
+        fi
     fi
-fi
 
-# ============================================================================
-# FINAL REPORT
-# ============================================================================
+    # ============================================================================
+    # FINAL REPORT
+    # ============================================================================
 
-# Prepare operational/runtime error notice based only on THIS run.
-run_error_notice=""
-if [ "$DRY_RUN" -eq 0 ] &&
-    [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
-    [ -s "$RUN_ERROR_TMPFILE" ]; then
+    # Prepare operational/runtime error notice based only on THIS run.
+    run_error_notice=""
+    if [ "$DRY_RUN" -eq 0 ] &&
+        [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
+        [ -s "$RUN_ERROR_TMPFILE" ]; then
 
-    run_error_notice="    - [!] Maintenance errors occurred. See $RUN_ERROR_LOG"
-fi
+        run_error_notice="    - [!] Maintenance errors occurred. See $RUN_ERROR_LOG"
+    fi
 
-TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
+    TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 
-printf '\n==========================================\n'
+    printf '\n==========================================\n'
 
-if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[+] Maintenance Summary (DRY RUN):\n'
-else
-    printf '[+] Maintenance Summary:\n'
-fi
-
-printf '    - Step 1 (Cache Trim):       %ss\n' "$STEP1_DURATION"
-printf '    - Step 2 (System Stage):     %ss\n' "$STEP2_DURATION"
-printf '    - Step 3 (User Stage):       %ss\n' "$STEP3_DURATION"
-printf '    --------------------------------------\n'
-printf '    - Grand Total:               %ss\n' "$TOTAL_DURATION"
-
-if [ "$DRY_RUN" -eq 1 ]; then
-    printf '    - Packages Would Compile:    %d\n' "$TOTAL_WOULD_COMPILE"
-    printf '    - Packages Would Skip:       %d\n' "$TOTAL_SKIPPED"
-    printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
-    printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
-else
-    printf '    - Packages Compiled:         %d\n' "$TOTAL_COMPILED"
-    printf '    - Packages Skipped (Cached): %d\n' "$TOTAL_SKIPPED"
-    printf '    - Packages Failed:           %d\n' "$TOTAL_FAILED"
-    printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
-    printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
-fi
-
-[ -n "$error_notice" ] && printf '%s\n' "$error_notice"
-[ -n "$run_error_notice" ] && printf '%s\n' "$run_error_notice"
-
-if [ "$NO_USER" -eq 1 ]; then
-    printf '    - User app stage:            Skipped (--no-user)\n'
-fi
-
-if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
-    printf '    - [!] Run incomplete: trusted persistent state was not updated.\n'
-elif [ "$DRY_RUN" -eq 0 ]; then
-    if [ "$NO_USER" -eq 1 ]; then
-        printf '    - Persistent state:          System-only state current.\n'
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[+] Maintenance Summary (DRY RUN):\n'
     else
-        printf '    - Persistent state:          Complete state current.\n'
+        printf '[+] Maintenance Summary:\n'
     fi
+
+    printf '    - Step 1 (Cache Trim):       %ss\n' "$STEP1_DURATION"
+    printf '    - Step 2 (System Stage):     %ss\n' "$STEP2_DURATION"
+    printf '    - Step 3 (User Stage):       %ss\n' "$STEP3_DURATION"
+    printf '    --------------------------------------\n'
+    printf '    - Grand Total:               %ss\n' "$TOTAL_DURATION"
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '    - Packages Would Compile:    %d\n' "$TOTAL_WOULD_COMPILE"
+        printf '    - Packages Would Skip:       %d\n' "$TOTAL_SKIPPED"
+        printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
+        printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
+    else
+        printf '    - Packages Compiled:         %d\n' "$TOTAL_COMPILED"
+        printf '    - Packages Skipped (Cached): %d\n' "$TOTAL_SKIPPED"
+        printf '    - Packages Failed:           %d\n' "$TOTAL_FAILED"
+        printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
+        printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
+    fi
+
+    [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
+    [ -n "$run_error_notice" ] && printf '%s\n' "$run_error_notice"
+
+    if [ "$NO_USER" -eq 1 ]; then
+        printf '    - User app stage:            Skipped (--no-user)\n'
+    fi
+
+    if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
+        printf '    - [!] Run incomplete: trusted persistent state was not updated.\n'
+    elif [ "$DRY_RUN" -eq 0 ]; then
+        if [ "$NO_USER" -eq 1 ]; then
+            printf '    - Persistent state:          System-only state current.\n'
+        else
+            printf '    - Persistent state:          Complete state current.\n'
+        fi
+    fi
+
+    printf '==========================================\n'
+
+    # ============================================================================
+    # FINAL SUCCESS DETERMINATION
+    # ============================================================================
+
+    # An incomplete processing run or failed state commit is not a successful run.
+    if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
+        exit 1
+    fi
+
+    # Only now has the entire run completed successfully.
+    SUCCESSFUL_RUN=1
+}
+
+# Execute normal maintenance unless this file was sourced for function reuse.
+if [ "${MAINTENANCE_SOURCE_ONLY-0}" -ne 1 ]; then
+    main "$@"
 fi
-
-printf '==========================================\n'
-
-# ============================================================================
-# FINAL SUCCESS DETERMINATION
-# ============================================================================
-
-# An incomplete processing run or failed state commit is not a successful run.
-if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
-    exit 1
-fi
-
-# Only now has the entire run completed successfully.
-SUCCESSFUL_RUN=1
 EOF
 ```
 <!-- SCRIPT_END -->
