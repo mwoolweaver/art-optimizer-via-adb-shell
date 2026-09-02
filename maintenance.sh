@@ -1304,13 +1304,12 @@ process_packages() {
             *f*) state_noglob_was_set=1 ;;
             *) state_noglob_was_set=0 ;;
             esac
-
             set -f
             for prev_fingerprint in $PREV_STATE; do
                 case "$prev_fingerprint" in
                 "$state_key"*)
                     case "$prev_fingerprint" in
-                    *UNAVAILABLE*)
+                    *"|UNAVAILABLE")
                         ;;
                     *)
                         preserved_fingerprint="$prev_fingerprint"
