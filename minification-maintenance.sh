@@ -124,7 +124,9 @@ TOTAL_START_TIME=$SECONDS
 android_version=$(getprop ro.build.version.release 2>/dev/null)
 sdk_version=$(getprop ro.build.version.sdk 2>/dev/null)
 android_version="${android_version:-Unknown}"
-sdk_version="${sdk_version:-0}"
+case "$sdk_version" in
+'' | *[!0-9]*) sdk_version=0 ;;
+esac
 debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
 MIN_SDK=24
 if [ "$sdk_version" -lt "$MIN_SDK" ]; then
@@ -920,6 +922,11 @@ for i in "$@"; do
     prev2="${prev1:-}"
     prev1="$i"
 done
+case "$FREE_KB" in
+'' | *[!0-9]*)
+    FREE_KB=""
+    ;;
+esac
 debug_print "Available storage on /data: ${FREE_KB:-0} KB"
 if [ -z "$FREE_KB" ]; then
     report_error "    [!] WARNING: Could not determine free storage on /data. Proceeding with caution."
@@ -931,7 +938,7 @@ CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
 STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
 STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
 ERROR_TMPFILE=$(mktemp "${TMPDIR}/errors.$$.XXXXXX")
-debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
+debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED errors=$ERROR_TMPFILE"
 if [ -z "$CURRENT_RUN_STATE" ] || [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ] || [ -z "$ERROR_TMPFILE" ]; then
     report_error "[!] FATAL: One or more temporary file paths are empty. Aborting."
     exit 1
