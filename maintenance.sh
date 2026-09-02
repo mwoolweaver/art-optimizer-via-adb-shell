@@ -1398,7 +1398,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     else
         debug_print "[!] WARNING: Final dry-run accounting mismatch."
     fi
-        printf '[+] Maintenance Summary (DRY RUN):\n'
+    printf '[+] Maintenance Summary (DRY RUN):\n'
 else
     debug_total=$((TOTAL_COMPILED + TOTAL_SKIPPED + TOTAL_FAILED + TOTAL_INVALID))
 
