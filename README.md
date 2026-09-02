@@ -180,6 +180,7 @@ STATE_FILE="${SCRIPT_DIR}/.last_optimized"
 readonly STATE_FILE
 ERROR_LOG="${SCRIPT_DIR}/compile_errors.log"
 readonly ERROR_LOG
+SUCCESSFUL_RUN=0
 cleanup() {
     debug_print "Executing cleanup handler (SUCCESSFUL_RUN=$SUCCESSFUL_RUN)..."
     if [ "${DRY_RUN:-0}" -eq 0 ]; then
@@ -952,35 +953,12 @@ else
 fi
 STEP3_DURATION=$((SECONDS - STEP3_START))
 printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
-if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[+] Dry-run mode: Persistent state file and error logs were not modified.\n'
-elif [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
-    printf '    [!] WARNING: Run was incomplete. Persistent state file was NOT updated.\n' >&2
-else
-    if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
-        printf '[+] State unchanged. Persistent state file left untouched.\n'
-    else
-        mv_out=$(mv "$CURRENT_RUN_STATE" "$STATE_FILE" 2>&1)
-        mv_exit=$?
-        if [ "$mv_exit" -ne 0 ]; then
-            printf '    [!] WARNING: Failed to update persistent state file (Exit Code: %d).\n' \
-                "$mv_exit" >&2
-            if [ -n "$mv_out" ]; then
-                printf '        Output: %s\n' "$mv_out" >&2
-            fi
-            STATE_COMMIT_SAFE=0
-        else
-            printf '[+] Persistent state file updated.\n'
-        fi
-    fi
-fi
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 error_notice=""
 if [ "$TOTAL_FAILED" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
     error_notice="    - [!] Errors occurred. See $ERROR_LOG"
 fi
-printf '\n==========================================\n'
 if [ "$DEBUG" -eq 1 ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
         debug_total=$((TOTAL_WOULD_COMPILE + TOTAL_SKIPPED + TOTAL_INVALID))
@@ -1011,6 +989,33 @@ if [ "$DEBUG" -eq 1 ]; then
         fi
     fi
 fi
+if ! print_system_status "FINAL STATUS"; then
+    printf '==========================================\n'
+    exit 1
+fi
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[+] Dry-run mode: Persistent state file and error logs were not modified.\n'
+elif [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
+    printf '    [!] WARNING: Run was incomplete. Persistent state file was NOT updated.\n' >&2
+else
+    if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
+        printf '[+] State unchanged. Persistent state file left untouched.\n'
+    else
+        mv_out=$(mv "$CURRENT_RUN_STATE" "$STATE_FILE" 2>&1)
+        mv_exit=$?
+        if [ "$mv_exit" -ne 0 ]; then
+            printf '    [!] WARNING: Failed to update persistent state file (Exit Code: %d).\n' \
+                "$mv_exit" >&2
+            if [ -n "$mv_out" ]; then
+                printf '        Output: %s\n' "$mv_out" >&2
+            fi
+            STATE_COMMIT_SAFE=0
+        else
+            printf '[+] Persistent state file updated.\n'
+        fi
+    fi
+fi
+printf '\n==========================================\n'
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Maintenance Summary (DRY RUN):\n'
 else
@@ -1034,12 +1039,13 @@ else
     printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
 fi
 [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
-printf '==========================================\n'
-if ! print_system_status "FINAL STATUS"; then
-    printf '==========================================\n'
-    exit 1
+if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
+    printf '    - [!] Run incomplete: trusted persistent state was not updated.\n'
 fi
 printf '==========================================\n'
+if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
+    exit 1
+fi
 SUCCESSFUL_RUN=1
 EOF
 ```
