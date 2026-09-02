@@ -109,7 +109,7 @@ show_help() {
         'Environment variables:' \
         '    DEBUG=0|1' \
         '    DRY_RUN=0|1' \
-        '    NO_USER=0|1'
+        '    NO_USER=0|1' >&2
 }
 for setting in DEBUG DRY_RUN NO_USER; do
     case "$setting" in
@@ -570,9 +570,9 @@ process_packages() {
         return 1
     fi
     if [ "$DEBUG" -eq 1 ]; then
-        package_line_count=$(printf '%s\n' "$pkg_list" | wc -l)
+        PACKAGE_LINE_COUNT=$(printf '%s\n' "$pkg_list" | wc -l)
         debug_print "===== DEBUG NORMALIZED PACKAGE LIST ====="
-        debug_print "Packages: $package_line_count"
+        debug_print "Packages: $PACKAGE_LINE_COUNT"
         debug_print "--- first 10 records ---"
         echo "$pkg_list" | head -n 10
         debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
