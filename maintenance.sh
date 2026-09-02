@@ -265,8 +265,7 @@ cleanup() {
         "${STAGE_PATHS:-}" \
         "${STAGE_STATS:-}" \
         "${STAGE_MERGED:-}" \
-        "${ERROR_TMPFILE:-}"
-    do
+        "${ERROR_TMPFILE:-}"; do
         if [ -n "$tmpfile" ] && [ -e "$tmpfile" ]; then
             debug_print "Cleaning up temporary file: $tmpfile"
 
