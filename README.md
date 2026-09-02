@@ -190,6 +190,12 @@ for arg in "$@"; do
     esac
 done
 
+debug_print() {
+    if [ "$DEBUG" -eq 1 ]; then
+        echo "[DEBUG] $1" >&2
+    fi
+}
+
 # Print an operational/runtime error to stderr and, when available, append it
 # to the current real run's maintenance error log tempfile.
 report_error() {
