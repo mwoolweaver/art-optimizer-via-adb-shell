@@ -100,21 +100,19 @@ cat << 'EOF' > /sdcard/monthly/maintenance.sh
 #
 # Key Features:
 #   1. Dry-run simulation mode (--dry-run) for safe workflow testing.
-#   2. Built in debugging output (--debug) to help diagnose script failure.
+#   2. Built-in debugging output (--debug) to help diagnose script failure.
 #   3. Thermal and memory pressure safety checks to prevent thermal throttling.
 #   4. Incremental fingerprint-based tracking (.last_optimized, saved in same dir as script)
 #      to skip unchanged application packages and reduce CPU wake locks.
 #   5. Atomic temporary file handling and robust signal cleanup traps.
 # ============================================================================
 
-set -u # Exit immediately if any variable is unset
+set -u # Treat unset variable expansions as errors.
 
-# SECURITY: Restrict file creation umask to owner-only (rw-------)
-# This prevents accidental world-readable sensitive files
+# SECURITY: Restrict created files to owner access (rw-------).
 umask 077
 
-# PERFORMANCE: Force C locale (POSIX) instead of system locale
-# Avoids locale-specific string sorting/regex issues and speeds up text processing
+# PERFORMANCE: Use the C locale for predictable, faster text processing.
 export LC_ALL=C
 
 # ============================================================================
@@ -234,8 +232,7 @@ fi
 # ============================================================================
 # Wait for Android Boot to Complete
 # ============================================================================
-# The system needs to finish booting before running optimizations
-# Sometimes optimizations are triggered by boot scripts before init completes
+# Wait for Android boot completion before optimization.
 BOOT_WAIT_ELAPSED=0
 while [ $BOOT_WAIT_ELAPSED -lt 300 ]; do
     [ "$(getprop sys.boot_completed)" = "1" ] && break
@@ -244,7 +241,7 @@ while [ $BOOT_WAIT_ELAPSED -lt 300 ]; do
     debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
 done
 
-# Explicitly abort if we timed out without booting
+# Abort on boot timeout.
 if [ "$(getprop sys.boot_completed)" != "1" ]; then
     echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
     exit 1
@@ -252,10 +249,7 @@ fi
 
 # ============================================================================
 # FUNCTION: check_deps()
-# Purpose: Verify all required shell commands are available on the system
-# Note: Assumes an Android device shell environment containing host tools
-#       like pm, cmd, dumpsys, getprop, and standard POSIX utilities. Collects
-#       all missing dependencies before failing so you can fix them at once.
+# Purpose: Verify required commands and report all missing dependencies.
 # ============================================================================
 check_deps() {
     missing=""
@@ -270,7 +264,7 @@ check_deps() {
         exit 1
     fi
 }
-# Verify all required commands are installed as soon as possible
+
 check_deps
 
 # ============================================================================
@@ -287,7 +281,7 @@ esac
 # ============================================================================
 # INITIALIZATION: Timing and System Detection
 # ============================================================================
-# Record the shell's elapsed-seconds counter for total duration calculation.
+# Start total runtime timer.
 TOTAL_START_TIME=$SECONDS
 
 # Query device properties (fail gracefully if unavailable)
@@ -321,17 +315,17 @@ fi
 # ============================================================================
 # TEMP FILE & STATE MANAGEMENT VARIABLES
 # ============================================================================
-# Most Android systems have /data/local/tmp available; ensures temp files go to writable location
+# Default temporary files to Android's writable /data/local/tmp.
 export TMPDIR="${TMPDIR:-/data/local/tmp}"
 debug_print "Set TMPDIR to $TMPDIR"
 
-# Validate that TMPDIR exists and is actually writable
+# Require a writable temporary directory.
 if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
     echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting." >&2
     exit 1
 fi
 
-# Absolute path to this script's directory (locked with readonly to prevent tampering)
+# Resolve the script directory and prevent later variable reassignment.
 case "$0" in
 */*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
 *) SCRIPT_DIR="$(pwd)" ;;
@@ -376,10 +370,7 @@ SUCCESSFUL_RUN=0
 # ============================================================================
 cleanup() {
     cleanup_exit=$?
-    # Preserve the incoming status, prevent EXIT recursion, and keep cleanup
-    # from being interrupted before persistent files and the lock are finalized.
-
-    # Disarm EXIT trap before cleanup can call exit itself.
+    # Prevent EXIT recursion and interruption during cleanup.
     trap - EXIT
     trap '' INT TERM
 
@@ -518,9 +509,7 @@ cleanup() {
     exit "$cleanup_exit"
 }
 
-# Handle SIGINT (Ctrl+C) and SIGTERM (kill) gracefully with distinct exit codes
-# 130 for Ctrl+C and 143 for kill are standard Unix conventions respected by virtually all shell orchestrators.
-# Exiting via these traps automatically triggers the EXIT trap (cleanup) beforehand.
+# Handle SIGINT/SIGTERM with conventional exit codes; EXIT cleanup follows.
 trap 'report_error "    [!] Interrupted by user (SIGINT). Cleaning up..."; exit 130' INT
 trap 'report_error "    [!] Terminated by system (SIGTERM). Cleaning up..."; exit 143' TERM
 
@@ -560,14 +549,14 @@ TOTAL_WOULD_COMPILE=0
 
 STATE_COMMIT_SAFE=1
 
-# Define a literal carriage return safely for POSIX compliance globally
+# Literal carriage return for PM output normalization.
 CR=$(printf '\r')
 readonly CR
 
 # ============================================================================
 # FUNCTION: get_thermal_status()
-# Purpose: Retrieve current device temperature from dumpsys or sysfs
-# Returns: Temperature in Celsius, or "N/A" if unavailable
+# Purpose: Retrieve Android thermal status or fallback temperature
+# Returns: Status code (0-6), Celsius temperature, or "N/A"
 # ============================================================================
 get_thermal_status() {
     # Attempt 1: dumpsys thermalservice (Modern OS Status Code)
@@ -587,11 +576,7 @@ get_thermal_status() {
     if [ -n "$out" ]; then
         debug_print "Parsed thermal status from hardware_properties dumpsys."
 
-        # Complex regex to extract temperatures from various dumpsys formats:
-        # - Looks for [...] bracket notation containing comma-separated values
-        # - Extracts all numeric values between brackets
-        # - Filters out unrealistic temps (>120°C) and invalid data
-        # - Returns maximum temperature found to detect hottest sensor
+        # Parse bracketed sensor values and return the hottest valid temperature.
         temp=$(printf "%s\n" "$out" | awk '
             /CPU temperatures:/ {
                 if (match($0, /\[[^]]*\]/)) {
@@ -651,9 +636,7 @@ get_thermal_status() {
         set +f
     fi
 
-    # dumpsys battery output is key-value pairs: "temperature: 350"
-    # When we find the "temperature:" key, the NEXT value is our temperature.
-    # Reset parser state so values from earlier calls cannot affect this pass.
+    # Parse the value following "temperature:"; reset parser state first.
     prev1=""
 
     for i in "$@"; do
@@ -680,7 +663,7 @@ get_thermal_status() {
     for f in /sys/class/thermal/thermal_zone*/temp; do
         [ -r "$f" ] || continue
 
-        # Group the redirection to safely catch SELinux or read errors
+        # Capture read errors for debug output.
         val_out=$(<"$f" 2>&1)
         val_exit=$?
 
@@ -711,24 +694,23 @@ get_thermal_status() {
 
 # ============================================================================
 # FUNCTION: get_memory_pressure()
-# Purpose: Calculate memory pressure from MemTotal and MemAvailable using shell arithmetic
+# Purpose: Calculate memory pressure from MemTotal and MemAvailable
 # Returns: Percentage (0-100), or "N/A" if unavailable
 # ============================================================================
 get_memory_pressure() {
     if [ -r /proc/meminfo ]; then
         t=""
         a=""
-        # Read file natively line-by-line without cat or awk
+        # Read natively and stop once both values are found.
         while read -r key val _rest; do
             case "$key" in
             MemTotal:) t="$val" ;;
             MemAvailable:) a="$val" ;;
             esac
-            # Break early once both values are found to save cycles
             [ -n "$t" ] && [ -n "$a" ] && break
         done </proc/meminfo
 
-        # Perform pure integer math in the shell: ((Total - Available) * 100 / Total)
+        # Calculate memory pressure with shell arithmetic.
         if [ -n "$t" ] && [ -n "$a" ] && [ "$t" -gt 0 ]; then
             printf '%d\n' "$(((t - a) * 100 / t))"
         else
@@ -748,7 +730,7 @@ get_battery_level() {
     # Most Android devices expose battery capacity at physical sysfs path
     batt_path="/sys/class/power_supply/battery/capacity"
     if [ -f "$batt_path" ]; then
-        # Group the read operation to capture stderr via subshell redirection
+        # Capture read errors for debug output.
         cap_out=$(<"$batt_path" 2>&1)
         cap_exit=$?
 
@@ -826,9 +808,7 @@ process_packages() {
     pkg_list="$1"
     default_mode="$2"
 
-    # A successful package-manager query should not produce an empty list.
-    # Treat an unexpected empty enumeration as unsafe so persistent state
-    # cannot be replaced by an incomplete run.
+    # An empty package list is unsafe because it could replace valid state.
     if [ -z "$pkg_list" ]; then
         report_error "    [!] ERROR: Package list for mode '$default_mode' is unexpectedly empty."
         return 1
@@ -939,8 +919,7 @@ process_packages() {
 
     debug_print "Total packages parsed for '$default_mode': $total_pkgs"
 
-    # Expose the successfully parsed package count before later processing.
-    # This preserves the input count even if a later stage fails.
+    # Preserve the parsed package count even if a later stage fails.
     if [ "$default_mode" = "system" ]; then
         SYSTEM_PKGS_COUNT="$total_pkgs"
     else
@@ -1027,10 +1006,7 @@ process_packages() {
     # STAGE 1b: STATS
     # ========================================================================
     #
-    # STAGE_PATHS contains ONLY paths.
-    #
-    # We deliberately leave stderr visible while debugging so stat failures
-    # are not hidden.
+    # STAGE_PATHS contains only paths; keep stat errors visible in debug output.
     # ========================================================================
 
     debug_print "Running stat on unique paths..."
@@ -1370,10 +1346,8 @@ process_packages() {
         # Build fingerprint
         # ====================================================================
 
-        # Fingerprint format: package|path|metadata
-        # Uses '|' as delimiter (consistent with normalized package|path format above).
-        # This unique combination identifies if a package has changed since last optimization.
-        # Unchanged fingerprints skip recompilation; changed ones trigger fresh compilation.
+        # Fingerprint: package|path|metadata.
+        # Unchanged fingerprints skip recompilation.
 
         state_writable=1
         preserved_fingerprint=""
@@ -1510,12 +1484,8 @@ $fingerprint
                     "$current" "$total_pkgs" "$pkg_name"
 
                 # Write state only after successful compilation.
-                #
-                # With trustworthy current metadata, store the current
-                # fingerprint. If metadata was unavailable, carry forward a
-                # previous trustworthy fingerprint only now that compilation
-                # has succeeded. Failed compilations write no state and will
-                # therefore be retried on the next run.
+                # Use current metadata when trustworthy; otherwise preserve a previous
+                # trustworthy fingerprint. Failures write no state and are retried.
                 if [ "$state_writable" -eq 1 ]; then
                     echo "$fingerprint" >&3
                 elif [ -n "$preserved_fingerprint" ]; then
@@ -1703,14 +1673,10 @@ fi
 # Previous run's package fingerprints.
 PREV_STATE=""
 
-# Select the best baseline state for this run.
-#
-# Normal runs always use the authoritative complete .last_optimized state.
-#
-# --no-user runs prefer their own system-only state. On the first --no-user
-# run after a successful full run, no system-only state exists, so fall back
-# to .last_optimized as the baseline. Exact full-fingerprint matching means
-# user-app records in the full state do not interfere with system processing.
+## Select the state baseline.
+# Normal runs use .last_optimized. --no-user prefers its system-only state,
+# falling back to .last_optimized when none exists. Exact fingerprint matching
+# prevents user-app records from affecting system processing.
 STATE_READ_FILE="$STATE_FILE"
 
 if [ "$NO_USER" -eq 1 ] && [ ! -r "$NO_USER_STATE_FILE" ]; then
@@ -1743,10 +1709,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
 else
     printf '[+] Step 1: Trimming system and app caches...\n'
 
-    # Ask Package Manager to trim app caches until the requested amount of
-    # free storage is available. Using 99999999999 bytes sets a deliberately
-    # unreachable free-space target on typical devices, encouraging aggressive
-    # cache trimming.
+    # Use an intentionally unreachable free-space target to encourage aggressive
+    # Package Manager cache trimming.
     trim_out=$(pm trim-caches 99999999999 2>&1)
     trim_exit=$?
 
@@ -1759,7 +1723,6 @@ else
     fi
 fi
 
-# Calculate elapsed time for this step
 STEP1_DURATION=$((SECONDS - STEP1_START))
 printf '[+] Cache trim finished in %ss.\n' "$STEP1_DURATION"
 
@@ -1852,7 +1815,6 @@ fi
 # FINAL ACCOUNTING PREPARATION
 # ============================================================================
 
-# Calculate total package count.
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 
 # Prepare error notice based only on failures from THIS run.
@@ -2020,7 +1982,6 @@ if [ "$DRY_RUN" -eq 0 ] &&
     run_error_notice="    - [!] Maintenance errors occurred. See $RUN_ERROR_LOG"
 fi
 
-# Calculate total execution time.
 TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 
 printf '\n==========================================\n'
