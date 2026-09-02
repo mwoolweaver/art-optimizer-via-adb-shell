@@ -675,7 +675,7 @@ process_packages() {
         state_writable=1
         preserved_fingerprint=""
         fingerprint="${pkg_name}|${apk_path}|${file_meta}"
-        case "$fingerprint" in
+        case "${file_meta}" in
         *UNAVAILABLE*)
             echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
             echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
