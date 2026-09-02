@@ -49,6 +49,21 @@ debug_print() {
     fi
 }
 
+# Print an operational/runtime error to stderr and, when available, append it
+# to the current real run's maintenance error log tempfile.
+report_error() {
+    printf '%s\n' "$1" >&2
+
+    if [ "${DRY_RUN:-0}" -eq 0 ] &&
+        [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
+        [ -f "$RUN_ERROR_TMPFILE" ]; then
+
+        if ! printf '%s\n' "$1" >>"$RUN_ERROR_TMPFILE" 2>/dev/null; then
+            printf '    [!] CRITICAL: Failed to write to maintenance error log tempfile.\n' >&2
+        fi
+    fi
+}
+
 debug_print "Debug/Verbose mode initialized."
 
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -183,9 +198,13 @@ fi
 STATE_FILE="${SCRIPT_DIR}/.last_optimized"
 readonly STATE_FILE
 
-# Log file for compile errors (will be created/truncated as needed)
+# Log file for package compilation errors from the most recent real run.
 ERROR_LOG="${SCRIPT_DIR}/compile_errors.log"
 readonly ERROR_LOG
+
+# Log file for operational/runtime errors from the most recent real run.
+RUN_ERROR_LOG="${SCRIPT_DIR}/maintenance_errors.log"
+readonly RUN_ERROR_LOG
 
 SUCCESSFUL_RUN=0
 
@@ -209,8 +228,7 @@ cleanup() {
                 debug_print "Saving latest failed-run snapshot to: ${SCRIPT_DIR}/.early_exit"
 
                 if ! cp "$CURRENT_RUN_STATE" "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
-                    printf '    [!] Warning: Failed to save early exit snapshot to %s\n' \
-                        "${SCRIPT_DIR}/.early_exit" >&2
+                    report_error "    [!] Warning: Failed to save early exit snapshot to ${SCRIPT_DIR}/.early_exit"
                 fi
 
             elif [ -f "${SCRIPT_DIR}/.early_exit" ]; then
@@ -219,8 +237,7 @@ cleanup() {
                 debug_print "Removing stale early-exit snapshot: ${SCRIPT_DIR}/.early_exit"
 
                 if ! rm -f "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
-                    printf '    [!] Warning: Failed to remove stale early exit snapshot %s\n' \
-                        "${SCRIPT_DIR}/.early_exit" >&2
+                    report_error "    [!] Warning: Failed to remove stale early exit snapshot ${SCRIPT_DIR}/.early_exit"
                 fi
             fi
 
@@ -232,8 +249,7 @@ cleanup() {
                 debug_print "Removing stale early-exit snapshot: ${SCRIPT_DIR}/.early_exit"
 
                 if ! rm -f "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
-                    printf '    [!] Warning: Failed to remove stale early exit snapshot %s\n' \
-                        "${SCRIPT_DIR}/.early_exit" >&2
+                    report_error "    [!] Warning: Failed to remove stale early exit snapshot ${SCRIPT_DIR}/.early_exit"
                 fi
             fi
         fi
@@ -243,24 +259,23 @@ cleanup() {
             [ -f "$ERROR_TMPFILE" ] &&
             [ -s "$ERROR_TMPFILE" ]; then
 
-            debug_print "Saving latest run error log to: $ERROR_LOG"
+            debug_print "Saving latest run compile error log to: $ERROR_LOG"
 
             if ! mv "$ERROR_TMPFILE" "$ERROR_LOG" 2>/dev/null; then
-                printf '    [!] Warning: Failed to save error log to %s\n' \
-                    "$ERROR_LOG" >&2
+                report_error "    [!] Warning: Failed to save compile error log to $ERROR_LOG"
             fi
 
         elif [ -f "$ERROR_LOG" ]; then
-            debug_print "Removing stale error log from previous run: $ERROR_LOG"
+            debug_print "Removing stale compile error log from previous run: $ERROR_LOG"
 
             if ! rm -f "$ERROR_LOG" 2>/dev/null; then
-                printf '    [!] Warning: Failed to remove stale error log %s\n' \
-                    "$ERROR_LOG" >&2
+                report_error "    [!] Warning: Failed to remove stale compile error log $ERROR_LOG"
             fi
         fi
     fi
 
-    # Remove all volatile temporary files that still exist.
+    # Remove volatile temporary files other than RUN_ERROR_TMPFILE.
+    # RUN_ERROR_TMPFILE is finalized last so cleanup failures can be logged too.
     for tmpfile in \
         "${CURRENT_RUN_STATE:-}" \
         "${STAGE_PATHS:-}" \
@@ -271,8 +286,7 @@ cleanup() {
             debug_print "Cleaning up temporary file: $tmpfile"
 
             if ! rm -f "$tmpfile" 2>/dev/null; then
-                printf '    [!] Warning: Failed to clean up %s\n' \
-                    "$tmpfile" >&2
+                report_error "    [!] Warning: Failed to clean up $tmpfile"
             fi
         fi
     done
@@ -282,8 +296,41 @@ cleanup() {
         debug_print "Releasing concurrency lock at $LOCK_DIR"
 
         if ! rmdir "$LOCK_DIR" 2>/dev/null; then
-            printf '    [!] CRITICAL: Failed to release lock at %s. Manual deletion required.\n' \
-                "$LOCK_DIR" >&2
+            report_error "    [!] CRITICAL: Failed to release lock at $LOCK_DIR. Manual deletion required."
+        fi
+    fi
+
+    # maintenance_errors.log represents the most recent real run attempt.
+    # Finalize it last so errors produced by cleanup itself are included.
+    if [ "${DRY_RUN:-0}" -eq 0 ]; then
+        if [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
+            [ -f "$RUN_ERROR_TMPFILE" ] &&
+            [ -s "$RUN_ERROR_TMPFILE" ]; then
+
+            debug_print "Saving latest maintenance error log to: $RUN_ERROR_LOG"
+
+            if ! mv "$RUN_ERROR_TMPFILE" "$RUN_ERROR_LOG" 2>/dev/null; then
+                printf '    [!] Warning: Failed to save maintenance error log to %s\n' \
+                    "$RUN_ERROR_LOG" >&2
+            fi
+
+        elif [ -f "$RUN_ERROR_LOG" ]; then
+            debug_print "Removing stale maintenance error log from previous run: $RUN_ERROR_LOG"
+
+            if ! rm -f "$RUN_ERROR_LOG" 2>/dev/null; then
+                printf '    [!] Warning: Failed to remove stale maintenance error log %s\n' \
+                    "$RUN_ERROR_LOG" >&2
+            fi
+        fi
+    fi
+
+    # Remove the maintenance-log tempfile if it was not moved successfully.
+    if [ -n "${RUN_ERROR_TMPFILE:-}" ] && [ -e "$RUN_ERROR_TMPFILE" ]; then
+        debug_print "Cleaning up maintenance error tempfile: $RUN_ERROR_TMPFILE"
+
+        if ! rm -f "$RUN_ERROR_TMPFILE" 2>/dev/null; then
+            printf '    [!] Warning: Failed to clean up %s\n' \
+                "$RUN_ERROR_TMPFILE" >&2
         fi
     fi
 }
@@ -291,8 +338,8 @@ cleanup() {
 # Handle SIGINT (Ctrl+C) and SIGTERM (kill) gracefully with distinct exit codes
 # 130 for Ctrl+C and 143 for kill are standard Unix conventions respected by virtually all shell orchestrators.
 # Exiting via these traps automatically triggers the EXIT trap (cleanup) beforehand.
-trap 'printf "\n    [!] Interrupted by user (SIGINT). Cleaning up...\n"; exit 130' INT
-trap 'printf "\n    [!] Terminated by system (SIGTERM). Cleaning up...\n"; exit 143' TERM
+trap 'report_error "    [!] Interrupted by user (SIGINT). Cleaning up..."; exit 130' INT
+trap 'report_error "    [!] Terminated by system (SIGTERM). Cleaning up..."; exit 143' TERM
 
 # ============================================================================
 # CONCURRENCY GUARD
@@ -307,6 +354,18 @@ fi
 
 # Set the EXIT trap to run the unified cleanup function
 trap 'cleanup' EXIT
+
+# Create the operational/runtime error tempfile early so pre-flight and all
+# subsequent real-run failures can be captured persistently.
+RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX")
+
+if [ -z "$RUN_ERROR_TMPFILE" ] || [ ! -f "$RUN_ERROR_TMPFILE" ]; then
+    printf '[!] FATAL: Failed to create maintenance error tempfile in %s. Aborting.\n' \
+        "$TMPDIR" >&2
+    exit 1
+fi
+
+debug_print "Created maintenance error tempfile: $RUN_ERROR_TMPFILE"
 
 # Package counting variables
 SYSTEM_PKGS_COUNT=0
@@ -612,7 +671,7 @@ process_packages() {
     normalize_exit=$?
 
     if [ "$normalize_exit" -ne 0 ]; then
-        printf '    [!] ERROR: Package normalization failed (Exit Code: %d).\n' "$normalize_exit" >&2
+        report_error "    [!] ERROR: Package normalization failed (Exit Code: $normalize_exit)."
         return 1
     fi
 
@@ -620,7 +679,7 @@ process_packages() {
 
     # A non-empty package-manager result becoming empty means normalization failed.
     if [ -z "$pkg_list" ]; then
-        debug_print "Package list became empty during normalization."
+        report_error "    [!] ERROR: Package list became empty during normalization."
         return 1
     fi
 
@@ -716,14 +775,14 @@ process_packages() {
     stage1_exit=$?
 
     if [ "$stage1_exit" -ne 0 ]; then
-        printf '    [!] ERROR: Stage 1 path extraction failed (Exit Code: %d).\n' "$stage1_exit" >&2
+        report_error "    [!] ERROR: Stage 1 path extraction failed (Exit Code: $stage1_exit)."
         return 1
     fi
 
     # A successfully normalized non-empty package list should always
     # produce at least one valid filesystem path.
     if [ ! -s "$STAGE_PATHS" ]; then
-        printf '    [!] ERROR: Stage 1 produced no valid package paths.\n' >&2
+        report_error "    [!] ERROR: Stage 1 produced no valid package paths."
         return 1
     fi
 
@@ -758,13 +817,13 @@ process_packages() {
     stage1b_exit=$?
 
     if [ "$stage1b_exit" -ne 0 ]; then
-        printf '    [!] ERROR: Stage 1b stat collection failed (Exit Code: %d).\n' "$stage1b_exit" >&2
+        report_error "    [!] ERROR: Stage 1b stat collection failed (Exit Code: $stage1b_exit)."
         return 1
     fi
 
     # Validate stat produced output
     if [ ! -s "$STAGE_STATS" ]; then
-        printf '    [!] ERROR: stat produced no output. Persistent state will not be updated.\n' >&2
+        report_error "    [!] ERROR: stat produced no output. Persistent state will not be updated."
         return 1
     fi
 
@@ -1000,14 +1059,14 @@ process_packages() {
     stage2_exit=$?
 
     if [ "$stage2_exit" -ne 0 ]; then
-        printf '    [!] ERROR: Stage 2 metadata merge failed (Exit Code: %d).\n' "$stage2_exit" >&2
+        report_error "    [!] ERROR: Stage 2 metadata merge failed (Exit Code: $stage2_exit)."
         return 1
     fi
 
     # A successful merge of a non-empty normalized package list should not
     # result in an empty Stage 2 output.
     if [ ! -s "$STAGE_MERGED" ]; then
-        printf '    [!] ERROR: Stage 2 produced no merged package records.\n' >&2
+        report_error "    [!] ERROR: Stage 2 produced no merged package records."
         return 1
     fi
 
@@ -1038,7 +1097,7 @@ process_packages() {
     stage3_would_compile=0
 
     if ! exec 3>>"$CURRENT_RUN_STATE"; then
-        printf '    [!] ERROR: Unable to open current-run state file for writing.\n' >&2
+        report_error "    [!] ERROR: Unable to open current-run state file for writing."
         return 1
     fi
 
@@ -1241,7 +1300,7 @@ $fingerprint
                     "$compile_exit" "$pkg_name" "$err_output" \
                     >>"$ERROR_TMPFILE" 2>/dev/null; then
 
-                    printf '    [!] CRITICAL: Failed to write to error log! Storage may be full.\n' >&2
+                    report_error "    [!] CRITICAL: Failed to write to compile error log! Storage may be full."
                 fi
             fi
         fi
@@ -1321,9 +1380,12 @@ $fingerprint
 # PRE-FLIGHT CHECKS
 # ============================================================================
 
-# Display and verify system health before proceeding
-# Exit immediately if thermal or memory conditions are critical
-print_system_status "PRE-FLIGHT CHECK" || exit 1
+# Display and verify system health before proceeding.
+# Exit immediately if thermal or memory conditions are critical.
+if ! print_system_status "PRE-FLIGHT CHECK"; then
+    report_error "[!] FATAL: Pre-flight system health check failed. Aborting."
+    exit 1
+fi
 
 # Validate available storage on /data (minimum 500MB required for compilation buffers)
 # Run df once, disable globbing, and assign output to positional parameters natively
@@ -1350,9 +1412,9 @@ done
 debug_print "Available storage on /data: ${FREE_KB:-0} KB"
 
 if [ -z "$FREE_KB" ]; then
-    printf '    [!] WARNING: Could not determine free storage on /data. Proceeding with caution.\n' >&2
+    report_error "    [!] WARNING: Could not determine free storage on /data. Proceeding with caution."
 elif [ "$FREE_KB" -lt 512000 ]; then
-    printf '[!] FATAL: Insufficient storage on /data (%d MB available, 500 MB required). Aborting.\n' "$((FREE_KB / 1024))" >&2
+    report_error "[!] FATAL: Insufficient storage on /data ($((FREE_KB / 1024)) MB available, 500 MB required). Aborting."
     exit 1
 fi
 
@@ -1369,7 +1431,7 @@ debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, m
 
 # Verify all temporary files were successfully created (safety check)
 if [ -z "$CURRENT_RUN_STATE" ] || [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ] || [ -z "$ERROR_TMPFILE" ]; then
-    printf '[!] FATAL: Failed to create temporary state files in %s. Aborting.\n' "$TMPDIR" >&2
+    report_error "[!] FATAL: Failed to create temporary state files in $TMPDIR. Aborting."
     exit 1
 fi
 
@@ -1407,15 +1469,15 @@ else
     # Ask Package Manager to trim app caches until the requested amount of
     # free storage is available. Using 99999999999 bytes sets a deliberately
     # unreachable free-space target on typical devices, encouraging aggressive
-    # cache trimming..
+    # cache trimming.
     trim_out=$(pm trim-caches 99999999999 2>&1)
     trim_exit=$?
 
     if [ $trim_exit -ne 0 ]; then
-        printf '    [!] WARNING: Cache trim failed (Exit Code: %d).\n' "$trim_exit" >&2
+        report_error "    [!] WARNING: Cache trim failed (Exit Code: $trim_exit)."
         # Only print the output if it actually contains text to avoid blank lines
         if [ -n "$trim_out" ]; then
-            printf '        Output: %s\n' "$trim_out" >&2
+            report_error "        Output: $trim_out"
         fi
     fi
 fi
@@ -1441,10 +1503,10 @@ system_package_list=$(pm list packages -f -s 2>&1)
 sys_exit=$?
 
 if [ "$sys_exit" -ne 0 ]; then
-    printf '    [!] WARNING: Failed to query system packages (Exit Code: %d).\n' "$sys_exit" >&2
+    report_error "    [!] WARNING: Failed to query system packages (Exit Code: $sys_exit)."
 
     if [ -n "$system_package_list" ]; then
-        printf '        Output: %s\n' "$system_package_list" >&2
+        report_error "        Output: $system_package_list"
     fi
 
     SYSTEM_PKGS_COUNT=0
@@ -1474,10 +1536,10 @@ user_package_list=$(pm list packages -f -3 2>&1)
 user_exit=$?
 
 if [ "$user_exit" -ne 0 ]; then
-    printf '    [!] WARNING: Failed to query user packages (Exit Code: %d).\n' "$user_exit" >&2
+    report_error "    [!] WARNING: Failed to query user packages (Exit Code: $user_exit)."
 
     if [ -n "$user_package_list" ]; then
-        printf '        Output: %s\n' "$user_package_list" >&2
+        report_error "        Output: $user_package_list"
     fi
 
     USER_PKGS_COUNT=0
@@ -1555,6 +1617,7 @@ fi
 # The final health check must succeed BEFORE .last_optimized can be committed.
 # This ensures persistent state represents only a fully completed healthy run.
 if ! print_system_status "FINAL STATUS"; then
+    report_error "    [!] ERROR: Final system health check failed. Persistent state will not be updated."
     printf '==========================================\n'
     exit 1
 fi
@@ -1571,7 +1634,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Dry-run mode: Persistent state file and error logs were not modified.\n'
 
 elif [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
-    printf '    [!] WARNING: Run was incomplete. Persistent state file was NOT updated.\n' >&2
+    report_error "    [!] WARNING: Run was incomplete. Persistent state file was NOT updated."
 
 else
     if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
@@ -1581,11 +1644,10 @@ else
         mv_exit=$?
 
         if [ "$mv_exit" -ne 0 ]; then
-            printf '    [!] WARNING: Failed to update persistent state file (Exit Code: %d).\n' \
-                "$mv_exit" >&2
+            report_error "    [!] WARNING: Failed to update persistent state file (Exit Code: $mv_exit)."
 
             if [ -n "$mv_out" ]; then
-                printf '        Output: %s\n' "$mv_out" >&2
+                report_error "        Output: $mv_out"
             fi
 
             # Processing completed, but the trusted persistent state could
@@ -1600,6 +1662,15 @@ fi
 # ============================================================================
 # FINAL REPORT
 # ============================================================================
+
+# Prepare operational/runtime error notice based only on THIS run.
+run_error_notice=""
+if [ "$DRY_RUN" -eq 0 ] &&
+    [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
+    [ -s "$RUN_ERROR_TMPFILE" ]; then
+
+    run_error_notice="    - [!] Maintenance errors occurred. See $RUN_ERROR_LOG"
+fi
 
 printf '\n==========================================\n'
 
@@ -1629,6 +1700,7 @@ else
 fi
 
 [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
+[ -n "$run_error_notice" ] && printf '%s\n' "$run_error_notice"
 
 if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
     printf '    - [!] Run incomplete: trusted persistent state was not updated.\n'
