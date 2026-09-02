@@ -158,9 +158,8 @@ for setting in DEBUG DRY_RUN NO_USER; do
     0 | 1)
         ;;
     *)
-        printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' \
-            "$setting" "$setting_value"
-        show_help
+        printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' "$setting" "$setting_value" >&2
+        show_help >&2
         exit 1
         ;;
     esac
@@ -183,8 +182,8 @@ for arg in "$@"; do
         exit 0
         ;;
     *)
-        printf '[!] FATAL: Unknown option: %s\n\n' "$arg"
-        show_help
+        printf '[!] FATAL: Unknown option: %s\n\n' "$arg" >&2
+        show_help >&2
         exit 1
         ;;
     esac
@@ -228,7 +227,7 @@ fi
 SCRIPT_UID=${USER_ID:-1}
 debug_print "Checked user ID: $SCRIPT_UID"
 if [ "$SCRIPT_UID" -ne 0 ] && [ "$SCRIPT_UID" -ne 2000 ]; then
-    echo "[!] FATAL: Elevated privileges required (root or adb shell). Aborting."
+    echo "[!] FATAL: Elevated privileges required (root or adb shell). Aborting." >&2
     exit 1
 fi
 
@@ -247,7 +246,7 @@ done
 
 # Explicitly abort if we timed out without booting
 if [ "$(getprop sys.boot_completed)" != "1" ]; then
-    echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting."
+    echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
     exit 1
 fi
 
@@ -267,7 +266,7 @@ check_deps() {
         fi
     done
     if [ -n "$missing" ]; then
-        echo "[!] FATAL: Required commands missing: $missing"
+        echo "[!] FATAL: Required commands missing: $missing" >&2
         exit 1
     fi
 }
@@ -280,7 +279,7 @@ check_deps
 # ============================================================================
 case "$(service check package 2>/dev/null)" in
 *"not found"* | "")
-    echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting."
+    echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting." >&2
     exit 1
     ;;
 esac
@@ -297,7 +296,9 @@ sdk_version=$(getprop ro.build.version.sdk 2>/dev/null)
 
 # Safe fallback assignments
 android_version="${android_version:-Unknown}"
-sdk_version="${sdk_version:-0}"
+case "$sdk_version" in
+'' | *[!0-9]*) sdk_version=0 ;;
+esac
 debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
 
 # ============================================================================
@@ -307,7 +308,7 @@ debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
 MIN_SDK=24
 
 if [ "$sdk_version" -lt "$MIN_SDK" ]; then
-    echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version"
+    echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version" >&2
     exit 1
 fi
 
@@ -326,7 +327,7 @@ debug_print "Set TMPDIR to $TMPDIR"
 
 # Validate that TMPDIR exists and is actually writable
 if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
-    echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting."
+    echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting." >&2
     exit 1
 fi
 
@@ -340,7 +341,7 @@ debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
 
 # Validate that SCRIPT_DIR is writable for persistent state files
 if ! [ -w "$SCRIPT_DIR" ]; then
-    echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting."
+    echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting." >&2
     exit 1
 fi
 
@@ -374,6 +375,14 @@ SUCCESSFUL_RUN=0
 # SIGNAL HANDLERS & CLEANUP
 # ============================================================================
 cleanup() {
+    cleanup_exit=$?
+    # Preserve the incoming status, prevent EXIT recursion, and keep cleanup
+    # from being interrupted before persistent files and the lock are finalized.
+
+    # Disarm EXIT trap before cleanup can call exit itself.
+    trap - EXIT
+    trap '' INT TERM
+
     debug_print "Executing cleanup handler (SUCCESSFUL_RUN=$SUCCESSFUL_RUN)..."
 
     # Persistent diagnostic files are only modified by real runs.
@@ -489,8 +498,6 @@ cleanup() {
         fi
     fi
 
-    # Release the concurrency lock LAST, after all persistent state/log
-    # finalization and volatile cleanup are complete.
     if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
         debug_print "Releasing concurrency lock at $LOCK_DIR"
 
@@ -498,15 +505,17 @@ cleanup() {
             lock_error="    [!] CRITICAL: Failed to release lock at $LOCK_DIR. Manual deletion required."
             printf '%s\n' "$lock_error" >&2
 
-            # RUN_ERROR_TMPFILE may already have been moved or removed above.
-            # Because the lock still exists when rmdir fails, it is safe to
-            # append this final cleanup failure directly to the persistent
-            # maintenance error log.
             if [ "${DRY_RUN:-0}" -eq 0 ]; then
                 printf '%s\n' "$lock_error" >>"$RUN_ERROR_LOG" 2>/dev/null || true
             fi
+
+            if [ "$cleanup_exit" -eq 0 ]; then
+                cleanup_exit=1
+            fi
         fi
     fi
+
+    exit "$cleanup_exit"
 }
 
 # Handle SIGINT (Ctrl+C) and SIGTERM (kill) gracefully with distinct exit codes
@@ -522,7 +531,7 @@ LOCK_DIR="${TMPDIR}/art_maintenance.lock"
 debug_print "Acquiring lock directory at $LOCK_DIR"
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n'
+    printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n' >&2
     exit 1
 fi
 
@@ -534,8 +543,7 @@ trap 'cleanup' EXIT
 RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX")
 
 if [ -z "$RUN_ERROR_TMPFILE" ] || [ ! -f "$RUN_ERROR_TMPFILE" ]; then
-    printf '[!] FATAL: Failed to create maintenance error tempfile in %s. Aborting.\n' \
-        "$TMPDIR" >&2
+    printf '[!] FATAL: Failed to create maintenance error tempfile in %s. Aborting.\n' "$TMPDIR" >&2
     exit 1
 fi
 
@@ -563,113 +571,110 @@ readonly CR
 # ============================================================================
 get_thermal_status() {
     # Attempt 1: dumpsys thermalservice (Modern OS Status Code)
-    if command -v dumpsys >/dev/null 2>&1; then
-        therm_status=""
-        therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
+    therm_status=""
+    therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
 
-        # Verify output is a valid integer
-        if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
-            debug_print "Parsed global thermal status code: $therm_status"
-            printf '%s\n' "$therm_status"
-            return 0
-        fi
+    # Verify output is a valid integer
+    if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
+        debug_print "Parsed global thermal status code: $therm_status"
+        printf '%s\n' "$therm_status"
+        return 0
     fi
 
     # Attempt 2: dumpsys hardware_properties (Best for root, often denied for ADB)
-    if command -v dumpsys >/dev/null 2>&1; then
-        out=$(dumpsys hardware_properties 2>/dev/null || true)
-        if [ -n "$out" ]; then
-            debug_print "Parsed thermal status from hardware_properties dumpsys."
+    out=$(dumpsys hardware_properties 2>/dev/null || true)
 
-            # Complex regex to extract temperatures from various dumpsys formats:
-            # - Looks for [...] bracket notation containing comma-separated values
-            # - Extracts all numeric values between brackets
-            # - Filters out unrealistic temps (>120°C) and invalid data
-            # - Returns maximum temperature found to detect hottest sensor
-            temp=$(printf "%s\n" "$out" | awk '
-                /CPU temperatures:/ {
-                    if (match($0, /\[[^]]*\]/)) {
-                        line = substr($0, RSTART + 1, RLENGTH - 2)
-                        n = split(line, temps, ",[ ]*")
-                        max_t = 0
+    if [ -n "$out" ]; then
+        debug_print "Parsed thermal status from hardware_properties dumpsys."
 
-                        for (i = 1; i <= n; i++) {
-                            if (temps[i] ~ /^[0-9]+$/) {
-                                t = temps[i] + 0
-                                if (t > max_t && t < 120)
-                                    max_t = t
-                            }
+        # Complex regex to extract temperatures from various dumpsys formats:
+        # - Looks for [...] bracket notation containing comma-separated values
+        # - Extracts all numeric values between brackets
+        # - Filters out unrealistic temps (>120°C) and invalid data
+        # - Returns maximum temperature found to detect hottest sensor
+        temp=$(printf "%s\n" "$out" | awk '
+            /CPU temperatures:/ {
+                if (match($0, /\[[^]]*\]/)) {
+                    line = substr($0, RSTART + 1, RLENGTH - 2)
+                    n = split(line, temps, ",[ ]*")
+                    max_t = 0
+
+                    for (i = 1; i <= n; i++) {
+                        if (temps[i] ~ /^[0-9]+$/) {
+                            t = temps[i] + 0
+                            if (t > max_t && t < 120)
+                                max_t = t
                         }
+                    }
 
-                        if (max_t > 0) {
-                            printf "%d", max_t
+                    if (max_t > 0) {
+                        printf "%d", max_t
+                        exit
+                    }
+                }
+            }
+
+            /Skin temperatures:/ {
+                if (match($0, /\[[^]]*\]/)) {
+                    line = substr($0, RSTART + 1, RLENGTH - 2)
+
+                    if (line ~ /^[0-9]+$/) {
+                        t = line + 0
+
+                        if (t > 0 && t < 120) {
+                            printf "%d", t
                             exit
                         }
                     }
                 }
+            }
+        ')
 
-                /Skin temperatures:/ {
-                    if (match($0, /\[[^]]*\]/)) {
-                        line = substr($0, RSTART + 1, RLENGTH - 2)
-
-                        if (line ~ /^[0-9]+$/) {
-                            t = line + 0
-
-                            if (t > 0 && t < 120) {
-                                printf "%d", t
-                                exit
-                            }
-                        }
-                    }
-                }
-            ')
-
-            if [ -n "$temp" ]; then
-                printf '%s\n' "$temp"
-                return 0
-            fi
+        if [ -n "$temp" ]; then
+            printf '%s\n' "$temp"
+            return 0
         fi
-
-        # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
-        # Battery temperature is in tenths of a degree (e.g. 350 = 35.0 C)
-        case "$-" in
-        *f*) battery_noglob_was_set=1 ;;
-        *) battery_noglob_was_set=0 ;;
-        esac
-
-        set -f
-        # shellcheck disable=SC2046
-        set -- $(dumpsys battery 2>/dev/null)
-
-        if [ "$battery_noglob_was_set" -eq 0 ]; then
-            set +f
-        fi
-
-        # dumpsys battery output is key-value pairs: "temperature: 350"
-        # When we find the "temperature:" key, the NEXT value is our temperature.
-        # Reset parser state so values from earlier calls cannot affect this pass.
-        prev1=""
-
-        for i in "$@"; do
-            if [ "$prev1" = "temperature:" ]; then
-                case "$i" in
-                '' | *[!0-9]*)
-                    debug_print "Invalid battery temperature value from dumpsys battery: $i"
-                    ;;
-                *)
-                    bat_temp=$((i / 10))
-
-                    if [ "$bat_temp" -gt 0 ]; then
-                        printf '%d\n' "$bat_temp"
-                        return 0
-                    fi
-                    ;;
-                esac
-            fi
-
-            prev1="$i"
-        done
     fi
+
+    # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
+    # Battery temperature is in tenths of a degree (e.g. 350 = 35.0 C)
+    case "$-" in
+    *f*) battery_noglob_was_set=1 ;;
+    *) battery_noglob_was_set=0 ;;
+    esac
+
+    set -f
+    # shellcheck disable=SC2046
+    set -- $(dumpsys battery 2>/dev/null)
+
+    if [ "$battery_noglob_was_set" -eq 0 ]; then
+        set +f
+    fi
+
+    # dumpsys battery output is key-value pairs: "temperature: 350"
+    # When we find the "temperature:" key, the NEXT value is our temperature.
+    # Reset parser state so values from earlier calls cannot affect this pass.
+    prev1=""
+
+    for i in "$@"; do
+        if [ "$prev1" = "temperature:" ]; then
+            case "$i" in
+            '' | *[!0-9]*)
+                debug_print "Invalid battery temperature value from dumpsys battery: $i"
+                ;;
+            *)
+                bat_temp=$((i / 10))
+
+                if [ "$bat_temp" -gt 0 ]; then
+                    printf '%d\n' "$bat_temp"
+                    return 0
+                fi
+                ;;
+            esac
+        fi
+
+        prev1="$i"
+    done
 
     # Fallback: sysfs (Good for root, fails for ADB due to Android SELinux rules)
     for f in /sys/class/thermal/thermal_zone*/temp; do
@@ -899,11 +904,11 @@ process_packages() {
     # DEBUG NORMALIZED INPUT
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
-        package_line_count=$(printf '%s\n' "$pkg_list" | wc -l)
+        PACKAGE_LINE_COUNT=$(printf '%s\n' "$pkg_list" | wc -l)
         debug_print "===== DEBUG NORMALIZED PACKAGE LIST ====="
-        debug_print "Packages: $package_line_count"
+        debug_print "Packages: $PACKAGE_LINE_COUNT"
         debug_print "--- first 10 records ---"
-        echo "$pkg_list" | head -n 10
+        echo "$pkg_list" | head -n 10 >&2
         debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
     fi
 
@@ -1014,7 +1019,7 @@ process_packages() {
         debug_print "===== DEBUG STAGE 1 PATHS ====="
         debug_print "Paths: $STAGE_PATH_COUNT"
         debug_print "--- first 20 paths ---"
-        head -n 20 "$STAGE_PATHS"
+        head -n 20 "$STAGE_PATHS" >&2
         debug_print "--- end DEBUG STAGE 1 PATHS ---"
     fi
 
@@ -1293,12 +1298,12 @@ process_packages() {
     # DEBUG STAGE 2: STAGE_MERGED
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
-        merged_line_count=$(wc -l <"$STAGE_MERGED")
+        MERGED_LINE_COUNT=$(wc -l <"$STAGE_MERGED")
         debug_print "===== DEBUG STAGE 2: STAGE_MERGED ====="
         debug_print "STAGE_MERGED: $STAGE_MERGED"
-        debug_print "Merged: $merged_line_count"
+        debug_print "Merged: $MERGED_LINE_COUNT"
         debug_print "--- first 10 records ---"
-        head -n 10 "$STAGE_MERGED"
+        head -n 10 "$STAGE_MERGED" >&2
         debug_print "--- end DEBUG STAGE_MERGED ---"
     fi
 
@@ -1656,7 +1661,13 @@ for i in "$@"; do
     prev1="$i"
 done
 
-debug_print "Available storage on /data: ${FREE_KB:-0} KB"
+case "$FREE_KB" in
+'' | *[!0-9]*)
+    FREE_KB=""
+    ;;
+esac
+
+debug_print "Available storage on /data: ${FREE_KB:-N/A} KB"
 
 if [ -z "$FREE_KB" ]; then
     report_error "    [!] WARNING: Could not determine free storage on /data. Proceeding with caution."
@@ -1674,7 +1685,7 @@ CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
 STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
 STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
 ERROR_TMPFILE=$(mktemp "${TMPDIR}/errors.$$.XXXXXX")
-debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
+debug_print "Created temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED, errors=$ERROR_TMPFILE"
 
 # Verify all temporary files were successfully created (safety check)
 if [ -z "$CURRENT_RUN_STATE" ] || [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ] || [ -z "$ERROR_TMPFILE" ]; then
@@ -1844,9 +1855,6 @@ fi
 # Calculate total package count.
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 
-# Calculate total execution time.
-TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
-
 # Prepare error notice based only on failures from THIS run.
 #
 # cleanup() will later move ERROR_TMPFILE to ERROR_LOG, so checking ERROR_LOG
@@ -2011,6 +2019,9 @@ if [ "$DRY_RUN" -eq 0 ] &&
 
     run_error_notice="    - [!] Maintenance errors occurred. See $RUN_ERROR_LOG"
 fi
+
+# Calculate total execution time.
+TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 
 printf '\n==========================================\n'
 

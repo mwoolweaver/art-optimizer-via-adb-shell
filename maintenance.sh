@@ -294,7 +294,7 @@ cleanup() {
     # Disarm EXIT trap before cleanup can call exit itself.
     trap - EXIT
     trap '' INT TERM
-    
+
     debug_print "Executing cleanup handler (SUCCESSFUL_RUN=$SUCCESSFUL_RUN)..."
 
     # Persistent diagnostic files are only modified by real runs.
