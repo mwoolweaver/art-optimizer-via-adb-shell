@@ -606,7 +606,7 @@ process_packages() {
         state_writable=1
         fingerprint="${pkg_name}|${apk_path}|${file_meta}"
         case "$fingerprint" in
-                *UNAVAILABLE*)
+        *UNAVAILABLE*)
             echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
             echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
             stage3_unverified=$((stage3_unverified + 1))
