@@ -875,6 +875,7 @@ else
     fi
 fi
 SUCCESSFUL_RUN=1
+TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 error_notice=""
 if [ -s "$ERROR_LOG" ] && [ "$DRY_RUN" -eq 0 ]; then
