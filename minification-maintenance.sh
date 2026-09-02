@@ -62,6 +62,11 @@ for arg in "$@"; do
         ;;
     esac
 done
+debug_print() {
+    if [ "$DEBUG" -eq 1 ]; then
+        echo "[DEBUG] $1" >&2
+    fi
+}
 report_error() {
     printf '%s\n' "$1" >&2
     if [ "${DRY_RUN:-0}" -eq 0 ] &&
