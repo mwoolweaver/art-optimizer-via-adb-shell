@@ -325,10 +325,15 @@ process_packages() {
             }
         '
     )
+    normalize_exit=$?
+    if [ "$normalize_exit" -ne 0 ]; then
+        printf '    [!] ERROR: Package normalization failed (Exit Code: %d).\n' "$normalize_exit" >&2
+        return 1
+    fi
     pkg_list="$normalized_pkg_list"
     if [ -z "$pkg_list" ]; then
         debug_print "Package list became empty during normalization."
-        return 0
+        return 1
     fi
     if [ "$DEBUG" -eq 1 ]; then
         debug_print '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
@@ -349,6 +354,11 @@ process_packages() {
     set +f
     IFS="$OLD_IFS"
     debug_print "Total packages parsed for '$default_mode': $total_pkgs"
+    if [ "$default_mode" = "system" ]; then
+        SYSTEM_PKGS_COUNT="$total_pkgs"
+    else
+        USER_PKGS_COUNT="$total_pkgs"
+    fi
     debug_print "Running STAGE 1: Extracting file paths..."
     STAGE_PATHS="${STAGE_STATS}.paths"
     printf '%s\n' "$pkg_list" |
@@ -373,6 +383,15 @@ process_packages() {
             }
         }
     ' >"$STAGE_PATHS"
+    stage1_exit=$?
+    if [ "$stage1_exit" -ne 0 ]; then
+        printf '    [!] ERROR: Stage 1 path extraction failed (Exit Code: %d).\n' "$stage1_exit" >&2
+        return 1
+    fi
+    if [ ! -s "$STAGE_PATHS" ]; then
+        printf '    [!] ERROR: Stage 1 produced no valid package paths.\n' >&2
+        return 1
+    fi
     if [ "$DEBUG" -eq 1 ]; then
         debug_print '\n===== DEBUG STAGE 1 PATHS =====\n'
         debug_print 'Paths: '
@@ -385,8 +404,14 @@ process_packages() {
     tr '\n' '\0' <"$STAGE_PATHS" |
         xargs -0 -r stat -c '%n=%Y:%s:%i' \
             >"$STAGE_STATS"
+    stage1b_exit=$?
+    if [ "$stage1b_exit" -ne 0 ]; then
+        printf '    [!] ERROR: Stage 1b stat collection failed (Exit Code: %d).\n' "$stage1b_exit" >&2
+        return 1
+    fi
     if [ ! -s "$STAGE_STATS" ]; then
-        echo "[!] WARNING: stat produced no output. Run with --debug for more info.\n"
+        printf '    [!] ERROR: stat produced no output. Persistent state will not be updated.\n' >&2
+        return 1
     fi
     if [ "$DEBUG" -eq 1 ]; then
         STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
@@ -530,7 +555,10 @@ process_packages() {
     stage2_exit=$?
     if [ "$stage2_exit" -ne 0 ]; then
         printf '    [!] ERROR: Stage 2 metadata merge failed (Exit Code: %d).\n' "$stage2_exit" >&2
-        STATE_COMMIT_SAFE=0
+        return 1
+    fi
+    if [ ! -s "$STAGE_MERGED" ]; then
+        printf '    [!] ERROR: Stage 2 produced no merged package records.\n' >&2
         return 1
     fi
     if [ "$DEBUG" -eq 1 ]; then
@@ -550,7 +578,10 @@ process_packages() {
     stage3_unverified=0
     stage3_invalid=0
     stage3_would_compile=0
-    exec 3>>"$CURRENT_RUN_STATE"
+    if ! exec 3>>"$CURRENT_RUN_STATE"; then
+        printf '    [!] ERROR: Unable to open current-run state file for writing.\n' >&2
+        return 1
+    fi
     while IFS='|' read -r pkg_name apk_path file_meta; do
         current=$((current + 1))
         if [ -z "$pkg_name" ]; then
@@ -572,12 +603,36 @@ process_packages() {
                 compile_mode="speed"
             fi
         fi
+        state_writable=1
         fingerprint="${pkg_name}|${apk_path}|${file_meta}"
         case "$fingerprint" in
-        *UNAVAILABLE*)
+                *UNAVAILABLE*)
             echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
             echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
             stage3_unverified=$((stage3_unverified + 1))
+            state_writable=0
+            state_key="${pkg_name}|${apk_path}|"
+            state_old_ifs="$IFS"
+            IFS='
+'
+            set -f
+            for prev_fingerprint in $PREV_STATE; do
+                case "$prev_fingerprint" in
+                "$state_key"*)
+                    case "$prev_fingerprint" in
+                    *UNAVAILABLE*)
+                        ;;
+                    *)
+                        echo "$prev_fingerprint" >&3
+                        debug_print "Preserved previous trustworthy fingerprint for [$pkg_name]."
+                        ;;
+                    esac
+                    break
+                    ;;
+                esac
+            done
+            set +f
+            IFS="$state_old_ifs"
             ;;
         *)
             debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
@@ -595,22 +650,26 @@ $fingerprint
         esac
         if [ "$compile_mode" = "speed" ]; then
             if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' "$current" "$total_pkgs" "$pkg_name"
+                printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' \
+                    "$current" "$total_pkgs" "$pkg_name"
             fi
             actual_mode="speed"
         elif [ "$default_mode" = "system" ]; then
             if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [-] (%d/%d) Play Store update compile (-m speed-profile): %s\n' "$current" "$total_pkgs" "$pkg_name"
+                printf '    [-] (%d/%d) Play Store update compile (-m speed-profile): %s\n' \
+                    "$current" "$total_pkgs" "$pkg_name"
             fi
             actual_mode="speed-profile"
         else
             if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' "$current" "$total_pkgs" "$pkg_name"
+                printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' \
+                    "$current" "$total_pkgs" "$pkg_name"
             fi
             actual_mode="speed-profile"
         fi
         if [ "$DRY_RUN" -eq 1 ]; then
-            printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' "$current" "$total_pkgs" "$actual_mode" "$pkg_name"
+            printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' \
+                "$current" "$total_pkgs" "$actual_mode" "$pkg_name"
             stage3_would_compile=$((stage3_would_compile + 1))
         else
             debug_print "Executing command: cmd package compile -m $actual_mode -f $pkg_name"
@@ -619,7 +678,9 @@ $fingerprint
             if [ "$compile_exit" -eq 0 ]; then
                 printf '    [+] (%d/%d) Compiled: %s\n' \
                     "$current" "$total_pkgs" "$pkg_name"
-                echo "$fingerprint" >&3
+                if [ "$state_writable" -eq 1 ]; then
+                    echo "$fingerprint" >&3
+                fi
                 stage3_compiled=$((stage3_compiled + 1))
             else
                 printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' \
@@ -628,7 +689,7 @@ $fingerprint
                 if ! printf 'FAIL (%d): %s\n%s\n' \
                     "$compile_exit" "$pkg_name" "$err_output" \
                     >>"$ERROR_TMPFILE" 2>/dev/null; then
-                    printf "    [!] CRITICAL: Failed to write to error log! Storage may be full.\n" >&2
+                    printf '    [!] CRITICAL: Failed to write to error log! Storage may be full.\n' >&2
                 fi
             fi
         fi
@@ -644,25 +705,33 @@ $fingerprint
             debug_print "Compilation failures:  $stage3_failed"
         fi
         debug_print "Metadata unavailable:  $stage3_unverified"
-        debug_print "Metadata invalid:      $stage3_invalid"
+        debug_print "Invalid records:        $stage3_invalid"
         if [ "$DRY_RUN" -eq 1 ]; then
-            debug_print "Accounting check:      $stage3_skipped + $stage3_would_compile + $stage3_invalid = $((stage3_skipped + stage3_would_compile + stage3_invalid))"
+            stage3_accounted=$((stage3_skipped + stage3_would_compile + stage3_invalid))
+            debug_print "Accounting check:      $stage3_skipped + $stage3_would_compile + $stage3_invalid = $stage3_accounted"
+            if [ "$current" -eq "$stage3_accounted" ]; then
+                debug_print "[+] Stage 3 accounting verified."
+            else
+                debug_print "[!] WARNING: Stage 3 accounting mismatch."
+            fi
         else
-            debug_print "Accounting check:      $stage3_skipped + $stage3_compiled + $stage3_failed + $stage3_invalid = $((stage3_skipped + stage3_compiled + stage3_failed + stage3_invalid))"
+            stage3_accounted=$((stage3_skipped + stage3_compiled + stage3_failed + stage3_invalid))
+            debug_print "Accounting check:      $stage3_skipped + $stage3_compiled + $stage3_failed + $stage3_invalid = $stage3_accounted"
+            if [ "$current" -eq "$stage3_accounted" ]; then
+                debug_print "[+] Stage 3 accounting verified."
+            else
+                debug_print "[!] WARNING: Stage 3 accounting mismatch."
+            fi
         fi
         debug_print "--- end DEBUG STAGE 3 ---"
     fi
     exec 3>&-
-    if [ "$default_mode" = "system" ]; then
-        SYSTEM_PKGS_COUNT="$total_pkgs"
-    else
-        USER_PKGS_COUNT="$total_pkgs"
-    fi
     TOTAL_COMPILED=$((TOTAL_COMPILED + stage3_compiled))
     TOTAL_WOULD_COMPILE=$((TOTAL_WOULD_COMPILE + stage3_would_compile))
     TOTAL_SKIPPED=$((TOTAL_SKIPPED + stage3_skipped))
     TOTAL_FAILED=$((TOTAL_FAILED + stage3_failed))
     TOTAL_INVALID=$((TOTAL_INVALID + stage3_invalid))
+    return 0
 }
 print_system_status "PRE-FLIGHT CHECK" || exit 1
 set -f
@@ -787,7 +856,6 @@ else
     fi
 fi
 SUCCESSFUL_RUN=1
-TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 error_notice=""
 if [ -s "$ERROR_LOG" ] && [ "$DRY_RUN" -eq 0 ]; then
@@ -795,7 +863,7 @@ if [ -s "$ERROR_LOG" ] && [ "$DRY_RUN" -eq 0 ]; then
 fi
 printf '\n==========================================\n'
 if [ "$DRY_RUN" -eq 1 ]; then
-    Tdebug_total=$((TOTAL_WOULD_COMPILE + TOTAL_SKIPPED + TOTAL_INVALID))
+    debug_total=$((TOTAL_WOULD_COMPILE + TOTAL_SKIPPED + TOTAL_INVALID))
     if [ "$TOTAL_SCANNED" -eq "$debug_total" ]; then
         debug_print "[+] Final dry-run accounting verified."
     else
