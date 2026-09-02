@@ -435,6 +435,7 @@ get_thermal_status() {
         out=$(dumpsys hardware_properties 2>/dev/null || true)
         if [ -n "$out" ]; then
             debug_print "Parsed thermal status from hardware_properties dumpsys."
+
             # Complex regex to extract temperatures from various dumpsys formats:
             # - Looks for [...] bracket notation containing comma-separated values
             # - Extracts all numeric values between brackets
@@ -446,29 +447,42 @@ get_thermal_status() {
                         line = substr($0, RSTART + 1, RLENGTH - 2)
                         n = split(line, temps, ",[ ]*")
                         max_t = 0
+
                         for (i = 1; i <= n; i++) {
                             if (temps[i] ~ /^[0-9]+$/) {
                                 t = temps[i] + 0
-                                if (t > max_t && t < 120) max_t = t
+                                if (t > max_t && t < 120)
+                                    max_t = t
                             }
                         }
-                        if (max_t > 0) { printf "%d", max_t; exit }
+
+                        if (max_t > 0) {
+                            printf "%d", max_t
+                            exit
+                        }
                     }
                 }
+
                 /Skin temperatures:/ {
                     if (match($0, /\[[^]]*\]/)) {
                         line = substr($0, RSTART + 1, RLENGTH - 2)
+
                         if (line ~ /^[0-9]+$/) {
                             t = line + 0
-                            if (t > 0 && t < 120) { printf "%d", t; exit }
+
+                            if (t > 0 && t < 120) {
+                                printf "%d", t
+                                exit
+                            }
                         }
                     }
                 }
             ')
-            [ -n "$temp" ] && {
+
+            if [ -n "$temp" ]; then
                 printf '%s\n' "$temp"
                 return 0
-            }
+            fi
         fi
 
         # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
@@ -477,17 +491,29 @@ get_thermal_status() {
         # shellcheck disable=SC2046
         set -- $(dumpsys battery 2>/dev/null)
         set +f
+
         # dumpsys battery output is key-value pairs: "temperature: 350"
         # When we find the "temperature:" key, the NEXT value is our temperature.
-        # We track prev1 to know when we've found it.
+        # Reset parser state so values from earlier calls cannot affect this pass.
+        prev1=""
+
         for i in "$@"; do
-            if [ "${prev1:-}" = "temperature:" ]; then
-                bat_temp=$((i / 10))
-                if [ "$bat_temp" -gt 0 ]; then
-                    printf '%d\n' "$bat_temp"
-                    return 0
-                fi
+            if [ "$prev1" = "temperature:" ]; then
+                case "$i" in
+                '' | *[!0-9]*)
+                    debug_print "Invalid battery temperature value from dumpsys battery: $i"
+                    ;;
+                *)
+                    bat_temp=$((i / 10))
+
+                    if [ "$bat_temp" -gt 0 ]; then
+                        printf '%d\n' "$bat_temp"
+                        return 0
+                    fi
+                    ;;
+                esac
             fi
+
             prev1="$i"
         done
     fi
@@ -500,7 +526,7 @@ get_thermal_status() {
         val_out=$(<"$f" 2>&1)
         val_exit=$?
 
-        if [ $val_exit -ne 0 ]; then
+        if [ "$val_exit" -ne 0 ]; then
             debug_print "Failed to read thermal zone $f (Exit: $val_exit): $val_out"
             continue
         fi
@@ -509,13 +535,15 @@ get_thermal_status() {
         case "$val_out" in *[!0-9]*) continue ;; esac
 
         debug_print "Read thermal zone from sysfs: $f = $val_out"
-        # Some thermal zones report temperature in millidegrees (multiply by 1000),
-        # others in raw degrees. Normalize to Celsius by dividing large values.
+
+        # Some thermal zones report temperature in millidegrees,
+        # others in raw degrees. Normalize to Celsius.
         if [ "$val_out" -gt 1000 ]; then
             printf '%d\n' $((val_out / 1000))
         else
             printf '%s\n' "$val_out"
         fi
+
         return 0
     done
 
