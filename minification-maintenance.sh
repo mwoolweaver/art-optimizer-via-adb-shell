@@ -1,5 +1,5 @@
 #!/system/bin/sh
-set -u # Exit immediately if any variable is unset
+set -u # Treat unset variable expansions as errors.
 umask 077
 export LC_ALL=C
 DEBUG="${DEBUG-0}"
