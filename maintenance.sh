@@ -1053,7 +1053,7 @@ process_packages() {
 
         case "$fingerprint" in
 
-                *UNAVAILABLE*)
+        *UNAVAILABLE*)
 
             echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
             echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
@@ -1481,7 +1481,6 @@ fi
 # ============================================================================
 # Mark the run as fully successful
 SUCCESSFUL_RUN=1
-
 
 # Calculate total execution time
 TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
