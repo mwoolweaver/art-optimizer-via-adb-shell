@@ -30,16 +30,18 @@ umask 077
 export LC_ALL=C
 
 # ============================================================================
-# DEBUG & DRY_RUN CONFIGURATION
-# Purpose: Enable debug logging or dry-run ability
-#          via environment variable (DEBUG=1) or flags (--debug)
+# DEBUG, DRY_RUN & NO_USER CONFIGURATION
+# Purpose: Enable debug logging, dry-run ability, or explicit user-app skipping
+#          via environment variables or command-line flags.
 # ============================================================================
 DEBUG="${DEBUG:-0}"
 DRY_RUN="${DRY_RUN:-0}"
+NO_USER="${NO_USER:-0}"
 for arg in "$@"; do
     case "$arg" in
     --debug) DEBUG=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --no-user) NO_USER=1 ;;
     esac
 done
 
@@ -68,6 +70,10 @@ debug_print "Debug/Verbose mode initialized."
 
 if [ "$DRY_RUN" -eq 1 ]; then
     debug_print "Dry-run mode enabled."
+fi
+
+if [ "$NO_USER" -eq 1 ]; then
+    debug_print "User app optimization disabled (--no-user)."
 fi
 
 # ============================================================================
@@ -193,9 +199,20 @@ if ! [ -w "$SCRIPT_DIR" ]; then
     exit 1
 fi
 
-# Persistent file tracking package fingerprints from previous run
-# Used to skip recompiling unchanged packages
-STATE_FILE="${SCRIPT_DIR}/.last_optimized"
+# Persistent state files used to skip recompiling unchanged packages.
+#
+# .last_optimized is the authoritative complete state from a normal full run.
+# .last_optimized_system is used only by --no-user runs.
+FULL_STATE_FILE="${SCRIPT_DIR}/.last_optimized"
+NO_USER_STATE_FILE="${SCRIPT_DIR}/.last_optimized_system"
+readonly FULL_STATE_FILE NO_USER_STATE_FILE
+
+# Select the state file this run is allowed to update.
+if [ "$NO_USER" -eq 1 ]; then
+    STATE_FILE="$NO_USER_STATE_FILE"
+else
+    STATE_FILE="$FULL_STATE_FILE"
+fi
 readonly STATE_FILE
 
 # Log file for package compilation errors from the most recent real run.
@@ -1465,22 +1482,37 @@ fi
 # ============================================================================
 # RUNTIME TRACKING VARIABLES
 # ============================================================================
-# Previous run's package fingerprints (loaded from STATE_FILE if it exists)
+# Previous run's package fingerprints.
 PREV_STATE=""
 
-# Load the persistent state from disk natively (zero-fork).
-# Using $(< file) reads directly into RAM without spawning an external 'cat'
-# process, which maximizes performance and eliminates $PATH execution risks.
-# Note: The data is intentionally wrapped in leading and trailing newlines.
-# This guarantees that our 'case' statement later matches exact whole lines,
-# preventing partial string collisions (e.g., matching "app" inside "app.pro").
-if [ -r "$STATE_FILE" ]; then
-    debug_print "Loading persistent state file from $STATE_FILE"
+# Select the best baseline state for this run.
+#
+# Normal runs always use the authoritative complete .last_optimized state.
+#
+# --no-user runs prefer their own system-only state. On the first --no-user
+# run after a successful full run, no system-only state exists, so fall back
+# to .last_optimized as the baseline. Exact full-fingerprint matching means
+# user-app records in the full state do not interfere with system processing.
+STATE_READ_FILE="$STATE_FILE"
+
+if [ "$NO_USER" -eq 1 ] && [ ! -r "$NO_USER_STATE_FILE" ]; then
+    STATE_READ_FILE="$FULL_STATE_FILE"
+fi
+
+# Load the selected persistent state natively (zero-fork).
+# The data is intentionally wrapped in leading and trailing newlines so later
+# case matching operates on exact whole fingerprint lines.
+if [ -r "$STATE_READ_FILE" ]; then
+    debug_print "Loading persistent state baseline from $STATE_READ_FILE"
     PREV_STATE="
-$(<"$STATE_FILE")
+$(<"$STATE_READ_FILE")
 "
 else
-    debug_print "No existing state file found at $STATE_FILE. Full optimization run expected."
+    if [ "$NO_USER" -eq 1 ]; then
+        debug_print "No system-only or complete state file found. Full system optimization expected."
+    else
+        debug_print "No existing complete state file found. Full optimization run expected."
+    fi
 fi
 
 # ============================================================================
@@ -1552,33 +1584,51 @@ printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
 # ============================================================================
 STEP3_START=$SECONDS
 
-if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
-else
-    printf '[+] Step 3: Smart-optimizing user apps...\n'
-fi
+if [ "$NO_USER" -eq 1 ]; then
+    USER_PKGS_COUNT=0
 
-debug_print "Querying user packages via pm list packages -f -3..."
-user_package_list=$(pm list packages -f -3 2>&1)
-user_exit=$?
-
-if [ "$user_exit" -ne 0 ]; then
-    report_error "    [!] WARNING: Failed to query user packages (Exit Code: $user_exit)."
-
-    if [ -n "$user_package_list" ]; then
-        report_error "        Output: $user_package_list"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[+] Step 3: (DRY RUN) User app optimization disabled (--no-user).\n'
+    else
+        printf '[+] Step 3: User app optimization disabled (--no-user).\n'
     fi
 
-    USER_PKGS_COUNT=0
-    STATE_COMMIT_SAFE=0
+    debug_print "Skipping user package query and processing because --no-user is enabled."
+
 else
-    if ! process_packages "$user_package_list" "speed-profile"; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
+    else
+        printf '[+] Step 3: Smart-optimizing user apps...\n'
+    fi
+
+    debug_print "Querying user packages via pm list packages -f -3..."
+    user_package_list=$(pm list packages -f -3 2>&1)
+    user_exit=$?
+
+    if [ "$user_exit" -ne 0 ]; then
+        report_error "    [!] WARNING: Failed to query user packages (Exit Code: $user_exit)."
+
+        if [ -n "$user_package_list" ]; then
+            report_error "        Output: $user_package_list"
+        fi
+
+        USER_PKGS_COUNT=0
         STATE_COMMIT_SAFE=0
+    else
+        if ! process_packages "$user_package_list" "speed-profile"; then
+            STATE_COMMIT_SAFE=0
+        fi
     fi
 fi
 
 STEP3_DURATION=$((SECONDS - STEP3_START))
-printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
+
+if [ "$NO_USER" -eq 1 ]; then
+    printf '[+] User app optimization skipped in %ss.\n' "$STEP3_DURATION"
+else
+    printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
+fi
 
 # ============================================================================
 # FINAL ACCOUNTING PREPARATION
@@ -1641,8 +1691,8 @@ fi
 # ============================================================================
 # FINAL SYSTEM HEALTH CHECK
 # ============================================================================
-# The final health check must succeed BEFORE .last_optimized can be committed.
-# This ensures persistent state represents only a fully completed healthy run.
+# The final health check must succeed BEFORE persistent state can be committed.
+# This ensures either state file represents only a fully completed healthy run.
 if ! print_system_status "FINAL STATUS"; then
     report_error "    [!] ERROR: Final system health check failed. Persistent state will not be updated."
     printf '==========================================\n'
@@ -1652,8 +1702,9 @@ fi
 # ============================================================================
 # POST-OPTIMIZATION: State Management
 # ============================================================================
-# .last_optimized represents the most recent successfully completed,
-# state-safe real run.
+# Normal runs commit the complete state to .last_optimized.
+# --no-user runs commit system-only state to .last_optimized_system and never
+# modify the authoritative complete .last_optimized file.
 #
 # Dry runs never modify persistent state.
 # Incomplete or unsafe runs preserve the previous trusted state.
@@ -1669,8 +1720,12 @@ else
     else
         # Stage the completed state in SCRIPT_DIR first. The final mv then
         # renames a file within the same directory/filesystem as STATE_FILE,
-        # making replacement of .last_optimized atomic.
-        STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized.$$.XXXXXX")
+        # making replacement of the selected persistent state file atomic.
+        if [ "$NO_USER" -eq 1 ]; then
+            STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized_system.$$.XXXXXX")
+        else
+            STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized.$$.XXXXXX")
+        fi
         state_stage_exit=$?
 
         if [ "$state_stage_exit" -ne 0 ] ||
@@ -1710,10 +1765,30 @@ else
                 else
                     # The staging path no longer exists after a successful rename.
                     STATE_STAGE_TMP=""
-                    printf '[+] Persistent state file updated atomically.\n'
+                    if [ "$NO_USER" -eq 1 ]; then
+                        printf '[+] System-only persistent state updated atomically.\n'
+                    else
+                        printf '[+] Complete persistent state updated atomically.\n'
+                    fi
                 fi
             fi
         fi
+    fi
+fi
+
+# A successful normal/full run supersedes any older --no-user state cache.
+# Remove it only after the complete run has remained state-safe. This avoids
+# maintaining two state files on every normal run while guaranteeing the next
+# --no-user run starts from the authoritative complete state.
+if [ "$DRY_RUN" -eq 0 ] &&
+    [ "$NO_USER" -eq 0 ] &&
+    [ "$STATE_COMMIT_SAFE" -eq 1 ] &&
+    [ -f "$NO_USER_STATE_FILE" ]; then
+
+    debug_print "Removing superseded system-only state file: $NO_USER_STATE_FILE"
+
+    if ! rm -f "$NO_USER_STATE_FILE" 2>/dev/null; then
+        report_error "    [!] WARNING: Failed to remove superseded system-only state file $NO_USER_STATE_FILE"
     fi
 fi
 
@@ -1760,8 +1835,18 @@ fi
 [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
 [ -n "$run_error_notice" ] && printf '%s\n' "$run_error_notice"
 
+if [ "$NO_USER" -eq 1 ]; then
+    printf '    - User app stage:            Skipped (--no-user)\n'
+fi
+
 if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
     printf '    - [!] Run incomplete: trusted persistent state was not updated.\n'
+elif [ "$DRY_RUN" -eq 0 ]; then
+    if [ "$NO_USER" -eq 1 ]; then
+        printf '    - Persistent state:          System-only state current.\n'
+    else
+        printf '    - Persistent state:          Complete state current.\n'
+    fi
 fi
 
 printf '==========================================\n'
