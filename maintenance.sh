@@ -199,7 +199,7 @@ esac
 # ============================================================================
 # INITIALIZATION: Timing and System Detection
 # ============================================================================
-# Record the shell's elapsed-seconds counter for total duration calculation.
+# Start total runtime timer.
 TOTAL_START_TIME=$SECONDS
 
 # Query device properties (fail gracefully if unavailable)
@@ -243,7 +243,7 @@ if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
     exit 1
 fi
 
-# Absolute path to this script's directory (locked with readonly to prevent tampering)
+# Resolve the script directory and prevent later variable reassignment.
 case "$0" in
 */*) SCRIPT_DIR="$(cd "${0%/*}" && pwd)" ;;
 *) SCRIPT_DIR="$(pwd)" ;;
@@ -288,10 +288,7 @@ SUCCESSFUL_RUN=0
 # ============================================================================
 cleanup() {
     cleanup_exit=$?
-    # Preserve the incoming status, prevent EXIT recursion, and keep cleanup
-    # from being interrupted before persistent files and the lock are finalized.
-
-    # Disarm EXIT trap before cleanup can call exit itself.
+    # Prevent EXIT recursion and interruption during cleanup.
     trap - EXIT
     trap '' INT TERM
 
@@ -430,9 +427,7 @@ cleanup() {
     exit "$cleanup_exit"
 }
 
-# Handle SIGINT (Ctrl+C) and SIGTERM (kill) gracefully with distinct exit codes
-# 130 for Ctrl+C and 143 for kill are standard Unix conventions respected by virtually all shell orchestrators.
-# Exiting via these traps automatically triggers the EXIT trap (cleanup) beforehand.
+# Handle SIGINT/SIGTERM with conventional exit codes; EXIT cleanup follows.
 trap 'report_error "    [!] Interrupted by user (SIGINT). Cleaning up..."; exit 130' INT
 trap 'report_error "    [!] Terminated by system (SIGTERM). Cleaning up..."; exit 143' TERM
 
@@ -472,7 +467,7 @@ TOTAL_WOULD_COMPILE=0
 
 STATE_COMMIT_SAFE=1
 
-# Define a literal carriage return safely for POSIX compliance globally
+# Literal carriage return for PM output normalization.
 CR=$(printf '\r')
 readonly CR
 
@@ -499,11 +494,7 @@ get_thermal_status() {
     if [ -n "$out" ]; then
         debug_print "Parsed thermal status from hardware_properties dumpsys."
 
-        # Complex regex to extract temperatures from various dumpsys formats:
-        # - Looks for [...] bracket notation containing comma-separated values
-        # - Extracts all numeric values between brackets
-        # - Filters out unrealistic temps (>120°C) and invalid data
-        # - Returns maximum temperature found to detect hottest sensor
+        # Parse bracketed sensor values and return the hottest valid temperature.
         temp=$(printf "%s\n" "$out" | awk '
             /CPU temperatures:/ {
                 if (match($0, /\[[^]]*\]/)) {
