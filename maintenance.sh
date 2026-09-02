@@ -1570,7 +1570,7 @@ fi
 
 # Temporary files for current run state (using explicit $TMPDIR path for Android/Toybox reliability)
 # opt_state: fingerprints of packages processed in this run
-# opt_stats: cached stat output (inode, size, blocks) for files
+# opt_stats: cached stat output (mtime, size, inode) for files
 # opt_merged: merged package list with metadata for processing
 # errors: batch log for compilation errors
 CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
