@@ -169,6 +169,9 @@ RUN_ERROR_LOG="${SCRIPT_DIR}/maintenance_errors.log"
 readonly RUN_ERROR_LOG
 SUCCESSFUL_RUN=0
 cleanup() {
+    cleanup_exit=$?
+    trap - EXIT
+    trap '' INT TERM
     debug_print "Executing cleanup handler (SUCCESSFUL_RUN=$SUCCESSFUL_RUN)..."
     if [ "${DRY_RUN:-0}" -eq 0 ]; then
         if [ "$SUCCESSFUL_RUN" -eq 0 ]; then
@@ -253,8 +256,12 @@ cleanup() {
             if [ "${DRY_RUN:-0}" -eq 0 ]; then
                 printf '%s\n' "$lock_error" >>"$RUN_ERROR_LOG" 2>/dev/null || true
             fi
+            if [ "$cleanup_exit" -eq 0 ]; then
+                cleanup_exit=1
+            fi
         fi
     fi
+    exit "$cleanup_exit"
 }
 trap 'report_error "    [!] Interrupted by user (SIGINT). Cleaning up..."; exit 130' INT
 trap 'report_error "    [!] Terminated by system (SIGTERM). Cleaning up..."; exit 143' TERM
@@ -1040,7 +1047,6 @@ else
     printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
 fi
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
-TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 error_notice=""
 if [ "$TOTAL_FAILED" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
     error_notice="    - [!] Errors occurred. See $ERROR_LOG"
@@ -1144,6 +1150,7 @@ if [ "$DRY_RUN" -eq 0 ] &&
     [ -s "$RUN_ERROR_TMPFILE" ]; then
     run_error_notice="    - [!] Maintenance errors occurred. See $RUN_ERROR_LOG"
 fi
+TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 printf '\n==========================================\n'
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Maintenance Summary (DRY RUN):\n'
