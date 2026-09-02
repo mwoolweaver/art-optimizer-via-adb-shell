@@ -159,8 +159,8 @@ for setting in DEBUG DRY_RUN NO_USER; do
         ;;
     *)
         printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' \
-            "$setting" "$setting_value" >&2
-        show_help >&2
+            "$setting" "$setting_value"
+        show_help
         exit 1
         ;;
     esac
@@ -183,8 +183,8 @@ for arg in "$@"; do
         exit 0
         ;;
     *)
-        printf '[!] FATAL: Unknown option: %s\n\n' "$arg" >&2
-        show_help >&2
+        printf '[!] FATAL: Unknown option: %s\n\n' "$arg"
+        show_help
         exit 1
         ;;
     esac
@@ -192,7 +192,7 @@ done
 
 debug_print() {
     if [ "$DEBUG" -eq 1 ]; then
-        echo "[DEBUG] $1" >&2
+        echo "[DEBUG] $1"
     fi
 }
 
@@ -228,7 +228,7 @@ fi
 SCRIPT_UID=${USER_ID:-1}
 debug_print "Checked user ID: $SCRIPT_UID"
 if [ "$SCRIPT_UID" -ne 0 ] && [ "$SCRIPT_UID" -ne 2000 ]; then
-    echo "[!] FATAL: Elevated privileges required (root or adb shell). Aborting.\n"
+    echo "[!] FATAL: Elevated privileges required (root or adb shell). Aborting."
     exit 1
 fi
 
@@ -247,7 +247,7 @@ done
 
 # Explicitly abort if we timed out without booting
 if [ "$(getprop sys.boot_completed)" != "1" ]; then
-    echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting.\n"
+    echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting."
     exit 1
 fi
 
@@ -280,7 +280,7 @@ check_deps
 # ============================================================================
 case "$(service check package 2>/dev/null)" in
 *"not found"* | "")
-    echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting.\n"
+    echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting."
     exit 1
     ;;
 esac
@@ -307,7 +307,7 @@ debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
 MIN_SDK=24
 
 if [ "$sdk_version" -lt "$MIN_SDK" ]; then
-    echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version\n"
+    echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version"
     exit 1
 fi
 
@@ -340,7 +340,7 @@ debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
 
 # Validate that SCRIPT_DIR is writable for persistent state files
 if ! [ -w "$SCRIPT_DIR" ]; then
-    echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting.\n"
+    echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting."
     exit 1
 fi
 
@@ -522,7 +522,7 @@ LOCK_DIR="${TMPDIR}/art_maintenance.lock"
 debug_print "Acquiring lock directory at $LOCK_DIR"
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n' >&2
+    printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n'
     exit 1
 fi
 
@@ -899,12 +899,12 @@ process_packages() {
     # DEBUG NORMALIZED INPUT
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print '\n===== DEBUG NORMALIZED PACKAGE LIST =====\n'
-        debug_print 'Packages: '
+        debug_print "===== DEBUG NORMALIZED PACKAGE LIST ====="
+        debug_print "Packages: "
         echo "$pkg_list" | wc -l
-        debug_print '--- first 10 records ---\n'
+        debug_print "--- first 10 records ---"
         echo "$pkg_list" | head -n 10
-        debug_print '--- end DEBUG NORMALIZED PACKAGE LIST ---'
+        debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
     fi
 
     # ========================================================================
@@ -1010,12 +1010,12 @@ process_packages() {
     # DEBUG STAGE 1: PATHS
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print '\n===== DEBUG STAGE 1 PATHS =====\n'
-        debug_print 'Paths: '
+        debug_print "===== DEBUG STAGE 1 PATHS ====="
+        debug_print "Paths: "
         wc -l <"$STAGE_PATHS"
-        debug_print '--- first 20 paths ---'
+        debug_print "--- first 20 paths ---"
         head -n 20 "$STAGE_PATHS"
-        debug_print '--- end DEBUG STAGE 1 PATHS ---'
+        debug_print "--- end DEBUG STAGE 1 PATHS ---"
     fi
 
     # ========================================================================
@@ -1050,15 +1050,15 @@ process_packages() {
     if [ "$DEBUG" -eq 1 ]; then
         STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
         STAGE_STAT_COUNT=$(wc -l <"$STAGE_STATS")
-        debug_print "\n===== DEBUG STAGE 1b: STAT ACCOUNTING =====\n"
+        debug_print "===== DEBUG STAGE 1b: STAT ACCOUNTING ====="
         debug_print "Unique paths submitted to stat: $STAGE_PATH_COUNT"
         debug_print "Stat records produced:          $STAGE_STAT_COUNT"
 
         if [ "$STAGE_STAT_COUNT" -ne "$STAGE_PATH_COUNT" ]; then
-            debug_print "[!] WARNING: stat record count differs from path count.\n"
+            debug_print "[!] WARNING: stat record count differs from path count."
             debug_print "    Missing/failed stat records: $((STAGE_PATH_COUNT - STAGE_STAT_COUNT))"
         else
-            debug_print "[+] Stat accounting: path count matches stat count.\n"
+            debug_print "[+] Stat accounting: path count matches stat count."
         fi
 
         debug_print "--- end DEBUG STAGE 1b ACCOUNTING ---"
@@ -1294,8 +1294,8 @@ process_packages() {
     # DEBUG STAGE 2: STAGE_MERGED
     # ========================================================================
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print "\n===== DEBUG STAGE 2: STAGE_MERGED =====\n"
-        debug_print "STAGE_MERGED: $STAGE_MERGED\n"
+        debug_print "===== DEBUG STAGE 2: STAGE_MERGED ====="
+        debug_print "STAGE_MERGED: $STAGE_MERGED"
         debug_print "Merged: "
         wc -l <"$STAGE_MERGED"
         debug_print "--- first 10 records ---"
@@ -1337,7 +1337,7 @@ process_packages() {
         # Sanity check: package names should contain no whitespace.
         case "$pkg_name" in
         *[[:space:]]*)
-            echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
+            echo "    [!] Skipping package with whitespace in name: $pkg_name"
             stage3_invalid=$((stage3_invalid + 1))
             continue
             ;;
@@ -1548,7 +1548,7 @@ $fingerprint
     # ========================================================================
 
     if [ "$DEBUG" -eq 1 ]; then
-        debug_print "\n===== DEBUG STAGE 3: COMPILATION =====\n"
+        debug_print "===== DEBUG STAGE 3: COMPILATION ====="
         debug_print "Stage 3 input records: $current"
         debug_print "Skipped unchanged:     $stage3_skipped"
 
