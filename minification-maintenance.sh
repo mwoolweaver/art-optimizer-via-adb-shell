@@ -4,10 +4,12 @@ umask 077
 export LC_ALL=C
 DEBUG="${DEBUG:-0}"
 DRY_RUN="${DRY_RUN:-0}"
+NO_USER="${NO_USER:-0}"
 for arg in "$@"; do
     case "$arg" in
     --debug) DEBUG=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --no-user) NO_USER=1 ;;
     esac
 done
 debug_print() {
@@ -28,6 +30,9 @@ report_error() {
 debug_print "Debug/Verbose mode initialized."
 if [ "$DRY_RUN" -eq 1 ]; then
     debug_print "Dry-run mode enabled."
+fi
+if [ "$NO_USER" -eq 1 ]; then
+    debug_print "User app optimization disabled (--no-user)."
 fi
 SCRIPT_UID=${USER_ID:-1}
 debug_print "Checked user ID: $SCRIPT_UID"
@@ -98,7 +103,14 @@ if ! [ -w "$SCRIPT_DIR" ]; then
     echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting.\n"
     exit 1
 fi
-STATE_FILE="${SCRIPT_DIR}/.last_optimized"
+FULL_STATE_FILE="${SCRIPT_DIR}/.last_optimized"
+NO_USER_STATE_FILE="${SCRIPT_DIR}/.last_optimized_system"
+readonly FULL_STATE_FILE NO_USER_STATE_FILE
+if [ "$NO_USER" -eq 1 ]; then
+    STATE_FILE="$NO_USER_STATE_FILE"
+else
+    STATE_FILE="$FULL_STATE_FILE"
+fi
 readonly STATE_FILE
 ERROR_LOG="${SCRIPT_DIR}/compile_errors.log"
 readonly ERROR_LOG
@@ -843,13 +855,21 @@ if [ -z "$CURRENT_RUN_STATE" ] || [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" 
     exit 1
 fi
 PREV_STATE=""
-if [ -r "$STATE_FILE" ]; then
-    debug_print "Loading persistent state file from $STATE_FILE"
+STATE_READ_FILE="$STATE_FILE"
+if [ "$NO_USER" -eq 1 ] && [ ! -r "$NO_USER_STATE_FILE" ]; then
+    STATE_READ_FILE="$FULL_STATE_FILE"
+fi
+if [ -r "$STATE_READ_FILE" ]; then
+    debug_print "Loading persistent state baseline from $STATE_READ_FILE"
     PREV_STATE="
-$(<"$STATE_FILE")
+$(<"$STATE_READ_FILE")
 "
 else
-    debug_print "No existing state file found at $STATE_FILE. Full optimization run expected."
+    if [ "$NO_USER" -eq 1 ]; then
+        debug_print "No system-only or complete state file found. Full system optimization expected."
+    else
+        debug_print "No existing complete state file found. Full optimization run expected."
+    fi
 fi
 STEP1_START=$SECONDS
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -891,28 +911,42 @@ fi
 STEP2_DURATION=$((SECONDS - STEP2_START))
 printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
 STEP3_START=$SECONDS
-if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
-else
-    printf '[+] Step 3: Smart-optimizing user apps...\n'
-fi
-debug_print "Querying user packages via pm list packages -f -3..."
-user_package_list=$(pm list packages -f -3 2>&1)
-user_exit=$?
-if [ "$user_exit" -ne 0 ]; then
-    report_error "    [!] WARNING: Failed to query user packages (Exit Code: $user_exit)."
-    if [ -n "$user_package_list" ]; then
-        report_error "        Output: $user_package_list"
-    fi
+if [ "$NO_USER" -eq 1 ]; then
     USER_PKGS_COUNT=0
-    STATE_COMMIT_SAFE=0
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[+] Step 3: (DRY RUN) User app optimization disabled (--no-user).\n'
+    else
+        printf '[+] Step 3: User app optimization disabled (--no-user).\n'
+    fi
+    debug_print "Skipping user package query and processing because --no-user is enabled."
 else
-    if ! process_packages "$user_package_list" "speed-profile"; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
+    else
+        printf '[+] Step 3: Smart-optimizing user apps...\n'
+    fi
+    debug_print "Querying user packages via pm list packages -f -3..."
+    user_package_list=$(pm list packages -f -3 2>&1)
+    user_exit=$?
+    if [ "$user_exit" -ne 0 ]; then
+        report_error "    [!] WARNING: Failed to query user packages (Exit Code: $user_exit)."
+        if [ -n "$user_package_list" ]; then
+            report_error "        Output: $user_package_list"
+        fi
+        USER_PKGS_COUNT=0
         STATE_COMMIT_SAFE=0
+    else
+        if ! process_packages "$user_package_list" "speed-profile"; then
+            STATE_COMMIT_SAFE=0
+        fi
     fi
 fi
 STEP3_DURATION=$((SECONDS - STEP3_START))
-printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
+if [ "$NO_USER" -eq 1 ]; then
+    printf '[+] User app optimization skipped in %ss.\n' "$STEP3_DURATION"
+else
+    printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
+fi
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 error_notice=""
@@ -962,7 +996,11 @@ else
     if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
         printf '[+] State unchanged. Persistent state file left untouched.\n'
     else
-        STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized.$$.XXXXXX")
+        if [ "$NO_USER" -eq 1 ]; then
+            STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized_system.$$.XXXXXX")
+        else
+            STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized.$$.XXXXXX")
+        fi
         state_stage_exit=$?
         if [ "$state_stage_exit" -ne 0 ] ||
             [ -z "$STATE_STAGE_TMP" ] ||
@@ -989,10 +1027,23 @@ else
                     STATE_COMMIT_SAFE=0
                 else
                     STATE_STAGE_TMP=""
-                    printf '[+] Persistent state file updated atomically.\n'
+                    if [ "$NO_USER" -eq 1 ]; then
+                        printf '[+] System-only persistent state updated atomically.\n'
+                    else
+                        printf '[+] Complete persistent state updated atomically.\n'
+                    fi
                 fi
             fi
         fi
+    fi
+fi
+if [ "$DRY_RUN" -eq 0 ] &&
+    [ "$NO_USER" -eq 0 ] &&
+    [ "$STATE_COMMIT_SAFE" -eq 1 ] &&
+    [ -f "$NO_USER_STATE_FILE" ]; then
+    debug_print "Removing superseded system-only state file: $NO_USER_STATE_FILE"
+    if ! rm -f "$NO_USER_STATE_FILE" 2>/dev/null; then
+        report_error "    [!] WARNING: Failed to remove superseded system-only state file $NO_USER_STATE_FILE"
     fi
 fi
 run_error_notice=""
@@ -1026,8 +1077,17 @@ else
 fi
 [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
 [ -n "$run_error_notice" ] && printf '%s\n' "$run_error_notice"
+if [ "$NO_USER" -eq 1 ]; then
+    printf '    - User app stage:            Skipped (--no-user)\n'
+fi
 if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
     printf '    - [!] Run incomplete: trusted persistent state was not updated.\n'
+elif [ "$DRY_RUN" -eq 0 ]; then
+    if [ "$NO_USER" -eq 1 ]; then
+        printf '    - Persistent state:          System-only state current.\n'
+    else
+        printf '    - Persistent state:          Complete state current.\n'
+    fi
 fi
 printf '==========================================\n'
 if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
