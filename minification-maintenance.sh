@@ -254,10 +254,14 @@ get_thermal_status() {
                         for (i = 1; i <= n; i++) {
                             if (temps[i] ~ /^[0-9]+$/) {
                                 t = temps[i] + 0
-                                if (t > max_t && t < 120) max_t = t
+                                if (t > max_t && t < 120)
+                                    max_t = t
                             }
                         }
-                        if (max_t > 0) { printf "%d", max_t; exit }
+                        if (max_t > 0) {
+                            printf "%d", max_t
+                            exit
+                        }
                     }
                 }
                 /Skin temperatures:/ {
@@ -265,26 +269,37 @@ get_thermal_status() {
                         line = substr($0, RSTART + 1, RLENGTH - 2)
                         if (line ~ /^[0-9]+$/) {
                             t = line + 0
-                            if (t > 0 && t < 120) { printf "%d", t; exit }
+                            if (t > 0 && t < 120) {
+                                printf "%d", t
+                                exit
+                            }
                         }
                     }
                 }
             ')
-            [ -n "$temp" ] && {
+            if [ -n "$temp" ]; then
                 printf '%s\n' "$temp"
                 return 0
-            }
+            fi
         fi
         set -f
         set -- $(dumpsys battery 2>/dev/null)
         set +f
+        prev1=""
         for i in "$@"; do
-            if [ "${prev1:-}" = "temperature:" ]; then
-                bat_temp=$((i / 10))
-                if [ "$bat_temp" -gt 0 ]; then
-                    printf '%d\n' "$bat_temp"
-                    return 0
-                fi
+            if [ "$prev1" = "temperature:" ]; then
+                case "$i" in
+                '' | *[!0-9]*)
+                    debug_print "Invalid battery temperature value from dumpsys battery: $i"
+                    ;;
+                *)
+                    bat_temp=$((i / 10))
+                    if [ "$bat_temp" -gt 0 ]; then
+                        printf '%d\n' "$bat_temp"
+                        return 0
+                    fi
+                    ;;
+                esac
             fi
             prev1="$i"
         done
@@ -293,7 +308,7 @@ get_thermal_status() {
         [ -r "$f" ] || continue
         val_out=$(<"$f" 2>&1)
         val_exit=$?
-        if [ $val_exit -ne 0 ]; then
+        if [ "$val_exit" -ne 0 ]; then
             debug_print "Failed to read thermal zone $f (Exit: $val_exit): $val_out"
             continue
         fi
