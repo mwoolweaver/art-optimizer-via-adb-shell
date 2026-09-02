@@ -35,9 +35,9 @@ export LC_ALL=C
 #          via validated environment variables or command-line flags.
 # ============================================================================
 
-DEBUG="${DEBUG:-0}"
-DRY_RUN="${DRY_RUN:-0}"
-NO_USER="${NO_USER:-0}"
+DEBUG="${DEBUG-0}"
+DRY_RUN="${DRY_RUN-0}"
+NO_USER="${NO_USER-0}"
 
 show_help() {
     printf '%s\n' \
