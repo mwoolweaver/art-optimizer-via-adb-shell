@@ -94,7 +94,7 @@ if [ "$(getprop sys.boot_completed)" != "1" ]; then
 fi
 check_deps() {
     missing=""
-    for req in awk cmd cmp cp date df dirname dumpsys getprop head mkdir mktemp mv pm printf rm rmdir service sleep stat tr wc xargs; do
+    for req in awk cmd cmp cp df dumpsys getprop head mkdir mktemp mv pm printf rm rmdir service sleep stat tr wc xargs; do
         if ! command -v "$req" >/dev/null 2>&1; then
             missing="${missing}$req "
             debug_print "Missing required dependency: $req"
@@ -323,9 +323,15 @@ get_thermal_status() {
                 return 0
             fi
         fi
+        case "$-" in
+        *f*) battery_noglob_was_set=1 ;;
+        *) battery_noglob_was_set=0 ;;
+        esac
         set -f
         set -- $(dumpsys battery 2>/dev/null)
-        set +f
+        if [ "$battery_noglob_was_set" -eq 0 ]; then
+            set +f
+        fi
         prev1=""
         for i in "$@"; do
             if [ "$prev1" = "temperature:" ]; then
@@ -484,11 +490,17 @@ process_packages() {
     OLD_IFS="$IFS"
     IFS='
 '
+    case "$-" in
+    *f*) package_noglob_was_set=1 ;;
+    *) package_noglob_was_set=0 ;;
+    esac
     set -f
     for item in $pkg_list; do
         [ -n "$item" ] && total_pkgs=$((total_pkgs + 1))
     done
-    set +f
+    if [ "$package_noglob_was_set" -eq 0 ]; then
+        set +f
+    fi
     IFS="$OLD_IFS"
     debug_print "Total packages parsed for '$default_mode': $total_pkgs"
     if [ "$default_mode" = "system" ]; then
@@ -753,6 +765,10 @@ process_packages() {
             state_old_ifs="$IFS"
             IFS='
 '
+            case "$-" in
+            *f*) state_noglob_was_set=1 ;;
+            *) state_noglob_was_set=0 ;;
+            esac
             set -f
             for prev_fingerprint in $PREV_STATE; do
                 case "$prev_fingerprint" in
@@ -769,7 +785,9 @@ process_packages() {
                     ;;
                 esac
             done
-            set +f
+            if [ "$state_noglob_was_set" -eq 0 ]; then
+                set +f
+            fi
             IFS="$state_old_ifs"
             ;;
         *)
