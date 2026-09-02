@@ -774,7 +774,7 @@ process_packages() {
                 case "$prev_fingerprint" in
                 "$state_key"*)
                     case "$prev_fingerprint" in
-                    *UNAVAILABLE*)
+                    *"|UNAVAILABLE")
                         ;;
                     *)
                         preserved_fingerprint="$prev_fingerprint"
