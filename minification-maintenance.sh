@@ -827,7 +827,7 @@ fi
 debug_print "Querying system packages via pm list packages -f -s..."
 system_package_list=$(pm list packages -f -s 2>&1)
 sys_exit=$?
-if [ $sys_exit -ne 0 ]; then
+if [ "$sys_exit" -ne 0 ]; then
     printf '    [!] WARNING: Failed to query system packages (Exit Code: %d).\n' "$sys_exit" >&2
     if [ -n "$system_package_list" ]; then
         printf '        Output: %s\n' "$system_package_list" >&2
@@ -850,7 +850,7 @@ fi
 debug_print "Querying user packages via pm list packages -f -3..."
 user_package_list=$(pm list packages -f -3 2>&1)
 user_exit=$?
-if [ $user_exit -ne 0 ]; then
+if [ "$user_exit" -ne 0 ]; then
     printf '    [!] WARNING: Failed to query user packages (Exit Code: %d).\n' "$user_exit" >&2
     if [ -n "$user_package_list" ]; then
         printf '        Output: %s\n' "$user_package_list" >&2
@@ -874,49 +874,69 @@ else
     else
         mv_out=$(mv "$CURRENT_RUN_STATE" "$STATE_FILE" 2>&1)
         mv_exit=$?
-        if [ $mv_exit -ne 0 ]; then
-            printf '    [!] WARNING: Failed to update persistent state file (Exit Code: %d).\n' "$mv_exit" >&2
+        if [ "$mv_exit" -ne 0 ]; then
+            printf '    [!] WARNING: Failed to update persistent state file (Exit Code: %d).\n' \
+                "$mv_exit" >&2
             if [ -n "$mv_out" ]; then
                 printf '        Output: %s\n' "$mv_out" >&2
             fi
+            STATE_COMMIT_SAFE=0
         else
             printf '[+] Persistent state file updated.\n'
         fi
     fi
 fi
-SUCCESSFUL_RUN=1
 TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
 TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
 error_notice=""
-if [ -s "$ERROR_LOG" ] && [ "$DRY_RUN" -eq 0 ]; then
+if [ "$TOTAL_FAILED" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
     error_notice="    - [!] Errors occurred. See $ERROR_LOG"
 fi
 printf '\n==========================================\n'
-if [ "$DRY_RUN" -eq 1 ]; then
-    debug_total=$((TOTAL_WOULD_COMPILE + TOTAL_SKIPPED + TOTAL_INVALID))
-    if [ "$TOTAL_SCANNED" -eq "$debug_total" ]; then
-        debug_print "[+] Final dry-run accounting verified."
+if [ "$DEBUG" -eq 1 ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+        debug_total=$((TOTAL_WOULD_COMPILE + TOTAL_SKIPPED + TOTAL_INVALID))
+        debug_print "Final dry-run accounting:"
+        debug_print "    Scanned:       $TOTAL_SCANNED"
+        debug_print "    Would compile: $TOTAL_WOULD_COMPILE"
+        debug_print "    Skipped:       $TOTAL_SKIPPED"
+        debug_print "    Invalid:       $TOTAL_INVALID"
+        debug_print "    Accounted:     $debug_total"
+        if [ "$TOTAL_SCANNED" -eq "$debug_total" ]; then
+            debug_print "[+] Final dry-run accounting verified."
+        else
+            debug_print "[!] WARNING: Final dry-run accounting mismatch."
+        fi
     else
-        debug_print "[!] WARNING: Final dry-run accounting mismatch."
+        debug_total=$((TOTAL_COMPILED + TOTAL_SKIPPED + TOTAL_FAILED + TOTAL_INVALID))
+        debug_print "Final accounting:"
+        debug_print "    Scanned:   $TOTAL_SCANNED"
+        debug_print "    Compiled:  $TOTAL_COMPILED"
+        debug_print "    Skipped:   $TOTAL_SKIPPED"
+        debug_print "    Failed:    $TOTAL_FAILED"
+        debug_print "    Invalid:   $TOTAL_INVALID"
+        debug_print "    Accounted: $debug_total"
+        if [ "$TOTAL_SCANNED" -eq "$debug_total" ]; then
+            debug_print "[+] Final accounting verified."
+        else
+            debug_print "[!] WARNING: Final accounting mismatch."
+        fi
     fi
+fi
+if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Maintenance Summary (DRY RUN):\n'
 else
-    debug_total=$((TOTAL_COMPILED + TOTAL_SKIPPED + TOTAL_FAILED + TOTAL_INVALID))
-    if [ "$TOTAL_SCANNED" -eq "$debug_total" ]; then
-        debug_print "[+] Final accounting verified."
-    else
-        debug_print "[!] WARNING: Final accounting mismatch."
-    fi
     printf '[+] Maintenance Summary:\n'
 fi
-printf '    - Step 1 (Cache Trim):     %ss\n' "$STEP1_DURATION"
-printf '    - Step 2 (System Stage):   %ss\n' "$STEP2_DURATION"
-printf '    - Step 3 (User Stage):     %ss\n' "$STEP3_DURATION"
+printf '    - Step 1 (Cache Trim):       %ss\n' "$STEP1_DURATION"
+printf '    - Step 2 (System Stage):     %ss\n' "$STEP2_DURATION"
+printf '    - Step 3 (User Stage):       %ss\n' "$STEP3_DURATION"
 printf '    --------------------------------------\n'
-printf '    - Grand Total:             %ss\n' "$TOTAL_DURATION"
+printf '    - Grand Total:               %ss\n' "$TOTAL_DURATION"
 if [ "$DRY_RUN" -eq 1 ]; then
-    printf '    - Packages Would Compile:  %d\n' "$TOTAL_WOULD_COMPILE"
-    printf '    - Packages Would Skip:     %d\n' "$TOTAL_SKIPPED"
+    printf '    - Packages Would Compile:    %d\n' "$TOTAL_WOULD_COMPILE"
+    printf '    - Packages Would Skip:       %d\n' "$TOTAL_SKIPPED"
+    printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
     printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
 else
     printf '    - Packages Compiled:         %d\n' "$TOTAL_COMPILED"
@@ -927,5 +947,9 @@ else
 fi
 [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
 printf '==========================================\n'
-print_system_status "FINAL STATUS"
+if ! print_system_status "FINAL STATUS"; then
+    printf '==========================================\n'
+    exit 1
+fi
 printf '==========================================\n'
+SUCCESSFUL_RUN=1
