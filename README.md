@@ -1367,7 +1367,7 @@ process_packages() {
 
         case "${file_meta}" in
 
-        *UNAVAILABLE*)
+        UNAVAILABLE)
 
             echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
             echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
@@ -1620,10 +1620,18 @@ prev1=""
 prev2=""
 
 # Run df once, disable globbing, and assign output to positional parameters natively.
+case "$-" in
+*f*) df_noglob_was_set=1 ;;
+*) df_noglob_was_set=0 ;;
+esac
+
 set -f
 # shellcheck disable=SC2046
 set -- $(df -k /data 2>/dev/null)
-set +f
+
+if [ "$df_noglob_was_set" -eq 0 ]; then
+    set +f
+fi
 
 # Parse df output: df outputs columns [filesystem, 1k-blocks, used, available, use%, mount]
 # We need the "available" column (index 3), so we track previous values as we iterate.
@@ -1650,7 +1658,7 @@ fi
 
 # Temporary files for current run state (using explicit $TMPDIR path for Android/Toybox reliability)
 # opt_state: fingerprints of packages processed in this run
-# opt_stats: cached stat output (inode, size, blocks) for files
+# opt_stats: cached stat output (mtime, size, inode) for files
 # opt_merged: merged package list with metadata for processing
 # errors: batch log for compilation errors
 CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
