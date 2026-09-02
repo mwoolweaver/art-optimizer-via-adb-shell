@@ -291,17 +291,9 @@ cleanup() {
         fi
     done
 
-    # Release the concurrency lock if it exists.
-    if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
-        debug_print "Releasing concurrency lock at $LOCK_DIR"
-
-        if ! rmdir "$LOCK_DIR" 2>/dev/null; then
-            report_error "    [!] CRITICAL: Failed to release lock at $LOCK_DIR. Manual deletion required."
-        fi
-    fi
-
     # maintenance_errors.log represents the most recent real run attempt.
-    # Finalize it last so errors produced by cleanup itself are included.
+    # Finalize it while the concurrency lock is still held so another
+    # invocation cannot modify persistent logs during this cleanup.
     if [ "${DRY_RUN:-0}" -eq 0 ]; then
         if [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
             [ -f "$RUN_ERROR_TMPFILE" ] &&
@@ -331,6 +323,25 @@ cleanup() {
         if ! rm -f "$RUN_ERROR_TMPFILE" 2>/dev/null; then
             printf '    [!] Warning: Failed to clean up %s\n' \
                 "$RUN_ERROR_TMPFILE" >&2
+        fi
+    fi
+
+    # Release the concurrency lock LAST, after all persistent state/log
+    # finalization and volatile cleanup are complete.
+    if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
+        debug_print "Releasing concurrency lock at $LOCK_DIR"
+
+        if ! rmdir "$LOCK_DIR" 2>/dev/null; then
+            lock_error="    [!] CRITICAL: Failed to release lock at $LOCK_DIR. Manual deletion required."
+            printf '%s\n' "$lock_error" >&2
+
+            # RUN_ERROR_TMPFILE may already have been moved or removed above.
+            # Because the lock still exists when rmdir fails, it is safe to
+            # append this final cleanup failure directly to the persistent
+            # maintenance error log.
+            if [ "${DRY_RUN:-0}" -eq 0 ]; then
+                printf '%s\n' "$lock_error" >>"$RUN_ERROR_LOG" 2>/dev/null || true
+            fi
         fi
     fi
 }
@@ -611,11 +622,13 @@ process_packages() {
     pkg_list="$1"
     default_mode="$2"
 
-    # Exit early if package list is empty
-    [ -z "$pkg_list" ] && {
-        debug_print "Package list for mode '$default_mode' is empty."
-        return 0
-    }
+    # A successful package-manager query should not produce an empty list.
+    # Treat an unexpected empty enumeration as unsafe so persistent state
+    # cannot be replaced by an incomplete run.
+    if [ -z "$pkg_list" ]; then
+        report_error "    [!] ERROR: Package list for mode '$default_mode' is unexpectedly empty."
+        return 1
+    fi
 
     # ========================================================================
     # NORMALIZE PM OUTPUT
@@ -1152,6 +1165,7 @@ process_packages() {
         # Unchanged fingerprints skip recompilation; changed ones trigger fresh compilation.
 
         state_writable=1
+        preserved_fingerprint=""
         fingerprint="${pkg_name}|${apk_path}|${file_meta}"
 
         case "$fingerprint" in
@@ -1185,8 +1199,8 @@ process_packages() {
                     *UNAVAILABLE*)
                         ;;
                     *)
-                        echo "$prev_fingerprint" >&3
-                        debug_print "Preserved previous trustworthy fingerprint for [$pkg_name]."
+                        preserved_fingerprint="$prev_fingerprint"
+                        debug_print "Found previous trustworthy fingerprint for [$pkg_name]; preserving only after successful compilation."
                         ;;
                     esac
                     break
@@ -1277,10 +1291,18 @@ $fingerprint
                 printf '    [+] (%d/%d) Compiled: %s\n' \
                     "$current" "$total_pkgs" "$pkg_name"
 
-                # Only commit successful compilations when trustworthy
-                # filesystem metadata exists.
+                # Write state only after successful compilation.
+                #
+                # With trustworthy current metadata, store the current
+                # fingerprint. If metadata was unavailable, carry forward a
+                # previous trustworthy fingerprint only now that compilation
+                # has succeeded. Failed compilations write no state and will
+                # therefore be retried on the next run.
                 if [ "$state_writable" -eq 1 ]; then
                     echo "$fingerprint" >&3
+                elif [ -n "$preserved_fingerprint" ]; then
+                    echo "$preserved_fingerprint" >&3
+                    debug_print "Preserved previous trustworthy fingerprint for [$pkg_name] after successful compilation."
                 fi
 
                 stage3_compiled=$((stage3_compiled + 1))
