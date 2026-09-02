@@ -925,7 +925,7 @@ process_packages() {
         debug_print "===== DEBUG STAGE 1 PATHS ====="
         debug_print "Paths: "
         wc -l <"$STAGE_PATHS"
-        debug_print --- first 20 paths ---"
+        debug_print "--- first 20 paths ---"
         head -n 20 "$STAGE_PATHS"
         debug_print "--- end DEBUG STAGE 1 PATHS ---"
     fi
