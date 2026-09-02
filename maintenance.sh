@@ -187,6 +187,8 @@ readonly STATE_FILE
 ERROR_LOG="${SCRIPT_DIR}/compile_errors.log"
 readonly ERROR_LOG
 
+SUCCESSFUL_RUN=0
+
 # ============================================================================
 # SIGNAL HANDLERS & CLEANUP
 # ============================================================================
@@ -1494,45 +1496,7 @@ STEP3_DURATION=$((SECONDS - STEP3_START))
 printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
 
 # ============================================================================
-# POST-OPTIMIZATION: State Management
-# ============================================================================
-# .last_optimized represents the most recent successfully completed,
-# state-safe real run.
-#
-# Dry runs never modify persistent state.
-# Incomplete or unsafe runs preserve the previous trusted state.
-if [ "$DRY_RUN" -eq 1 ]; then
-    printf '[+] Dry-run mode: Persistent state file and error logs were not modified.\n'
-
-elif [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
-    printf '    [!] WARNING: Run was incomplete. Persistent state file was NOT updated.\n' >&2
-
-else
-    if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
-        printf '[+] State unchanged. Persistent state file left untouched.\n'
-    else
-        mv_out=$(mv "$CURRENT_RUN_STATE" "$STATE_FILE" 2>&1)
-        mv_exit=$?
-
-        if [ "$mv_exit" -ne 0 ]; then
-            printf '    [!] WARNING: Failed to update persistent state file (Exit Code: %d).\n' \
-                "$mv_exit" >&2
-
-            if [ -n "$mv_out" ]; then
-                printf '        Output: %s\n' "$mv_out" >&2
-            fi
-
-            # The run completed processing, but persistent state was not
-            # successfully committed.
-            STATE_COMMIT_SAFE=0
-        else
-            printf '[+] Persistent state file updated.\n'
-        fi
-    fi
-fi
-
-# ============================================================================
-# FINAL REPORT
+# FINAL ACCOUNTING PREPARATION
 # ============================================================================
 
 # Calculate total package count.
@@ -1550,9 +1514,10 @@ if [ "$TOTAL_FAILED" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
     error_notice="    - [!] Errors occurred. See $ERROR_LOG"
 fi
 
-printf '\n==========================================\n'
+# ============================================================================
+# DEBUG FINAL ACCOUNTING
+# ============================================================================
 
-# Debug-only final accounting verification.
 if [ "$DEBUG" -eq 1 ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
         debug_total=$((TOTAL_WOULD_COMPILE + TOTAL_SKIPPED + TOTAL_INVALID))
@@ -1588,6 +1553,60 @@ if [ "$DEBUG" -eq 1 ]; then
     fi
 fi
 
+# ============================================================================
+# FINAL SYSTEM HEALTH CHECK
+# ============================================================================
+# The final health check must succeed BEFORE .last_optimized can be committed.
+# This ensures persistent state represents only a fully completed healthy run.
+if ! print_system_status "FINAL STATUS"; then
+    printf '==========================================\n'
+    exit 1
+fi
+
+# ============================================================================
+# POST-OPTIMIZATION: State Management
+# ============================================================================
+# .last_optimized represents the most recent successfully completed,
+# state-safe real run.
+#
+# Dry runs never modify persistent state.
+# Incomplete or unsafe runs preserve the previous trusted state.
+if [ "$DRY_RUN" -eq 1 ]; then
+    printf '[+] Dry-run mode: Persistent state file and error logs were not modified.\n'
+
+elif [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
+    printf '    [!] WARNING: Run was incomplete. Persistent state file was NOT updated.\n' >&2
+
+else
+    if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
+        printf '[+] State unchanged. Persistent state file left untouched.\n'
+    else
+        mv_out=$(mv "$CURRENT_RUN_STATE" "$STATE_FILE" 2>&1)
+        mv_exit=$?
+
+        if [ "$mv_exit" -ne 0 ]; then
+            printf '    [!] WARNING: Failed to update persistent state file (Exit Code: %d).\n' \
+                "$mv_exit" >&2
+
+            if [ -n "$mv_out" ]; then
+                printf '        Output: %s\n' "$mv_out" >&2
+            fi
+
+            # Processing completed, but the trusted persistent state could
+            # not be committed. The overall run is therefore incomplete.
+            STATE_COMMIT_SAFE=0
+        else
+            printf '[+] Persistent state file updated.\n'
+        fi
+    fi
+fi
+
+# ============================================================================
+# FINAL REPORT
+# ============================================================================
+
+printf '\n==========================================\n'
+
 if [ "$DRY_RUN" -eq 1 ]; then
     printf '[+] Maintenance Summary (DRY RUN):\n'
 else
@@ -1615,15 +1634,20 @@ fi
 
 [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
 
-printf '==========================================\n'
-
-# Final system-health check must succeed before the run is considered complete.
-if ! print_system_status "FINAL STATUS"; then
-    printf '==========================================\n'
-    exit 1
+if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
+    printf '    - [!] Run incomplete: trusted persistent state was not updated.\n'
 fi
 
 printf '==========================================\n'
 
-# Only now is the entire run considered successfully completed.
+# ============================================================================
+# FINAL SUCCESS DETERMINATION
+# ============================================================================
+
+# An incomplete processing run or failed state commit is not a successful run.
+if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
+    exit 1
+fi
+
+# Only now has the entire run completed successfully.
 SUCCESSFUL_RUN=1
