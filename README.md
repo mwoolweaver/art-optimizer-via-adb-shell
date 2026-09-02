@@ -250,7 +250,7 @@ fi
 # ============================================================================
 check_deps() {
     missing=""
-    for req in awk cmd cmp cp date df dirname dumpsys getprop head mkdir mktemp mv pm printf rm rmdir service sleep stat tr wc xargs; do
+    for req in awk cmd cmp cp df dumpsys getprop head mkdir mktemp mv pm printf rm rmdir service sleep stat tr wc xargs; do
         if ! command -v "$req" >/dev/null 2>&1; then
             missing="${missing}$req "
             debug_print "Missing required dependency: $req"
@@ -622,10 +622,18 @@ get_thermal_status() {
 
         # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
         # Battery temperature is in tenths of a degree (e.g. 350 = 35.0 C)
+        case "$-" in
+        *f*) battery_noglob_was_set=1 ;;
+        *) battery_noglob_was_set=0 ;;
+        esac
+
         set -f
         # shellcheck disable=SC2046
         set -- $(dumpsys battery 2>/dev/null)
-        set +f
+
+        if [ "$battery_noglob_was_set" -eq 0 ]; then
+            set +f
+        fi
 
         # dumpsys battery output is key-value pairs: "temperature: 350"
         # When we find the "temperature:" key, the NEXT value is our temperature.
@@ -898,11 +906,19 @@ process_packages() {
     IFS='
 '
 
+    case "$-" in
+    *f*) package_noglob_was_set=1 ;;
+    *) package_noglob_was_set=0 ;;
+    esac
+
     set -f
     for item in $pkg_list; do
         [ -n "$item" ] && total_pkgs=$((total_pkgs + 1))
     done
-    set +f
+
+    if [ "$package_noglob_was_set" -eq 0 ]; then
+        set +f
+    fi
 
     IFS="$OLD_IFS"
 
@@ -1372,12 +1388,16 @@ process_packages() {
             IFS='
 '
 
+            case "$-" in
+            *f*) state_noglob_was_set=1 ;;
+            *) state_noglob_was_set=0 ;;
+            esac
             set -f
             for prev_fingerprint in $PREV_STATE; do
                 case "$prev_fingerprint" in
                 "$state_key"*)
                     case "$prev_fingerprint" in
-                    *UNAVAILABLE*)
+                    *"|UNAVAILABLE")
                         ;;
                     *)
                         preserved_fingerprint="$prev_fingerprint"
@@ -1388,7 +1408,10 @@ process_packages() {
                     ;;
                 esac
             done
-            set +f
+
+            if [ "$state_noglob_was_set" -eq 0 ]; then
+                set +f
+            fi
 
             IFS="$state_old_ifs"
 
