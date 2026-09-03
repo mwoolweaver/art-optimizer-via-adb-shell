@@ -462,6 +462,7 @@ process_packages() {
     if [ "$package_noglob_was_set" -eq 0 ]; then
         set +f
     fi
+    IFS="$OLD_IFS"
     if [ "$DEBUG" -eq 1 ]; then
         debug_print "===== DEBUG NORMALIZED PACKAGE LIST ====="
         debug_print "Total packages parsed for '$default_mode': $total_pkgs"
@@ -469,7 +470,6 @@ process_packages() {
         echo "$pkg_list" | head -n 10 >&2
         debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
     fi
-    IFS="$OLD_IFS"
     if [ "$default_mode" = "system" ]; then
         SYSTEM_PKGS_COUNT="$total_pkgs"
     else
