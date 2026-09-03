@@ -238,7 +238,6 @@ cleanup() {
 # ============================================================================
 get_thermal_status() {
     # Attempt 1: dumpsys thermalservice (Modern OS Status Code)
-    therm_status=""
     therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
 
     # Verify output is a valid integer
@@ -662,7 +661,6 @@ process_packages() {
             if (NF < 2)
                 next
 
-            pkg  = $1
             path = $2
 
             # Basic sanity checks
@@ -1283,6 +1281,7 @@ runtime_setup() {
 
     # Default temporary files to Android's writable /data/local/tmp.
     export TMPDIR="${TMPDIR:-/data/local/tmp}"
+    debug_print "Set TMPDIR to $TMPDIR"
 
     MIN_SDK=24
     SUCCESSFUL_RUN=0
@@ -1487,7 +1486,6 @@ main() {
     # API LEVEL GUARD
     # Purpose: Require Android 7.0+ (API 24)+ for 'cmd package compile' support
     # ============================================================================
-    MIN_SDK=24
 
     if [ "$sdk_version" -lt "$MIN_SDK" ]; then
         echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version" >&2
@@ -1503,9 +1501,6 @@ main() {
     # ============================================================================
     # TEMP FILE & STATE MANAGEMENT VARIABLES
     # ============================================================================
-    # Default temporary files to Android's writable /data/local/tmp.
-    export TMPDIR="${TMPDIR:-/data/local/tmp}"
-    debug_print "Set TMPDIR to $TMPDIR"
 
     # Require a writable temporary directory.
     if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
@@ -1969,15 +1964,14 @@ $(<"$STATE_READ_FILE")
     if [ "$DRY_RUN" -eq 1 ]; then
         printf '    - Packages Would Compile:    %d\n' "$TOTAL_WOULD_COMPILE"
         printf '    - Packages Would Skip:       %d\n' "$TOTAL_SKIPPED"
-        printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
-        printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
     else
         printf '    - Packages Compiled:         %d\n' "$TOTAL_COMPILED"
         printf '    - Packages Skipped (Cached): %d\n' "$TOTAL_SKIPPED"
         printf '    - Packages Failed:           %d\n' "$TOTAL_FAILED"
-        printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
-        printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
     fi
+
+    printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
+    printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
 
     [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
     [ -n "$run_error_notice" ] && printf '%s\n' "$run_error_notice"
