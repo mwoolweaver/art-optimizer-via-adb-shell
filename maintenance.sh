@@ -1445,6 +1445,7 @@ main() {
         exit 1
     fi
 
+    check_deps
     # ============================================================================
     # Wait for Android Boot to Complete
     # ============================================================================
@@ -1461,8 +1462,6 @@ main() {
         BOOT_WAIT_ELAPSED=$((BOOT_WAIT_ELAPSED + 2))
         debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
     done
-
-    check_deps
 
     # ============================================================================
     # PACKAGE SERVICE GUARD
