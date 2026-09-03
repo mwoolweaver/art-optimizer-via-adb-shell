@@ -359,14 +359,6 @@ process_packages() {
         report_error "    [!] ERROR: Package list became empty during normalization."
         return 1
     fi
-    if [ "$DEBUG" -eq 1 ]; then
-        PACKAGE_LINE_COUNT=$(printf '%s\n' "$pkg_list" | wc -l)
-        debug_print "===== DEBUG NORMALIZED PACKAGE LIST ====="
-        debug_print "Packages: $PACKAGE_LINE_COUNT"
-        debug_print "--- first 10 records ---"
-        echo "$pkg_list" | head -n 10 >&2
-        debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
-    fi
     total_pkgs=0
     OLD_IFS="$IFS"
     IFS='
@@ -382,8 +374,14 @@ process_packages() {
     if [ "$package_noglob_was_set" -eq 0 ]; then
         set +f
     fi
+    if [ "$DEBUG" -eq 1 ]; then
+        debug_print "===== DEBUG NORMALIZED PACKAGE LIST ====="
+        debug_print "Total packages parsed for '$default_mode': $total_pkgs"
+        debug_print "--- first 10 records ---"
+        echo "$pkg_list" | head -n 10 >&2
+        debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
+    fi
     IFS="$OLD_IFS"
-    debug_print "Total packages parsed for '$default_mode': $total_pkgs"
     if [ "$default_mode" = "system" ]; then
         SYSTEM_PKGS_COUNT="$total_pkgs"
     else
