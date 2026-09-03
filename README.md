@@ -232,7 +232,6 @@ cleanup() {
     exit "$cleanup_exit"
 }
 get_thermal_status() {
-    therm_status=""
     therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
     if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
         debug_print "Parsed global thermal status code: $therm_status"
@@ -485,7 +484,6 @@ process_packages() {
         {
             if (NF < 2)
                 next
-            pkg  = $1
             path = $2
             if (path == "" || length(path) > 1024)
                 next
@@ -855,6 +853,7 @@ runtime_setup() {
     DRY_RUN="${DRY_RUN-0}"
     NO_USER="${NO_USER-0}"
     export TMPDIR="${TMPDIR:-/data/local/tmp}"
+    debug_print "Set TMPDIR to $TMPDIR"
     MIN_SDK=24
     SUCCESSFUL_RUN=0
     STATE_COMMIT_SAFE=1
@@ -990,7 +989,6 @@ main() {
     '' | *[!0-9]*) sdk_version=0 ;;
     esac
     debug_print "Detected Android version: $android_version (SDK: $sdk_version)"
-    MIN_SDK=24
     if [ "$sdk_version" -lt "$MIN_SDK" ]; then
         echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version" >&2
         exit 1
@@ -1000,8 +998,6 @@ main() {
     else
         echo "[+] Starting ART Smart Maintenance on Android $android_version (SDK $sdk_version)..."
     fi
-    export TMPDIR="${TMPDIR:-/data/local/tmp}"
-    debug_print "Set TMPDIR to $TMPDIR"
     if ! [ -d "$TMPDIR" ] || ! [ -w "$TMPDIR" ]; then
         echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Aborting." >&2
         exit 1
@@ -1286,15 +1282,13 @@ $(<"$STATE_READ_FILE")
     if [ "$DRY_RUN" -eq 1 ]; then
         printf '    - Packages Would Compile:    %d\n' "$TOTAL_WOULD_COMPILE"
         printf '    - Packages Would Skip:       %d\n' "$TOTAL_SKIPPED"
-        printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
-        printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
     else
         printf '    - Packages Compiled:         %d\n' "$TOTAL_COMPILED"
         printf '    - Packages Skipped (Cached): %d\n' "$TOTAL_SKIPPED"
         printf '    - Packages Failed:           %d\n' "$TOTAL_FAILED"
-        printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
-        printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
     fi
+    printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
+    printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
     [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
     [ -n "$run_error_notice" ] && printf '%s\n' "$run_error_notice"
     if [ "$NO_USER" -eq 1 ]; then
