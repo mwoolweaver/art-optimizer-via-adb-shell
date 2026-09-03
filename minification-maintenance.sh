@@ -997,8 +997,8 @@ main() {
     if [ -r "$STATE_READ_FILE" ]; then
         debug_print "Loading persistent state baseline from $STATE_READ_FILE"
         PREV_STATE="
-    $(<"$STATE_READ_FILE")
-    "
+$(<"$STATE_READ_FILE")
+"
     else
         if [ "$NO_USER" -eq 1 ]; then
             debug_print "No system-only or complete state file found. Full system optimization expected."
