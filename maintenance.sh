@@ -1597,7 +1597,7 @@ main() {
     esac
     readonly SCRIPT_DIR
     debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
-    
+
     # Real runs require SCRIPT_DIR to be writable for persistent state and logs.
     if [ "$DRY_RUN" -eq 0 ] && [ ! -w "$SCRIPT_DIR" ]; then
         echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting." >&2
