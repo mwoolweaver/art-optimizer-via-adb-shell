@@ -709,7 +709,11 @@ emit_json_summary() {
     [ "$FORCE" -eq 1 ] && json_force=true
 
     json_cache_trim=true
-    [ "$NO_TRIM" -eq 1 ] && json_cache_trim=false
+    if [ "$HEALTH_ONLY" -eq 1 ]; then
+        json_cache_trim=null
+    elif [ "$NO_TRIM" -eq 1 ]; then
+        json_cache_trim=false
+    fi
 
     json_require_charging=false
     [ "$REQUIRE_CHARGING" -eq 1 ] && json_require_charging=true
