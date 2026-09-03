@@ -969,6 +969,7 @@ main() {
         echo "[!] FATAL: Elevated privileges required (root or adb shell). Aborting." >&2
         exit 1
     fi
+    check_deps
     BOOT_WAIT_ELAPSED=0
     while [ "$(getprop sys.boot_completed)" != "1" ]; do
         if [ "$BOOT_WAIT_ELAPSED" -ge 300 ]; then
@@ -979,7 +980,6 @@ main() {
         BOOT_WAIT_ELAPSED=$((BOOT_WAIT_ELAPSED + 2))
         debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
     done
-    check_deps
     case "$(service check package 2>/dev/null)" in
     *"not found"* | "")
         echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting." >&2
