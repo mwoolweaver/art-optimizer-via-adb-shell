@@ -122,7 +122,7 @@ Options:
     --no-trim          Skip Package Manager cache trimming.
     --require-charging Require external power before maintenance begins.
     --min-battery N    Require battery level N (0-100) or higher before maintenance begins.
-    --json             Send human-readable output to stderr and emit one JSON summary on stdout.
+    --json             Emit one JSON summary on stdout; suppress routine output; diagnostics stay on stderr.
     --health-only      Run health, battery-policy, and storage checks without package maintenance.
     --debug            Enable verbose debug output.
     --help             Display this help text and exit.
@@ -1031,7 +1031,7 @@ stage3_invalid=$((stage3_invalid+1))
 continue
 fi
 case "$pkg_name" in
-*[[:space:]]*)echo "    [!] Skipping package with whitespace in name: $pkg_name"
+*[[:space:]]*)echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
 stage3_invalid=$((stage3_invalid+1))
 continue
 esac
@@ -1047,8 +1047,8 @@ state_writable=1
 preserved_fingerprint=""
 fingerprint="$pkg_name|$apk_path|$file_meta"
 case "$file_meta" in
-UNAVAILABLE)echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name"
-echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name"
+UNAVAILABLE)echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name" >&2
+echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name" >&2
 stage3_unverified=$((stage3_unverified+1))
 state_writable=0
 state_key="$pkg_name|$apk_path|"
@@ -1136,7 +1136,7 @@ fi
 debug_print "Preserved previous trustworthy fingerprint for [$pkg_name] after successful compilation."
 fi
 else
-print -r -- "    [!] ($current/$total_pkgs) Failed: $pkg_name (Exit: $compile_exit)"
+print -r -- "    [!] ($current/$total_pkgs) Failed: $pkg_name (Exit: $compile_exit)" >&2
 stage3_failed=$((stage3_failed+1))
 if [ -z "$ERROR_TMPFILE" ];then
 ERROR_TMPFILE=$(mktemp "$TMPDIR/errors.$$.XXXXXX")
@@ -1369,7 +1369,11 @@ exit 1
 fi
 if [ "$JSON" -eq 1 ];then
 exec 4>&1
+if [ "$DEBUG" -eq 1 ];then
 exec 1>&2
+else
+exec 1>/dev/null
+fi
 JSON_OUTPUT_OPEN=1
 fi
 debug_print "Debug/Verbose mode initialized."
@@ -1398,7 +1402,7 @@ if [ -n "$MIN_BATTERY" ];then
 debug_print "Minimum battery policy enabled: $MIN_BATTERY%."
 fi
 if [ "$JSON" -eq 1 ];then
-debug_print "JSON summary mode enabled; human-readable stdout redirected to stderr."
+debug_print "JSON summary mode enabled; routine human-readable stdout suppressed unless --debug is active."
 fi
 if [ "$HEALTH_ONLY" -eq 1 ];then
 debug_print "Health-only mode enabled; package maintenance will be skipped."
@@ -1457,7 +1461,7 @@ if check_data_storage;then
 case "$STORAGE_STATUS" in
 ok)print -r -- "[*] /data free: $((FREE_KB/1024)) MB (OK)"
 ;;
-*)print -r -- '[!] /data free: N/A (unable to verify)'
+*)print -r -- '[!] /data free: N/A (unable to verify)' >&2
 esac
 else
 print -r -- "[!] /data free: $((FREE_KB/1024)) MB (LOW; 500 MB required)" >&2
