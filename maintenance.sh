@@ -591,18 +591,6 @@ process_packages() {
     fi
 
     # ========================================================================
-    # DEBUG NORMALIZED INPUT
-    # ========================================================================
-    if [ "$DEBUG" -eq 1 ]; then
-        PACKAGE_LINE_COUNT=$(printf '%s\n' "$pkg_list" | wc -l)
-        debug_print "===== DEBUG NORMALIZED PACKAGE LIST ====="
-        debug_print "Packages: $PACKAGE_LINE_COUNT"
-        debug_print "--- first 10 records ---"
-        echo "$pkg_list" | head -n 10 >&2
-        debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
-    fi
-
-    # ========================================================================
     # COUNT TOTAL PACKAGES
     # ========================================================================
     total_pkgs=0
@@ -625,9 +613,18 @@ process_packages() {
         set +f
     fi
 
-    IFS="$OLD_IFS"
+    # ========================================================================
+    # DEBUG NORMALIZED INPUT
+    # ========================================================================
+    if [ "$DEBUG" -eq 1 ]; then
+        debug_print "===== DEBUG NORMALIZED PACKAGE LIST ====="
+        debug_print "Total packages parsed for '$default_mode': $total_pkgs"
+        debug_print "--- first 10 records ---"
+        echo "$pkg_list" | head -n 10 >&2
+        debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
+    fi
 
-    debug_print "Total packages parsed for '$default_mode': $total_pkgs"
+    IFS="$OLD_IFS"
 
     # Preserve the parsed package count even if a later stage fails.
     if [ "$default_mode" = "system" ]; then
