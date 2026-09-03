@@ -53,8 +53,8 @@ debug_print() {
     fi
 }
 
-# Print an operational/runtime error to stderr and, when available, append it
-# to the current real run's maintenance error log tempfile.
+# Print operational/runtime errors to stderr and lazily persist real-run errors
+# to the current maintenance error log tempfile.
 report_error() {
     print -r -- "$1" >&2
 
@@ -1015,9 +1015,11 @@ process_packages() {
     stage3_would_compile=0
     stage3_state_error=0
 
-    if ! exec 3>>"$CURRENT_RUN_STATE"; then
-        report_error "    [!] ERROR: Unable to open current-run state file for writing."
-        return 1
+    if [ "$DRY_RUN" -eq 0 ]; then
+        if ! exec 3>>"$CURRENT_RUN_STATE"; then
+            report_error "    [!] ERROR: Unable to open current-run state file for writing."
+            return 1
+        fi
     fi
 
     # STAGE_MERGED format:
@@ -1136,10 +1138,12 @@ $fingerprint
 
                 stage3_skipped=$((stage3_skipped + 1))
 
-                if ! print -r -- "$fingerprint" >&3; then
-                    report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
-                    stage3_state_error=1
-                    break
+                if [ "$DRY_RUN" -eq 0 ]; then
+                    if ! print -r -- "$fingerprint" >&3; then
+                        report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
+                        stage3_state_error=1
+                        break
+                    fi
                 fi
 
                 echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
@@ -1294,9 +1298,11 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
     # Close current-run state file
     # ========================================================================
 
-    if ! exec 3>&-; then
-        report_error "    [!] ERROR: Failed to close current-run state file."
-        stage3_state_error=1
+    if [ "$DRY_RUN" -eq 0 ]; then
+        if ! exec 3>&-; then
+            report_error "    [!] ERROR: Failed to close current-run state file."
+            stage3_state_error=1
+        fi
     fi
 
     # ========================================================================
@@ -1384,27 +1390,36 @@ package_pipeline_setup() {
         return 1
     fi
 
-    CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
+    # Current-run state is needed only by real runs; dry runs never commit it.
+    if [ "$DRY_RUN" -eq 0 ]; then
+        CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
+    fi
+
     STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
     STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
 
     # Compile-error storage is created lazily only if a compilation fails.
-    debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
+    if [ "$DRY_RUN" -eq 0 ]; then
+        debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
+    else
+        debug_print "Created dry-run package-pipeline temp files: stats=$STAGE_STATS, merged=$STAGE_MERGED"
+    fi
 
-    if [ -z "$CURRENT_RUN_STATE" ] ||
-        [ -z "$STAGE_STATS" ] ||
-        [ -z "$STAGE_MERGED" ]; then
-
+    if [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ]; then
         report_error "[!] FATAL: One or more package-pipeline temporary file paths are empty."
         return 1
     fi
 
-    if [ ! -f "$CURRENT_RUN_STATE" ] ||
-        [ ! -f "$STAGE_STATS" ] ||
-        [ ! -f "$STAGE_MERGED" ]; then
-
+    if [ ! -f "$STAGE_STATS" ] || [ ! -f "$STAGE_MERGED" ]; then
         report_error "[!] FATAL: Failed to create one or more package-pipeline temporary files in $TMPDIR."
         return 1
+    fi
+
+    if [ "$DRY_RUN" -eq 0 ]; then
+        if [ -z "$CURRENT_RUN_STATE" ] || [ ! -f "$CURRENT_RUN_STATE" ]; then
+            report_error "[!] FATAL: Failed to create current-run state tempfile in $TMPDIR."
+            return 1
+        fi
     fi
 
     return 0
