@@ -28,7 +28,7 @@ case "$LAB_ROOT" in
 esac
 
 case "$LAB_ROOT" in
-/|/tmp|/data|/data/local|/data/local/tmp)
+/ | /tmp | /data | /data/local | /data/local/tmp)
     print -r -- "[!] TEST ERROR: Refusing unsafe LAB_ROOT: $LAB_ROOT" >&2
     exit 1
     ;;
