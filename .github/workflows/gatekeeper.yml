@@ -1,4 +1,4 @@
-name: Repository Linter & Gatekeeper
+name: Gatekeeper
 
 on:
   pull_request:
@@ -15,6 +15,7 @@ permissions: {}
 jobs:
   gatekeeper:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     permissions:
       contents: read
@@ -29,6 +30,8 @@ jobs:
 
       - name: Setup shfmt
         uses: mfinelli/setup-shfmt@a25fda4c1fe115aec0f85e04126610841bc3141d # v4.0.1
+        with:
+          shfmt-version: "3.14.0"
 
       - name: Lint all repository files
         shell: bash
@@ -39,20 +42,87 @@ jobs:
           has_errors=0
 
           # ==================================================================
-          # 1. SHELL SCRIPTS
+          # 1. REPOSITORY TEXT FORMAT
+          # Reject formatting problems without rewriting repository files.
+          # ==================================================================
+
+          echo "[+] Checking repository text-file formatting..."
+
+          python3 <<'PYTHON' || has_errors=1
+          from pathlib import Path
+          import sys
+
+          extensions = {".sh", ".yml", ".yaml", ".md"}
+          error_count = 0
+
+          for path in sorted(Path(".").rglob("*")):
+              if not path.is_file() or ".git" in path.parts:
+                  continue
+
+              if path.suffix.lower() not in extensions:
+                  continue
+
+              try:
+                  data = path.read_bytes()
+                  data.decode("utf-8")
+              except UnicodeDecodeError as exc:
+                  print(
+                      f"::error file={path},line=1,col=1"
+                      f"::File is not valid UTF-8: {exc}"
+                  )
+                  error_count += 1
+                  continue
+              except Exception as exc:
+                  print(
+                      f"::error file={path},line=1,col=1"
+                      f"::Could not read file: {exc}"
+                  )
+                  error_count += 1
+                  continue
+
+              if b"\r" in data:
+                  offset = data.index(b"\r")
+                  line = data[:offset].count(b"\n") + 1
+                  line_start = data.rfind(b"\n", 0, offset) + 1
+                  column = offset - line_start + 1
+
+                  print(
+                      f"::error file={path},line={line},col={column}"
+                      "::Carriage return found. Repository text files must use LF line endings."
+                  )
+                  error_count += 1
+
+              if not data.endswith(b"\n"):
+                  line = data.count(b"\n") + 1
+                  print(
+                      f"::error file={path},line={line},col=1"
+                      "::File must end with exactly one newline."
+                  )
+                  error_count += 1
+              elif data.endswith(b"\n\n"):
+                  line = max(1, data.count(b"\n"))
+                  print(
+                      f"::error file={path},line={line},col=1"
+                      "::File has extra terminating blank lines; exactly one final newline is required."
+                  )
+                  error_count += 1
+
+          if error_count:
+              sys.exit(1)
+
+          print("  [+] Repository text-file formatting passed.")
+          PYTHON
+
+          # ==================================================================
+          # 2. SHELL SCRIPTS
           # ==================================================================
 
           mapfile -t sh_files < <(
-            find . -type f -name "*.sh" -not -path "./.git/*" -print
+            find . -type f -name "*.sh" -not -path "./.git/*" -print | sort
           )
 
           if [ "${#sh_files[@]}" -gt 0 ]; then
             echo "[+] Validating Shell scripts..."
-
-            # --------------------------------------------------------------
-            # ShellCheck
-            # --------------------------------------------------------------
-
             echo "  Running ShellCheck: ${sh_files[*]}"
 
             shellcheck -s ksh -f json "${sh_files[@]}" \
@@ -76,7 +146,7 @@ jobs:
               filename = diagnostic.get("file", "")
               line = diagnostic.get("line", 1)
               column = diagnostic.get("column", 1)
-              message = diagnostic.get("message", "").replace("\n", " ")
+              message = diagnostic.get("message", "").replace("\\n", " ")
               code = diagnostic.get("code", "")
 
               print(
@@ -90,14 +160,11 @@ jobs:
               echo "  [+] ShellCheck passed."
             fi
 
-            # --------------------------------------------------------------
-            # shfmt
-            # --------------------------------------------------------------
-
             echo "  Checking shfmt formatting..."
 
+            # -d is diff-only: it reports required formatting but never rewrites.
             if ! shfmt -d -ln mksh -i 4 "${sh_files[@]}"; then
-              echo "::error::One or more Shell scripts are not formatted according to shfmt."
+              echo "::error::One or more Shell scripts are not formatted according to shfmt. See the diff above."
               has_errors=1
             else
               echo "  [+] shfmt formatting passed."
@@ -107,122 +174,105 @@ jobs:
           fi
 
           # ==================================================================
-          # 2. YAML FILES
+          # 3. YAML FILES
           # ==================================================================
 
-          echo "[+] Validating YML syntax..."
-
-          python3 -c '
-          import glob
-          import sys
-          import yaml
-
-          files = set(
-              glob.glob("**/*.yml", recursive=True) +
-              glob.glob(".github/**/*.yml", recursive=True)
+          mapfile -t yaml_files < <(
+            find . -type f \
+              \( -name "*.yml" -o -name "*.yaml" \) \
+              -not -path "./.git/*" -print | sort
           )
 
-          error_count = 0
+          if [ "${#yaml_files[@]}" -gt 0 ]; then
+            echo "[+] Validating YAML syntax and formatting..."
 
-          for filename in sorted(files):
-              if ".git" in filename:
-                  continue
+            if ! command -v yamllint >/dev/null 2>&1; then
+              echo "::error::yamllint is not available on the GitHub Actions runner."
+              has_errors=1
+            else
+              cat > /tmp/art-yamllint.yml <<'YAML'
+          extends: default
 
-              try:
-                  with open(filename, "r", encoding="utf-8") as f:
-                      yaml.safe_load(f)
+          rules:
+            document-start: disable
+            line-length: disable
+            truthy: disable
+          YAML
 
-                  print(f"  Passed YAML: {filename}")
+              if ! yamllint \
+                --format github \
+                --strict \
+                --config-file /tmp/art-yamllint.yml \
+                "${yaml_files[@]}"; then
 
-              except yaml.YAMLError as exc:
-                  line = 1
-
-                  if hasattr(exc, "problem_mark") and exc.problem_mark:
-                      line = exc.problem_mark.line + 1
-
-                  print(
-                      f"::error file={filename},line={line}"
-                      f"::YAML error: {exc}"
-                  )
-
-                  error_count += 1
-
-              except Exception as exc:
-                  print(
-                      f"::error file={filename},line=1"
-                      f"::YAML error: {exc}"
-                  )
-
-                  error_count += 1
-
-          if error_count:
-              sys.exit(1)
-          ' || has_errors=1
+                echo "::error::One or more YAML files failed syntax/style validation. See file/line/column annotations above."
+                has_errors=1
+              else
+                echo "  [+] YAML syntax and formatting passed."
+              fi
+            fi
+          else
+            echo "[+] No YAML files found."
+          fi
 
           # ==================================================================
-          # 3. MARKDOWN FILES
+          # 4. MARKDOWN FILES
           # ==================================================================
 
           echo "[+] Validating Markdown files..."
 
-          python3 -c '
-          import glob
+          python3 <<'PYTHON' || has_errors=1
+          from pathlib import Path
           import sys
 
           error_count = 0
 
-          for filename in sorted(
-              glob.glob("**/*.md", recursive=True, include_hidden=True)
-          ):
-              if ".git/" in filename or "/.git" in filename:
+          for path in sorted(Path(".").rglob("*.md")):
+              if ".git" in path.parts:
                   continue
 
               try:
-                  with open(filename, "r", encoding="utf-8") as f:
-                      lines = f.readlines()
-
+                  content = path.read_text(encoding="utf-8")
               except Exception as exc:
                   print(
-                      f"::error file={filename},line=1"
+                      f"::error file={path},line=1,col=1"
                       f"::Could not read file: {exc}"
                   )
-
                   error_count += 1
                   continue
 
-              content = "".join(lines)
-
               if content.count("```") % 2 != 0:
+                  lines = content.splitlines()
                   fence_lines = [
                       index
                       for index, line in enumerate(lines, start=1)
                       if "```" in line
                   ]
-
                   open_line = fence_lines[-1] if fence_lines else 1
 
                   print(
-                      f"::error file={filename},line={open_line}"
-                      f"::Unbalanced code block fences (```) in Markdown file."
+                      f"::error file={path},line={open_line},col=1"
+                      "::Unbalanced code block fences (```) in Markdown file."
                   )
-
                   error_count += 1
                   continue
 
-              print(f"  Passed Markdown: {filename}")
+              print(f"  Passed Markdown: {path}")
 
           if error_count:
               sys.exit(1)
-          ' || has_errors=1
+          PYTHON
 
           # ==================================================================
           # FINAL RESULT
           # ==================================================================
 
+          rm -f shellcheck-results.json /tmp/art-yamllint.yml
+
           if [ "$has_errors" -eq 0 ]; then
-            echo "[+] All repository files successfully linted!"
+            echo "[+] All repository files successfully linted and formatting is clean!"
             exit 0
           fi
 
-          echo "::error::Linting completed with errors."
+          echo "::error::Gatekeeper completed with errors."
           exit 42
