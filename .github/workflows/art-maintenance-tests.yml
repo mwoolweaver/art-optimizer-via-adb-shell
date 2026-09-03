@@ -6,6 +6,8 @@ on:
       - main
     paths:
       - "maintenance.sh"
+      - "test/**"
+      - ".github/workflows/art-maintenance-tests.yml"
   workflow_dispatch:
 
 concurrency:
@@ -15,8 +17,8 @@ concurrency:
 permissions: {}
 
 jobs:
-  package-pipeline:
-    name: Package Pipeline Laboratory
+  maintenance-laboratory:
+    name: Maintenance Laboratory
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -58,7 +60,7 @@ jobs:
 
           mksh test/make_test_fixtures.sh
 
-      - name: Run package-pipeline laboratory
+      - name: Run maintenance laboratory
         shell: bash
         run: |
           set -euo pipefail
