@@ -1129,8 +1129,17 @@ $(<"$STATE_READ_FILE")
     elif [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
         report_error "    [!] WARNING: Run was incomplete. Persistent state file was NOT updated."
     else
-        if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
+        if [ -e "$STATE_FILE" ]; then
+            cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"
+            cmp_exit=$?
+        else
+            cmp_exit=1
+        fi
+        if [ "$cmp_exit" -eq 0 ]; then
             print -r -- '[+] State unchanged. Persistent state file left untouched.'
+        elif [ "$cmp_exit" -gt 1 ]; then
+            report_error "    [!] WARNING: Failed to compare current and persistent state (Exit Code: $cmp_exit)."
+            STATE_COMMIT_SAFE=0
         else
             STATE_STAGE_TMP=$(mktemp "${STATE_FILE}.$$.XXXXXX")
             state_stage_exit=$?
