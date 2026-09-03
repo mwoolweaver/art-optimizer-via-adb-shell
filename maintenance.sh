@@ -74,7 +74,7 @@ report_error() {
 # ============================================================================
 check_deps() {
     missing=""
-    for req in awk cmd cmp cp df dumpsys getprop head mkdir mktemp mv pm printf rm rmdir service sleep stat tr wc xargs; do
+    for req in awk cmd cmp cp df dumpsys getprop head mkdir mktemp mv pm rm rmdir service sleep stat tr wc xargs; do
         if ! command -v "$req" >/dev/null 2>&1; then
             missing="${missing}$req "
             debug_print "Missing required dependency: $req"
@@ -186,16 +186,14 @@ cleanup() {
             debug_print "Saving latest maintenance error log to: $RUN_ERROR_LOG"
 
             if ! mv "$RUN_ERROR_TMPFILE" "$RUN_ERROR_LOG" 2>/dev/null; then
-                printf '    [!] Warning: Failed to save maintenance error log to %s\n' \
-                    "$RUN_ERROR_LOG" >&2
+                print -r -- "    [!] Warning: Failed to save maintenance error log to $RUN_ERROR_LOG" >&2
             fi
 
         elif [ -f "$RUN_ERROR_LOG" ]; then
             debug_print "Removing stale maintenance error log from previous run: $RUN_ERROR_LOG"
 
             if ! rm -f "$RUN_ERROR_LOG" 2>/dev/null; then
-                printf '    [!] Warning: Failed to remove stale maintenance error log %s\n' \
-                    "$RUN_ERROR_LOG" >&2
+                print -r -- "    [!] Warning: Failed to remove stale maintenance error log $RUN_ERROR_LOG" >&2
             fi
         fi
     fi
@@ -205,8 +203,7 @@ cleanup() {
         debug_print "Cleaning up maintenance error tempfile: $RUN_ERROR_TMPFILE"
 
         if ! rm -f "$RUN_ERROR_TMPFILE" 2>/dev/null; then
-            printf '    [!] Warning: Failed to clean up %s\n' \
-                "$RUN_ERROR_TMPFILE" >&2
+            print -r -- "    [!] Warning: Failed to clean up $RUN_ERROR_TMPFILE" >&2
         fi
     fi
 
@@ -215,10 +212,10 @@ cleanup() {
 
         if ! rmdir "$LOCK_DIR" 2>/dev/null; then
             lock_error="    [!] CRITICAL: Failed to release lock at $LOCK_DIR. Manual deletion required."
-            printf '%s\n' "$lock_error" >&2
+            print -r -- "$lock_error" >&2
 
             if [ "${DRY_RUN:-0}" -eq 0 ]; then
-                printf '%s\n' "$lock_error" >>"$RUN_ERROR_LOG" 2>/dev/null || true
+                print -r -- "$lock_error" >>"$RUN_ERROR_LOG" 2>/dev/null || true
             fi
 
             if [ "$cleanup_exit" -eq 0 ]; then
@@ -356,7 +353,7 @@ get_thermal_status() {
         # Some thermal zones report temperature in millidegrees,
         # others in raw degrees. Normalize to Celsius.
         if [ "$val_out" -gt 1000 ]; then
-            print -r -- $((val_out / 1000))
+            print -r -- "$((val_out / 1000))"
         else
             print -r -- "$val_out"
         fi
@@ -365,7 +362,7 @@ get_thermal_status() {
     done
 
     debug_print "Thermal sensors unavailable, returning N/A."
-    print -r --'N/A\n'
+    print -r -- 'N/A'
 }
 
 # ============================================================================
@@ -1150,7 +1147,7 @@ $fingerprint
 
             else
                 print -r -- "    [+] ($current/$total_pkgs) User app compile (-m speed-profile): $pkg_name"
-            
+
             fi
 
             debug_print "Executing command: cmd package compile -m $compile_mode -f $pkg_name"
@@ -1184,7 +1181,7 @@ $fingerprint
                 stage3_failed=$((stage3_failed + 1))
 
                 if ! print -r -- "FAIL ($compile_exit): $pkg_name
-                $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
+$err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
                     report_error "    [!] CRITICAL: Failed to write to compile error log! Storage may be full."
                 fi
             fi
@@ -1370,7 +1367,8 @@ main() {
         0 | 1)
             ;;
         *)
-            printf '[!] FATAL: %s must be 0 or 1 (received: %s).\n\n' "$setting" "$setting_value" >&2
+            print -r -- "[!] FATAL: $setting must be 0 or 1 (received: $setting_value)." >&2
+            print -r -- '' >&2
             show_help >&2
             exit 1
             ;;
@@ -1394,7 +1392,8 @@ main() {
             exit 0
             ;;
         *)
-            printf '[!] FATAL: Unknown option: %s\n\n' "$arg" >&2
+            print -r -- "[!] FATAL: Unknown option: $arg" >&2
+            print -r -- '' >&2
             show_help >&2
             exit 1
             ;;
@@ -1551,7 +1550,7 @@ main() {
     debug_print "Acquiring lock directory at $LOCK_DIR"
 
     if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-        printf '[!] FATAL: Another instance is already running (Lock exists). Aborting.\n' >&2
+        print -r -- '[!] FATAL: Another instance is already running (Lock exists). Aborting.' >&2
         exit 1
     fi
 
@@ -1563,7 +1562,7 @@ main() {
     RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX")
 
     if [ -z "$RUN_ERROR_TMPFILE" ] || [ ! -f "$RUN_ERROR_TMPFILE" ]; then
-        printf '[!] FATAL: Failed to create maintenance error tempfile in %s. Aborting.\n' "$TMPDIR" >&2
+        print -r -- "[!] FATAL: Failed to create maintenance error tempfile in $TMPDIR. Aborting." >&2
         exit 1
     fi
 
@@ -1833,7 +1832,7 @@ $(<"$STATE_READ_FILE")
     # This ensures either state file represents only a fully completed healthy run.
     if ! print_system_status "FINAL STATUS"; then
         report_error "    [!] ERROR: Final system health check failed. Persistent state will not be updated."
-        printf '==========================================\n'
+        print -r -- '=========================================='
         exit 1
     fi
 
@@ -1847,14 +1846,14 @@ $(<"$STATE_READ_FILE")
     # Dry runs never modify persistent state.
     # Incomplete or unsafe runs preserve the previous trusted state.
     if [ "$DRY_RUN" -eq 1 ]; then
-        printf '[+] Dry-run mode: Persistent state file and error logs were not modified.\n'
+        print -r -- '[+] Dry-run mode: Persistent state file and error logs were not modified.'
 
     elif [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
         report_error "    [!] WARNING: Run was incomplete. Persistent state file was NOT updated."
 
     else
         if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
-            printf '[+] State unchanged. Persistent state file left untouched.\n'
+            print -r -- '[+] State unchanged. Persistent state file left untouched.'
         else
             # Stage the completed state in SCRIPT_DIR first. The final mv then
             # renames a file within the same directory/filesystem as STATE_FILE,
@@ -1900,9 +1899,9 @@ $(<"$STATE_READ_FILE")
                         # The staging path no longer exists after a successful rename.
                         STATE_STAGE_TMP=""
                         if [ "$NO_USER" -eq 1 ]; then
-                            printf '[+] System-only persistent state updated atomically.\n'
+                            print -r -- '[+] System-only persistent state updated atomically.'
                         else
-                            printf '[+] Complete persistent state updated atomically.\n'
+                            print -r -- '[+] Complete persistent state updated atomically.'
                         fi
                     fi
                 fi
