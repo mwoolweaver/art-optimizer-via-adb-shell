@@ -240,7 +240,7 @@ get_thermal_status() {
     therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
     if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
         debug_print "Parsed global thermal status code: $therm_status"
-        print -r -- "$therm_status"
+        print -r -- "status:$therm_status"
         return 0
     fi
     out=$(dumpsys hardware_properties 2>/dev/null)
@@ -279,7 +279,7 @@ get_thermal_status() {
             }
         ')
         if [ -n "$temp" ]; then
-            print -r -- "$temp"
+            print -r -- "temp:$temp"
             return 0
         fi
     fi
@@ -302,7 +302,7 @@ get_thermal_status() {
             *)
                 bat_temp=$((i / 10))
                 if [ "$bat_temp" -gt 0 ]; then
-                    print -r -- "$bat_temp"
+                    print -r -- "temp:$bat_temp"
                     return 0
                 fi
                 ;;
@@ -322,9 +322,9 @@ get_thermal_status() {
         case "$val_out" in *[!0-9]*) continue ;; esac
         debug_print "Read thermal zone from sysfs: $f = $val_out"
         if [ "$val_out" -gt 1000 ]; then
-            print -r -- "$((val_out / 1000))"
+            print -r -- "temp:$((val_out / 1000))"
         else
-            print -r -- "$val_out"
+            print -r -- "temp:$val_out"
         fi
         return 0
     done
@@ -373,27 +373,37 @@ print_system_status() {
     print -r -- "    $label"
     print -r -- '    ─────────────────────────────────'
     thermal=$(get_thermal_status)
-    if [ "$thermal" = "N/A" ]; then
-        print -r -- "[*] Thermal:  $thermal"
-    elif [ "$thermal" -le 6 ]; then
-        if [ "$thermal" -ge 3 ]; then
-            print -r -- "[!] Thermal:  Status $thermal (CRITICAL)"
+    case "$thermal" in
+    N/A)
+        print -r -- "[*] Thermal:  N/A"
+        ;;
+    status:*)
+        thermal_status="${thermal#status:}"
+        if [ "$thermal_status" -ge 3 ]; then
+            print -r -- "[!] Thermal:  Status $thermal_status (CRITICAL)"
             return 1
-        elif [ "$thermal" -ge 1 ]; then
-            print -r -- "[!] Thermal:  Status $thermal (WARM)"
+        elif [ "$thermal_status" -ge 1 ]; then
+            print -r -- "[!] Thermal:  Status $thermal_status (WARM)"
         else
-            print -r -- "[*] Thermal:  Status $thermal (OK)"
+            print -r -- "[*] Thermal:  Status $thermal_status (OK)"
         fi
-    else
-        if [ "$thermal" -gt 55 ]; then
-            print -r -- "[!] Thermal:  ${thermal}°C (CRITICAL)"
+        ;;
+    temp:*)
+        thermal_temp="${thermal#temp:}"
+        if [ "$thermal_temp" -gt 55 ]; then
+            print -r -- "[!] Thermal:  ${thermal_temp}°C (CRITICAL)"
             return 1
-        elif [ "$thermal" -gt 45 ]; then
-            print -r -- "[!] Thermal:  ${thermal}°C (WARM)"
+        elif [ "$thermal_temp" -gt 45 ]; then
+            print -r -- "[!] Thermal:  ${thermal_temp}°C (WARM)"
         else
-            print -r -- "[*] Thermal:  ${thermal}°C (OK)"
+            print -r -- "[*] Thermal:  ${thermal_temp}°C (OK)"
         fi
-    fi
+        ;;
+    *)
+        debug_print "Unexpected thermal result: $thermal"
+        print -r -- '[*] Thermal:  N/A'
+        ;;
+    esac
     memory=$(get_memory_pressure)
     if [ "$memory" = "N/A" ]; then
         print -r -- "[*] Memory:   $memory"
