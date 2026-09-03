@@ -14,6 +14,25 @@ LAB_ROOT="${LAB_ROOT:-/data/local/tmp/art-pipeline-lab}"
 
 PACKAGE_FILE="${TEST_DIR}/test_packages_list.txt"
 STATE_FILE="${TEST_DIR}/test_last_optimized"
+EXPECTED_STATE_FILE="${TEST_DIR}/test_expected_state.txt"
+EXPECTED_FAILURE_STATE_FILE="${TEST_DIR}/test_expected_state_failed.txt"
+
+# LAB_ROOT is recursively deleted below. Require an absolute, non-system root.
+case "$LAB_ROOT" in
+/*)
+    ;;
+*)
+    print -r -- "[!] TEST ERROR: LAB_ROOT must be an absolute path: $LAB_ROOT" >&2
+    exit 1
+    ;;
+esac
+
+case "$LAB_ROOT" in
+/|/tmp|/data|/data/local|/data/local/tmp)
+    print -r -- "[!] TEST ERROR: Refusing unsafe LAB_ROOT: $LAB_ROOT" >&2
+    exit 1
+    ;;
+esac
 
 rm -rf "$LAB_ROOT"
 
@@ -55,17 +74,26 @@ package:$LAB_ROOT/no-parent/base.apk=com.test.unavailable
 garbage-without-equals
 package:=com.test.empty.path
 package:$LAB_ROOT/exact/base.apk=
+package:relative/path/base.apk=com.test.relative
+package:$LAB_ROOT/pipe|path/base.apk=com.test.pipepath
+package:$LAB_ROOT/exact/base.apk=com.test|pipepkg
 EOF_PACKAGES
 
 # Add one otherwise-valid record with a literal CR before the newline.
-printf 'package:%s/crlf/base.apk=com.test.crlf\r\n' \
-    "$LAB_ROOT" >>"$PACKAGE_FILE"
+CR=$'\r'
+print -r -- "package:$LAB_ROOT/crlf/base.apk=com.test.crlf${CR}" >>"$PACKAGE_FILE"
 
 EXACT_META=$(stat -c '%Y:%s:%i' "$LAB_ROOT/exact/base.apk")
+CHANGED_META=$(stat -c '%Y:%s:%i' "$LAB_ROOT/changed/base.apk")
 EQUALS_META=$(stat -c '%Y:%s:%i' "$LAB_ROOT/equals==path/base.apk")
 DUPLICATE_META=$(stat -c '%Y:%s:%i' "$LAB_ROOT/duplicate/base.apk")
 CRLF_META=$(stat -c '%Y:%s:%i' "$LAB_ROOT/crlf/base.apk")
+PARENT_MTIME=$(stat -c '%Y' "$LAB_ROOT/parent-fallback")
+PARENT_INODE=$(stat -c '%i' "$LAB_ROOT/parent-fallback")
+PARENT_META="${PARENT_MTIME}:0:${PARENT_INODE}"
 
+# Previous state intentionally contains stale metadata for com.test.changed and
+# a trustworthy old fingerprint for com.test.unavailable.
 cat >"$STATE_FILE" <<EOF_STATE
 com.test.exact|$LAB_ROOT/exact/base.apk|$EXACT_META
 com.test.changed|$LAB_ROOT/changed/base.apk|1:1:1
@@ -75,12 +103,42 @@ com.test.crlf|$LAB_ROOT/crlf/base.apk|$CRLF_META
 com.test.unavailable|$LAB_ROOT/no-parent/base.apk|1234567890:123:456
 EOF_STATE
 
-printf '[+] Created test fixtures:\n'
-printf '    Package input:  %s\n' "$PACKAGE_FILE"
-printf '    State baseline: %s\n' "$STATE_FILE"
-printf '    Laboratory root: %s\n' "$LAB_ROOT"
+# Expected state after a successful mocked real run. The unavailable package
+# preserves its previous trustworthy fingerprint only after compilation succeeds.
+cat >"$EXPECTED_STATE_FILE" <<EOF_EXPECTED
+com.test.exact|$LAB_ROOT/exact/base.apk|$EXACT_META
+com.test.changed|$LAB_ROOT/changed/base.apk|$CHANGED_META
+com.test.equals|$LAB_ROOT/equals==path/base.apk|$EQUALS_META
+com.test.duplicate|$LAB_ROOT/duplicate/base.apk|$DUPLICATE_META
+com.test.parentfallback|$LAB_ROOT/parent-fallback/base.apk|$PARENT_META
+com.test.unavailable|$LAB_ROOT/no-parent/base.apk|1234567890:123:456
+com.test.crlf|$LAB_ROOT/crlf/base.apk|$CRLF_META
+EOF_EXPECTED
 
-printf '\n[+] Expected special cases:\n'
-printf '    Exact duplicate        -> normalized away\n'
-printf '    com.test.parentfallback -> parent-directory fallback\n'
-printf '    com.test.unavailable    -> UNAVAILABLE metadata\n'
+# Expected state when com.test.changed is forced to fail compilation. Failed
+# packages are omitted so they are retried on the next maintenance run.
+cat >"$EXPECTED_FAILURE_STATE_FILE" <<EOF_EXPECTED_FAILURE
+com.test.exact|$LAB_ROOT/exact/base.apk|$EXACT_META
+com.test.equals|$LAB_ROOT/equals==path/base.apk|$EQUALS_META
+com.test.duplicate|$LAB_ROOT/duplicate/base.apk|$DUPLICATE_META
+com.test.parentfallback|$LAB_ROOT/parent-fallback/base.apk|$PARENT_META
+com.test.unavailable|$LAB_ROOT/no-parent/base.apk|1234567890:123:456
+com.test.crlf|$LAB_ROOT/crlf/base.apk|$CRLF_META
+EOF_EXPECTED_FAILURE
+
+print -r -- '[+] Created test fixtures:'
+print -r -- "    Package input:         $PACKAGE_FILE"
+print -r -- "    State baseline:        $STATE_FILE"
+print -r -- "    Expected state:        $EXPECTED_STATE_FILE"
+print -r -- "    Expected failed state: $EXPECTED_FAILURE_STATE_FILE"
+print -r -- "    Laboratory root:       $LAB_ROOT"
+
+print -r -- ''
+print -r -- '[+] Expected special cases:'
+print -r -- '    Exact duplicate         -> normalized away'
+print -r -- '    Relative path           -> rejected during normalization'
+print -r -- '    Reserved pipe delimiter -> rejected during normalization'
+print -r -- '    Whitespace package      -> rejected during Stage 3'
+print -r -- '    Parent fallback         -> parent-directory metadata'
+print -r -- '    Unavailable metadata    -> compile + preserve trusted old state'
+print -r -- '    CRLF package record     -> normalized correctly'
