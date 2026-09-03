@@ -254,7 +254,7 @@ get_thermal_status() {
         debug_print "Parsed thermal status from hardware_properties dumpsys."
 
         # Parse bracketed sensor values and return the hottest valid temperature.
-        temp=$(printf "%s\n" "$out" | awk '
+        temp=$(print -r -- "$out" | awk '
             /CPU temperatures:/ {
                 if (match($0, /\[[^]]*\]/)) {
                     line = substr($0, RSTART + 1, RLENGTH - 2)
@@ -537,7 +537,7 @@ process_packages() {
     pkg_list="${pkg_list//$CR/}"
 
     normalized_pkg_list=$(
-        printf '%s\n' "$pkg_list" |
+        print -r --  "$pkg_list" |
             awk '
             {
                 line = $0
@@ -652,7 +652,7 @@ process_packages() {
     # Only filesystem paths are allowed through to stat.
     # ========================================================================
 
-    printf '%s\n' "$pkg_list" |
+    print -r --  "$pkg_list" |
         awk -F '|' '
         {
             if (NF < 2)
@@ -760,7 +760,7 @@ process_packages() {
     #   package|path|mtime:size:inode
     # ========================================================================
 
-    printf '%s\n' "$pkg_list" |
+    print -r --  "$pkg_list" |
         awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DEBUG" '
         BEGIN {
             # Load stat cache into memory.
@@ -1140,16 +1140,14 @@ $fingerprint
 
             # Report the selected compilation policy for real runs.
             if [ "$compile_mode" = "speed" ]; then
-                printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
+                print -r -- "    [+] ($current/$total_pkgs) Core system compile (-m speed): $pkg_name"
 
             elif [ "$default_mode" = "system" ]; then
-                printf '    [-] (%d/%d) Updated system app compile (-m speed-profile): %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
+                print -r -- "    [+] ($current/$total_pkgs) pdated system app compile (-m speed-profile): $pkg_name"
 
             else
-                printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
+                print -r -- "    [+] ($current/$total_pkgs) User app compile (-m speed-profile): $pkg_name"
+            
             fi
 
             debug_print "Executing command: cmd package compile -m $compile_mode -f $pkg_name"
@@ -1159,8 +1157,7 @@ $fingerprint
 
             if [ "$compile_exit" -eq 0 ]; then
 
-                printf '    [+] (%d/%d) Compiled: %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
+                print -r -- "    [+] ($current/$total_pkgs) Compiled: $pkg_name"
 
                 # Write state only after successful compilation.
                 # Use current metadata when trustworthy; otherwise preserve a previous
@@ -1176,8 +1173,7 @@ $fingerprint
 
             else
 
-                printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' \
-                    "$current" "$total_pkgs" "$pkg_name" "$compile_exit"
+                print -r -- "    [!] ($current/$total_pkgs) Failed: $pkg_name (Exit: $compile_exit)"
 
                 # IMPORTANT:
                 # Failed compilations are NOT written to state.
