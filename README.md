@@ -3,12 +3,12 @@
 [![Update README](https://github.com/mwoolweaver/art-optimizer-via-adb-shell/actions/workflows/update-readme.yml/badge.svg?branch=main)](https://github.com/mwoolweaver/art-optimizer-via-adb-shell/actions/workflows/update-readme.yml)
 [![License: Unlicense](https://img.shields.io/badge/License-Unlicense-blue.svg)](https://unlicense.org/)
 [![Android API](https://img.shields.io/badge/Android-7.0%2B%20%28API%2024%2B%29-green.svg)](https://developer.android.com)
-![Shell](https://img.shields.io/badge/Shell-MirBSD_ksh_R59-3DDC84?logo=android&logoColor=white)
-![Utilities](https://img.shields.io/badge/Utilities-Toybox_0.8.14-blue)
+![Tested Shell](https://img.shields.io/badge/Tested_Shell-MirBSD_ksh_R59-3DDC84?logo=android&logoColor=white)
+![Tested Utilities](https://img.shields.io/badge/Tested_Utilities-Toybox_0.8.14-blue)
 
 # ART Optimizer via ADB Shell
 
-A shell script that automates Android ART cache trimming and package optimization, written directly to the device via a heredoc from an ADB shell.
+A shell script that automates Android cache trimming and ART package optimization, written directly to the device via a heredoc from an ADB shell.
 
 ## Overview & Features
 
@@ -17,7 +17,7 @@ This script performs Android package-manager cache trimming and ART package comp
 * **No File Transfers:** Use the heredoc provided below to create the script directly on the device from an ADB shell, without `adb push`.
 * **Ultra-Lean Execution:** Tuned for Android's MirBSD ksh and Toybox environment, minimizing unnecessary subprocesses, parsing, disk I/O, and persistent writes on performance-sensitive paths.
 * **Smart Compilation:** Tracks package APK metadata with persistent fingerprints and skips unchanged packages, reducing unnecessary compilation, CPU work, I/O, and thermal load.
-* **System Safeguards:** Checks thermal conditions and memory pressure before and after maintenance, aborting on critical conditions. Battery level is reported for visibility, and available `/data` storage is validated before compilation.
+* **System Safeguards:** Checks thermal conditions and memory pressure before processing and again before committing persistent state, aborting on critical conditions. Battery level is reported for visibility, and available `/data` storage is validated before compilation.
 * **Dry-Run Support:** Simulate the maintenance workflow without compiling packages or modifying persistent state.
 * **System-Only Mode:** Skip user/third-party packages with `--no-user` while using a dedicated system-only state cache.
 * **Debug Diagnostics:** Enable verbose diagnostic output with `--debug` for troubleshooting and validation.
@@ -1506,7 +1506,7 @@ Output varies by device, Android version, package set, thermal source, and wheth
 ```
 
 
-> **Note:**  On devices where Android's thermal-status API is unavailable, the script may display a Celsius temperature instead.
+> **Note:** On devices where Android's thermal-status API is unavailable, the script may display a Celsius temperature instead.
 
 ## 💡 Pro-Tip: Automation
 
