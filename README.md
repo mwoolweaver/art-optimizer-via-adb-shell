@@ -369,27 +369,34 @@ print_system_status() {
     if [ "$thermal" = "N/A" ]; then
         printf '[*] Thermal:  %s\n' "$thermal"
     elif [ "$thermal" -le 6 ]; then
-        [ "$thermal" -ge 3 ] && {
+        if [ "$thermal" -ge 3 ]; then
             printf '[!] Thermal:  Status %d (CRITICAL)\n' "$thermal"
             return 1
-        }
-        [ "$thermal" -ge 1 ] && printf '[!] Thermal:  Status %d (WARM)\n' "$thermal" || printf '[*] Thermal:  Status %d (OK)\n' "$thermal"
+        elif [ "$thermal" -ge 1 ]; then
+            printf '[!] Thermal:  Status %d (WARM)\n' "$thermal"
+        else
+            printf '[*] Thermal:  Status %d (OK)\n' "$thermal"
+        fi
     else
-        [ "$thermal" -gt 55 ] && {
+        if [ "$thermal" -gt 55 ]; then
             printf '[!] Thermal:  %d°C (CRITICAL)\n' "$thermal"
             return 1
-        }
-        [ "$thermal" -gt 45 ] && printf '[!] Thermal:  %d°C (WARM)\n' "$thermal" || printf '[*] Thermal:  %d°C (OK)\n' "$thermal"
+        elif [ "$thermal" -gt 45 ]; then
+            printf '[!] Thermal:  %d°C (WARM)\n' "$thermal"
+        else
+            printf '[*] Thermal:  %d°C (OK)\n' "$thermal"
+        fi
     fi
     memory=$(get_memory_pressure)
     if [ "$memory" = "N/A" ]; then
         printf '[*] Memory:   %s\n' "$memory"
+    elif [ "$memory" -gt 99 ]; then
+        printf '[!] Memory:   %s%% (HIGH)\n' "$memory"
+        return 1
+    elif [ "$memory" -gt 85 ]; then
+        printf '[!] Memory:   %s%% (MODERATE)\n' "$memory"
     else
-        [ "$memory" -gt 99 ] && {
-            printf '[!] Memory:   %s%% (HIGH)\n' "$memory"
-            return 1
-        }
-        [ "$memory" -gt 85 ] && printf '[!] Memory:   %s%% (MODERATE)\n' "$memory" || printf '[*] Memory:   %s%% (OK)\n' "$memory"
+        printf '[*] Memory:   %s%% (OK)\n' "$memory"
     fi
     printf '[*] Battery:  %s%%\n    ─────────────────────────────────\n\n' "$(get_battery_level)"
     return 0
@@ -761,32 +768,23 @@ $fingerprint
             esac
             ;;
         esac
-        if [ "$compile_mode" = "speed" ]; then
-            if [ "$DRY_RUN" -eq 0 ]; then
+        if [ "$DRY_RUN" -eq 1 ]; then
+            printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' \
+                "$current" "$total_pkgs" "$compile_mode" "$pkg_name"
+            stage3_would_compile=$((stage3_would_compile + 1))
+        else
+            if [ "$compile_mode" = "speed" ]; then
                 printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' \
                     "$current" "$total_pkgs" "$pkg_name"
-            fi
-            actual_mode="speed"
-        elif [ "$default_mode" = "system" ]; then
-            if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [-] (%d/%d) Play Store update compile (-m speed-profile): %s\n' \
+            elif [ "$default_mode" = "system" ]; then
+                printf '    [-] (%d/%d) Updated system app compile (-m speed-profile): %s\n' \
                     "$current" "$total_pkgs" "$pkg_name"
-            fi
-            actual_mode="speed-profile"
-        else
-            if [ "$DRY_RUN" -eq 0 ]; then
+            else
                 printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' \
                     "$current" "$total_pkgs" "$pkg_name"
             fi
-            actual_mode="speed-profile"
-        fi
-        if [ "$DRY_RUN" -eq 1 ]; then
-            printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' \
-                "$current" "$total_pkgs" "$actual_mode" "$pkg_name"
-            stage3_would_compile=$((stage3_would_compile + 1))
-        else
-            debug_print "Executing command: cmd package compile -m $actual_mode -f $pkg_name"
-            err_output=$(cmd package compile -m "$actual_mode" -f "$pkg_name" 2>&1 3>&-)
+            debug_print "Executing command: cmd package compile -m $compile_mode -f $pkg_name"
+            err_output=$(cmd package compile -m "$compile_mode" -f "$pkg_name" 2>&1 3>&-)
             compile_exit=$?
             if [ "$compile_exit" -eq 0 ]; then
                 printf '    [+] (%d/%d) Compiled: %s\n' \
@@ -1092,12 +1090,10 @@ main() {
         PREV_STATE="
 $(<"$STATE_READ_FILE")
 "
+    elif [ "$NO_USER" -eq 1 ]; then
+        debug_print "No system-only or complete state file found. Full system optimization expected."
     else
-        if [ "$NO_USER" -eq 1 ]; then
-            debug_print "No system-only or complete state file found. Full system optimization expected."
-        else
-            debug_print "No existing complete state file found. Full optimization run expected."
-        fi
+        debug_print "No existing complete state file found. Full optimization run expected."
     fi
     STEP1_START=$SECONDS
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -1131,10 +1127,8 @@ $(<"$STATE_READ_FILE")
         fi
         SYSTEM_PKGS_COUNT=0
         STATE_COMMIT_SAFE=0
-    else
-        if ! process_packages "$system_package_list" "system"; then
-            STATE_COMMIT_SAFE=0
-        fi
+    elif ! process_packages "$system_package_list" "system"; then
+        STATE_COMMIT_SAFE=0
     fi
     STEP2_DURATION=$((SECONDS - STEP2_START))
     printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
@@ -1163,10 +1157,8 @@ $(<"$STATE_READ_FILE")
             fi
             USER_PKGS_COUNT=0
             STATE_COMMIT_SAFE=0
-        else
-            if ! process_packages "$user_package_list" "speed-profile"; then
-                STATE_COMMIT_SAFE=0
-            fi
+        elif ! process_packages "$user_package_list" "speed-profile"; then
+            STATE_COMMIT_SAFE=0
         fi
     fi
     STEP3_DURATION=$((SECONDS - STEP3_START))
@@ -1223,11 +1215,7 @@ $(<"$STATE_READ_FILE")
         if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
             printf '[+] State unchanged. Persistent state file left untouched.\n'
         else
-            if [ "$NO_USER" -eq 1 ]; then
-                STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized_system.$$.XXXXXX")
-            else
-                STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized.$$.XXXXXX")
-            fi
+            STATE_STAGE_TMP=$(mktemp "${STATE_FILE}.$$.XXXXXX")
             state_stage_exit=$?
             if [ "$state_stage_exit" -ne 0 ] ||
                 [ -z "$STATE_STAGE_TMP" ] ||
