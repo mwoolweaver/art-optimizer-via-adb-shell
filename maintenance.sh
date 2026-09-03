@@ -248,7 +248,7 @@ get_thermal_status() {
     fi
 
     # Attempt 2: dumpsys hardware_properties (Best for root, often denied for ADB)
-    out=$(dumpsys hardware_properties 2>/dev/null || true)
+    out=$(dumpsys hardware_properties 2>/dev/null)
 
     if [ -n "$out" ]; then
         debug_print "Parsed thermal status from hardware_properties dumpsys."
@@ -1307,7 +1307,7 @@ runtime_setup() {
     LOCK_DIR=""
 
     # Literal carriage return for PM output normalization.
-    CR=$(printf '\r')
+    CR=$'\r'
     readonly CR
 }
 
