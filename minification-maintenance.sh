@@ -754,7 +754,7 @@ runtime_setup() {
     DRY_RUN="${DRY_RUN-0}"
     NO_USER="${NO_USER-0}"
     export TMPDIR="${TMPDIR:-/data/local/tmp}"
-    debug_print "Set TMPDIR to $TMPDIR"
+    debug_print "Using TMPDIR: $TMPDIR"
     MIN_SDK=24
     SUCCESSFUL_RUN=0
     STATE_COMMIT_SAFE=1
@@ -863,20 +863,15 @@ main() {
         exit 1
     fi
     BOOT_WAIT_ELAPSED=0
-    boot_complete=0
-    while [ "$BOOT_WAIT_ELAPSED" -lt 300 ]; do
-        if [ "$(getprop sys.boot_completed)" = "1" ]; then
-            boot_complete=1
-            break
+    while [ "$(getprop sys.boot_completed)" != "1" ]; do
+        if [ "$BOOT_WAIT_ELAPSED" -ge 300 ]; then
+            echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
+            exit 1
         fi
         sleep 2
         BOOT_WAIT_ELAPSED=$((BOOT_WAIT_ELAPSED + 2))
         debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
     done
-    if [ "$boot_complete" -ne 1 ]; then
-        echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
-        exit 1
-    fi
     check_deps
     case "$(service check package 2>/dev/null)" in
     *"not found"* | "")
