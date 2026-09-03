@@ -141,19 +141,38 @@ debug_print() {
     fi
 }
 
-# Print an operational/runtime error to stderr and, when available, append it
-# to the current real run's maintenance error log tempfile.
+# Print operational/runtime errors to stderr and lazily persist real-run errors
+# to the current maintenance error log tempfile.
 report_error() {
     print -r -- "$1" >&2
 
-    if [ "${DRY_RUN:-0}" -eq 0 ] &&
-        [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
-        [ -f "$RUN_ERROR_TMPFILE" ]; then
-
-        if ! print -r -- "$1" >>"$RUN_ERROR_TMPFILE" 2>/dev/null; then
-            print -r -- '    [!] CRITICAL: Failed to write to maintenance error log tempfile.' >&2
-        fi
+    # Dry runs never create or persist operational error logs.
+    if [ "${DRY_RUN:-0}" -ne 0 ]; then
+        return 0
     fi
+
+    # Create the maintenance-error tempfile only on the first real-run error.
+    if [ -z "${RUN_ERROR_TMPFILE:-}" ]; then
+        RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX" 2>/dev/null)
+        run_error_tmp_exit=$?
+
+        if [ "$run_error_tmp_exit" -ne 0 ] ||
+            [ -z "$RUN_ERROR_TMPFILE" ] ||
+            [ ! -f "$RUN_ERROR_TMPFILE" ]; then
+
+            RUN_ERROR_TMPFILE=""
+            print -r -- '    [!] CRITICAL: Failed to create maintenance error log tempfile.' >&2
+            return 0
+        fi
+
+        debug_print "Created maintenance error tempfile: $RUN_ERROR_TMPFILE"
+    fi
+
+    if ! print -r -- "$1" >>"$RUN_ERROR_TMPFILE" 2>/dev/null; then
+        print -r -- '    [!] CRITICAL: Failed to write to maintenance error log tempfile.' >&2
+    fi
+
+    return 0
 }
 
 # ============================================================================
@@ -1082,10 +1101,13 @@ process_packages() {
     stage3_unverified=0
     stage3_invalid=0
     stage3_would_compile=0
+    stage3_state_error=0
 
-    if ! exec 3>>"$CURRENT_RUN_STATE"; then
-        report_error "    [!] ERROR: Unable to open current-run state file for writing."
-        return 1
+    if [ "$DRY_RUN" -eq 0 ]; then
+        if ! exec 3>>"$CURRENT_RUN_STATE"; then
+            report_error "    [!] ERROR: Unable to open current-run state file for writing."
+            return 1
+        fi
     fi
 
     # STAGE_MERGED format:
@@ -1202,10 +1224,17 @@ process_packages() {
 $fingerprint
 "*)
 
-                echo "$fingerprint" >&3
+                stage3_skipped=$((stage3_skipped + 1))
+
+                if [ "$DRY_RUN" -eq 0 ]; then
+                    if ! print -r -- "$fingerprint" >&3; then
+                        report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
+                        stage3_state_error=1
+                        break
+                    fi
+                fi
 
                 echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
-                stage3_skipped=$((stage3_skipped + 1))
 
                 continue
                 ;;
@@ -1247,17 +1276,28 @@ $fingerprint
 
                 print -r -- "    [+] ($current/$total_pkgs) Compiled: $pkg_name"
 
+                # The compilation itself succeeded even if recording its state fails.
+                stage3_compiled=$((stage3_compiled + 1))
+
                 # Write state only after successful compilation.
                 # Use current metadata when trustworthy; otherwise preserve a previous
-                # trustworthy fingerprint. Failures write no state and are retried.
+                # trustworthy fingerprint. A state-write failure makes the run unsafe.
                 if [ "$state_writable" -eq 1 ]; then
-                    echo "$fingerprint" >&3
+                    if ! print -r -- "$fingerprint" >&3; then
+                        report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
+                        stage3_state_error=1
+                        break
+                    fi
+
                 elif [ -n "$preserved_fingerprint" ]; then
-                    echo "$preserved_fingerprint" >&3
+                    if ! print -r -- "$preserved_fingerprint" >&3; then
+                        report_error "    [!] ERROR: Failed to preserve current-run state for $pkg_name."
+                        stage3_state_error=1
+                        break
+                    fi
+
                     debug_print "Preserved previous trustworthy fingerprint for [$pkg_name] after successful compilation."
                 fi
-
-                stage3_compiled=$((stage3_compiled + 1))
 
             else
 
@@ -1268,9 +1308,30 @@ $fingerprint
                 # They will therefore be retried on the next run.
                 stage3_failed=$((stage3_failed + 1))
 
-                if ! print -r -- "FAIL ($compile_exit): $pkg_name
+                if [ -z "$ERROR_TMPFILE" ]; then
+                    ERROR_TMPFILE=$(mktemp "${TMPDIR}/errors.$$.XXXXXX")
+                    error_tmp_exit=$?
+
+                    if [ "$error_tmp_exit" -ne 0 ] ||
+                        [ -z "$ERROR_TMPFILE" ] ||
+                        [ ! -f "$ERROR_TMPFILE" ]; then
+
+                        ERROR_TMPFILE=""
+                        report_error "    [!] CRITICAL: Failed to create compile error tempfile in $TMPDIR."
+
+                        if [ -n "$err_output" ]; then
+                            report_error "        Compile output: $err_output"
+                        fi
+                    else
+                        debug_print "Created compile error tempfile: $ERROR_TMPFILE"
+                    fi
+                fi
+
+                if [ -n "$ERROR_TMPFILE" ]; then
+                    if ! print -r -- "FAIL ($compile_exit): $pkg_name
 $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
-                    report_error "    [!] CRITICAL: Failed to write to compile error log! Storage may be full."
+                        report_error "    [!] CRITICAL: Failed to write to compile error log! Storage may be full."
+                    fi
                 fi
             fi
         fi
@@ -1325,7 +1386,12 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
     # Close current-run state file
     # ========================================================================
 
-    exec 3>&-
+    if [ "$DRY_RUN" -eq 0 ]; then
+        if ! exec 3>&-; then
+            report_error "    [!] ERROR: Failed to close current-run state file."
+            stage3_state_error=1
+        fi
+    fi
 
     # ========================================================================
     # Accumulate Stage 3 counts globally
@@ -1336,6 +1402,10 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
     TOTAL_SKIPPED=$((TOTAL_SKIPPED + stage3_skipped))
     TOTAL_FAILED=$((TOTAL_FAILED + stage3_failed))
     TOTAL_INVALID=$((TOTAL_INVALID + stage3_invalid))
+
+    if [ "$stage3_state_error" -ne 0 ]; then
+        return 1
+    fi
 
     return 0
 }
@@ -1360,7 +1430,7 @@ runtime_setup() {
 
     # Default temporary files to Android's writable /data/local/tmp.
     export TMPDIR="${TMPDIR:-/data/local/tmp}"
-    debug_print "Set TMPDIR to $TMPDIR"
+    debug_print "Using TMPDIR: $TMPDIR"
 
     MIN_SDK=24
     SUCCESSFUL_RUN=0
@@ -1408,29 +1478,36 @@ package_pipeline_setup() {
         return 1
     fi
 
-    CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
+    # Current-run state is needed only by real runs; dry runs never commit it.
+    if [ "$DRY_RUN" -eq 0 ]; then
+        CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
+    fi
+
     STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
     STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
-    ERROR_TMPFILE=$(mktemp "${TMPDIR}/errors.$$.XXXXXX")
 
-    debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED, errors=$ERROR_TMPFILE"
+    # Compile-error storage is created lazily only if a compilation fails.
+    if [ "$DRY_RUN" -eq 0 ]; then
+        debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
+    else
+        debug_print "Created dry-run package-pipeline temp files: stats=$STAGE_STATS, merged=$STAGE_MERGED"
+    fi
 
-    if [ -z "$CURRENT_RUN_STATE" ] ||
-        [ -z "$STAGE_STATS" ] ||
-        [ -z "$STAGE_MERGED" ] ||
-        [ -z "$ERROR_TMPFILE" ]; then
-
+    if [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ]; then
         report_error "[!] FATAL: One or more package-pipeline temporary file paths are empty."
         return 1
     fi
 
-    if [ ! -f "$CURRENT_RUN_STATE" ] ||
-        [ ! -f "$STAGE_STATS" ] ||
-        [ ! -f "$STAGE_MERGED" ] ||
-        [ ! -f "$ERROR_TMPFILE" ]; then
-
+    if [ ! -f "$STAGE_STATS" ] || [ ! -f "$STAGE_MERGED" ]; then
         report_error "[!] FATAL: Failed to create one or more package-pipeline temporary files in $TMPDIR."
         return 1
+    fi
+
+    if [ "$DRY_RUN" -eq 0 ]; then
+        if [ -z "$CURRENT_RUN_STATE" ] || [ ! -f "$CURRENT_RUN_STATE" ]; then
+            report_error "[!] FATAL: Failed to create current-run state tempfile in $TMPDIR."
+            return 1
+        fi
     fi
 
     return 0
@@ -1509,31 +1586,23 @@ main() {
         exit 1
     fi
 
+    check_deps
     # ============================================================================
     # Wait for Android Boot to Complete
     # ============================================================================
     # Wait for Android boot completion before optimization.
     BOOT_WAIT_ELAPSED=0
-    boot_complete=0
 
-    while [ "$BOOT_WAIT_ELAPSED" -lt 300 ]; do
-        if [ "$(getprop sys.boot_completed)" = "1" ]; then
-            boot_complete=1
-            break
+    while [ "$(getprop sys.boot_completed)" != "1" ]; do
+        if [ "$BOOT_WAIT_ELAPSED" -ge 300 ]; then
+            echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
+            exit 1
         fi
 
         sleep 2
         BOOT_WAIT_ELAPSED=$((BOOT_WAIT_ELAPSED + 2))
         debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
     done
-
-    # Abort on boot timeout.
-    if [ "$boot_complete" -ne 1 ]; then
-        echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
-        exit 1
-    fi
-
-    check_deps
 
     # ============================================================================
     # PACKAGE SERVICE GUARD
@@ -1644,17 +1713,6 @@ main() {
 
     # Set the EXIT trap to run the unified cleanup function
     trap 'cleanup' EXIT
-
-    # Create the operational/runtime error tempfile early so pre-flight and all
-    # subsequent real-run failures can be captured persistently.
-    RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX")
-
-    if [ -z "$RUN_ERROR_TMPFILE" ] || [ ! -f "$RUN_ERROR_TMPFILE" ]; then
-        print -r -- "[!] FATAL: Failed to create maintenance error tempfile in $TMPDIR. Aborting." >&2
-        exit 1
-    fi
-
-    debug_print "Created maintenance error tempfile: $RUN_ERROR_TMPFILE"
 
     # MAIN EXECUTION !!!!!!!!!! MAIN EXECUTION !!!!!!!!! MAIN EXECUTION !!!!!!!!!!
     # ============================================================================
@@ -1870,8 +1928,13 @@ $(<"$STATE_READ_FILE")
     # cleanup() will later move ERROR_TMPFILE to ERROR_LOG, so checking ERROR_LOG
     # here could incorrectly report errors from an older run.
     error_notice=""
+
     if [ "$TOTAL_FAILED" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
-        error_notice="    - [!] Errors occurred. See $ERROR_LOG"
+        if [ -n "$ERROR_TMPFILE" ] && [ -s "$ERROR_TMPFILE" ]; then
+            error_notice="    - [!] Errors occurred. See $ERROR_LOG"
+        else
+            error_notice="    - [!] Compilation errors occurred; compile error log unavailable."
+        fi
     fi
 
     # ============================================================================
@@ -1940,8 +2003,22 @@ $(<"$STATE_READ_FILE")
         report_error "    [!] WARNING: Run was incomplete. Persistent state file was NOT updated."
 
     else
-        if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
+        # Compare against existing trusted state when present. A missing state
+        # file is treated as different so the initial state can be created.
+        if [ -e "$STATE_FILE" ]; then
+            cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"
+            cmp_exit=$?
+        else
+            cmp_exit=1
+        fi
+
+        if [ "$cmp_exit" -eq 0 ]; then
             print -r -- '[+] State unchanged. Persistent state file left untouched.'
+
+        elif [ "$cmp_exit" -gt 1 ]; then
+            report_error "    [!] WARNING: Failed to compare current and persistent state (Exit Code: $cmp_exit)."
+            STATE_COMMIT_SAFE=0
+
         else
             # Stage the completed state in SCRIPT_DIR first. The final mv then
             # renames a file within the same directory/filesystem as STATE_FILE,
