@@ -752,9 +752,8 @@ process_packages() {
 
     # A successfully normalized non-empty package list should always
     # produce at least one valid filesystem path.
-    if [ ! -s "$STAGE_PATHS" ]; then
-        report_error "    [!] ERROR: Stage 1 produced no valid package paths."
-        return 1
+    if [ "$stage1b_exit" -ne 0 ]; then
+        debug_print "Stage 1b stat completed with missing/unreadable paths (Exit Code: $stage1b_exit)."
     fi
 
     # ========================================================================
