@@ -404,9 +404,6 @@ process_packages() {
         report_error "    [!] ERROR: Stage 1 path extraction failed (Exit Code: $stage1_exit)."
         return 1
     fi
-    if [ "$stage1b_exit" -ne 0 ]; then
-        debug_print "Stage 1b stat completed with missing/unreadable paths (Exit Code: $stage1b_exit)."
-    fi
     if [ "$DEBUG" -eq 1 ]; then
         STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
         debug_print "===== DEBUG STAGE 1 PATHS ====="
@@ -421,8 +418,7 @@ process_packages() {
             >"$STAGE_STATS"
     stage1b_exit=$?
     if [ "$stage1b_exit" -ne 0 ]; then
-        report_error "    [!] ERROR: Stage 1b stat collection failed (Exit Code: $stage1b_exit)."
-        return 1
+        debug_print "Stage 1b stat completed with missing/unreadable paths (Exit Code: $stage1b_exit)."
     fi
     if [ ! -s "$STAGE_STATS" ]; then
         report_error "    [!] ERROR: stat produced no output. Persistent state will not be updated."
