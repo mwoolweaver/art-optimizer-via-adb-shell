@@ -750,12 +750,6 @@ process_packages() {
         return 1
     fi
 
-    # A successfully normalized non-empty package list should always
-    # produce at least one valid filesystem path.
-    if [ "$stage1b_exit" -ne 0 ]; then
-        debug_print "Stage 1b stat completed with missing/unreadable paths (Exit Code: $stage1b_exit)."
-    fi
-
     # ========================================================================
     # DEBUG STAGE 1: PATHS
     # ========================================================================
@@ -784,11 +778,10 @@ process_packages() {
     stage1b_exit=$?
 
     if [ "$stage1b_exit" -ne 0 ]; then
-        report_error "    [!] ERROR: Stage 1b stat collection failed (Exit Code: $stage1b_exit)."
-        return 1
+        debug_print "Stage 1b stat completed with missing/unreadable paths (Exit Code: $stage1b_exit)."
     fi
 
-    # Validate stat produced output
+    # Validate stat produced output.
     if [ ! -s "$STAGE_STATS" ]; then
         report_error "    [!] ERROR: stat produced no output. Persistent state will not be updated."
         return 1
