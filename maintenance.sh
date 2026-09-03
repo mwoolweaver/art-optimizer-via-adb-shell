@@ -1868,8 +1868,22 @@ $(<"$STATE_READ_FILE")
         report_error "    [!] WARNING: Run was incomplete. Persistent state file was NOT updated."
 
     else
-        if [ -r "$STATE_FILE" ] && cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"; then
+        # Compare against existing trusted state when present. A missing state
+        # file is treated as different so the initial state can be created.
+        if [ -e "$STATE_FILE" ]; then
+            cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"
+            cmp_exit=$?
+        else
+            cmp_exit=1
+        fi
+
+        if [ "$cmp_exit" -eq 0 ]; then
             print -r -- '[+] State unchanged. Persistent state file left untouched.'
+
+        elif [ "$cmp_exit" -gt 1 ]; then
+            report_error "    [!] WARNING: Failed to compare current and persistent state (Exit Code: $cmp_exit)."
+            STATE_COMMIT_SAFE=0
+
         else
             # Stage the completed state in SCRIPT_DIR first. The final mv then
             # renames a file within the same directory/filesystem as STATE_FILE,
