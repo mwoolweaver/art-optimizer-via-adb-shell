@@ -117,6 +117,9 @@ cat << '__ART_MAINTENANCE_SCRIPT_EOF__' > /sdcard/monthly/maintenance.sh
 #   6. Quiet routine package progress (--quiet) for low-output automated runs.
 #   7. Explicit fingerprint-cache bypass (--force) for deliberate recompilation.
 #   8. Optional Package Manager cache-trim bypass (--no-trim).
+#   9. Optional charging and minimum-battery policy gates for unattended runs.
+#  10. Machine-readable JSON summaries and a standalone health-check mode.
+#  11. Dedicated user-only optimization with an independent state cache.
 # ============================================================================
 
 # ============================================================================
@@ -130,6 +133,12 @@ NO_USER="${NO_USER-0}"
 QUIET=0
 FORCE=0
 NO_TRIM=0
+REQUIRE_CHARGING=0
+MIN_BATTERY=""
+JSON=0
+HEALTH_ONLY=0
+USER_ONLY=0
+JSON_OUTPUT_OPEN=0
 
 show_help() {
     print -r -- 'ART Smart Maintenance Script
@@ -138,13 +147,18 @@ Usage:
     maintenance.sh [OPTIONS]
 
 Options:
-    --no-user     Skip user/third-party app optimization and use the system-only state cache.
-    --dry-run     Simulate maintenance without compiling packages or modifying persistent state.
-    --quiet       Suppress routine per-package progress output.
-    --force       Recompile selected packages even when their fingerprints are unchanged.
-    --no-trim     Skip Package Manager cache trimming.
-    --debug       Enable verbose debug output.
-    --help        Display this help text and exit.
+    --no-user          Skip user/third-party app optimization and use the system-only state cache.
+    --user-only        Skip system package optimization and use the user-only state cache.
+    --dry-run          Simulate maintenance without compiling packages or modifying persistent state.
+    --quiet            Suppress routine per-package progress output.
+    --force            Recompile selected packages even when their fingerprints are unchanged.
+    --no-trim          Skip Package Manager cache trimming.
+    --require-charging Require external power before maintenance begins.
+    --min-battery N    Require battery level N (0-100) or higher before maintenance begins.
+    --json             Send human-readable output to stderr and emit one JSON summary on stdout.
+    --health-only      Run health, battery-policy, and storage checks without package maintenance.
+    --debug            Enable verbose debug output.
+    --help             Display this help text and exit.
 
 Environment variables:
     DEBUG=0|1
@@ -524,22 +538,309 @@ get_memory_pressure() {
 # Returns: Battery percentage, or "N/A" if unavailable
 # ============================================================================
 get_battery_level() {
-    # Most Android devices expose battery capacity at physical sysfs path
+    # Most Android devices expose battery capacity at physical sysfs path.
     batt_path="/sys/class/power_supply/battery/capacity"
-    if [ -f "$batt_path" ]; then
-        # Capture read errors for debug output.
+
+    if [ -r "$batt_path" ]; then
         cap_out=$(<"$batt_path" 2>&1)
         cap_exit=$?
 
-        if [ $cap_exit -eq 0 ] && [ -n "$cap_out" ]; then
-            print -r -- "$cap_out"
-        else
-            debug_print "Failed to read battery capacity (Exit: $cap_exit): $cap_out"
-            echo "N/A"
-        fi
-    else
-        echo "N/A"
+        case "$cap_out" in
+        '' | *[!0-9]*)
+            ;;
+        *)
+            if [ "$cap_exit" -eq 0 ] &&
+                [ "$cap_out" -le 100 ]; then
+                print -r -- "$cap_out"
+                return 0
+            fi
+            ;;
+        esac
+
+        debug_print "Failed to read a valid battery capacity (Exit: $cap_exit): $cap_out"
     fi
+
+    # Fallback to dumpsys battery when sysfs is unavailable or invalid.
+    battery_level_dump=$(dumpsys battery 2>/dev/null)
+
+    if [ -n "$battery_level_dump" ]; then
+        case "$-" in
+        *f*) battery_level_noglob_was_set=1 ;;
+        *) battery_level_noglob_was_set=0 ;;
+        esac
+
+        set -f
+        # shellcheck disable=SC2046
+        set -- $battery_level_dump
+
+        if [ "$battery_level_noglob_was_set" -eq 0 ]; then
+            set +f
+        fi
+
+        battery_level_prev=""
+
+        for battery_level_token in "$@"; do
+            if [ "$battery_level_prev" = "level:" ]; then
+                case "$battery_level_token" in
+                '' | *[!0-9]*)
+                    ;;
+                *)
+                    if [ "$battery_level_token" -le 100 ]; then
+                        print -r -- "$battery_level_token"
+                        return 0
+                    fi
+                    ;;
+                esac
+            fi
+
+            battery_level_prev="$battery_level_token"
+        done
+    fi
+
+    print -r -- 'N/A'
+}
+
+# ============================================================================
+# FUNCTION: get_charging_status()
+# Purpose: Determine whether Android reports external power.
+# Returns: "1" when externally powered, "0" when not, or "N/A" if unavailable.
+# ============================================================================
+get_charging_status() {
+    battery_dump=$(dumpsys battery 2>/dev/null)
+
+    if [ -n "$battery_dump" ]; then
+        case "$battery_dump" in
+        *"AC powered: true"* | *"USB powered: true"* | *"Wireless powered: true"* | *"Dock powered: true"*)
+            print -r -- '1'
+            return 0
+            ;;
+        *"AC powered:"* | *"USB powered:"* | *"Wireless powered:"* | *"Dock powered:"*)
+            print -r -- '0'
+            return 0
+            ;;
+        esac
+    fi
+
+    charge_status_path="/sys/class/power_supply/battery/status"
+    if [ -r "$charge_status_path" ]; then
+        charge_status=$(<"$charge_status_path" 2>/dev/null)
+
+        case "$charge_status" in
+        Charging | Full)
+            print -r -- '1'
+            return 0
+            ;;
+        Discharging | "Not charging")
+            print -r -- '0'
+            return 0
+            ;;
+        esac
+    fi
+
+    print -r -- 'N/A'
+}
+
+# ============================================================================
+# FUNCTION: check_battery_requirements()
+# Purpose: Enforce opt-in minimum-battery and charging policy gates.
+# Returns: 0 when requirements are satisfied, 1 otherwise.
+# ============================================================================
+check_battery_requirements() {
+    BATTERY_POLICY_ERROR=""
+
+    if [ -n "$MIN_BATTERY" ]; then
+        current_battery="${LAST_BATTERY:-N/A}"
+
+        case "$current_battery" in
+        '' | *[!0-9]*)
+            current_battery=$(get_battery_level)
+            ;;
+        esac
+
+        case "$current_battery" in
+        '' | *[!0-9]*)
+            BATTERY_POLICY_ERROR="Unable to verify battery level required by --min-battery."
+            return 1
+            ;;
+        esac
+
+        if [ "$current_battery" -gt 100 ]; then
+            BATTERY_POLICY_ERROR="Invalid battery level reported by device: $current_battery%."
+            return 1
+        fi
+
+        LAST_BATTERY="$current_battery"
+
+        if [ "$current_battery" -lt "$MIN_BATTERY" ]; then
+            BATTERY_POLICY_ERROR="Battery level ${current_battery}% is below required minimum ${MIN_BATTERY}%."
+            return 1
+        fi
+
+        debug_print "Minimum-battery requirement satisfied: ${current_battery}% >= ${MIN_BATTERY}%."
+    fi
+
+    if [ "$REQUIRE_CHARGING" -eq 1 ]; then
+        case "${LAST_CHARGING:-N/A}" in
+        0 | 1)
+            charging_state="$LAST_CHARGING"
+            ;;
+        *)
+            charging_state=$(get_charging_status)
+            ;;
+        esac
+
+        LAST_CHARGING="$charging_state"
+
+        case "$charging_state" in
+        1)
+            debug_print "Charging requirement satisfied: external power detected."
+            ;;
+        0)
+            BATTERY_POLICY_ERROR="External power is required by --require-charging, but the device is not charging."
+            return 1
+            ;;
+        *)
+            BATTERY_POLICY_ERROR="Unable to verify charging state required by --require-charging."
+            return 1
+            ;;
+        esac
+    fi
+
+    return 0
+}
+
+# ============================================================================
+# FUNCTION: check_data_storage()
+# Purpose: Determine whether /data has at least 500 MB available.
+# Returns: 0 for sufficient/unknown storage, 1 when definitely insufficient.
+# Side effects: Sets FREE_KB and STORAGE_STATUS (ok, unknown, low).
+# ============================================================================
+check_data_storage() {
+    FREE_KB=""
+    prev1=""
+    prev2=""
+
+    case "$-" in
+    *f*) df_noglob_was_set=1 ;;
+    *) df_noglob_was_set=0 ;;
+    esac
+
+    set -f
+    # shellcheck disable=SC2046
+    set -- $(df -k /data 2>/dev/null)
+
+    if [ "$df_noglob_was_set" -eq 0 ]; then
+        set +f
+    fi
+
+    for i in "$@"; do
+        case "$i" in
+        /data*)
+            FREE_KB="$prev2"
+            break
+            ;;
+        esac
+        prev2="${prev1:-}"
+        prev1="$i"
+    done
+
+    case "$FREE_KB" in
+    '' | *[!0-9]*)
+        FREE_KB=""
+        STORAGE_STATUS="unknown"
+        debug_print "Available storage on /data: N/A KB"
+        return 0
+        ;;
+    esac
+
+    debug_print "Available storage on /data: $FREE_KB KB"
+
+    if [ "$FREE_KB" -lt 512000 ]; then
+        STORAGE_STATUS="low"
+        return 1
+    fi
+
+    STORAGE_STATUS="ok"
+    return 0
+}
+
+# ============================================================================
+# FUNCTION: emit_json_summary()
+# Purpose: Emit one machine-readable JSON object to the stdout preserved on FD 4.
+# ============================================================================
+emit_json_summary() {
+    [ "$JSON" -eq 1 ] || return 0
+    [ "${JSON_OUTPUT_OPEN:-0}" -eq 1 ] || return 0
+
+    json_success=true
+    [ "${1:-1}" -eq 1 ] || json_success=false
+
+    if [ "$HEALTH_ONLY" -eq 1 ]; then
+        json_mode="health-only"
+        json_scope="none"
+        json_state="not-applicable"
+    else
+        json_mode="maintenance"
+
+        if [ "$USER_ONLY" -eq 1 ]; then
+            json_scope="user-only"
+        elif [ "$NO_USER" -eq 1 ]; then
+            json_scope="system-only"
+        else
+            json_scope="full"
+        fi
+
+        if [ "$DRY_RUN" -eq 1 ]; then
+            json_state="not-modified"
+        elif [ "$STATE_COMMIT_SAFE" -eq 1 ]; then
+            json_state="current"
+        else
+            json_state="incomplete"
+        fi
+    fi
+
+    json_dry_run=false
+    [ "$DRY_RUN" -eq 1 ] && json_dry_run=true
+
+    json_force=false
+    [ "$FORCE" -eq 1 ] && json_force=true
+
+    json_cache_trim=true
+    [ "$NO_TRIM" -eq 1 ] && json_cache_trim=false
+
+    json_require_charging=false
+    [ "$REQUIRE_CHARGING" -eq 1 ] && json_require_charging=true
+
+    case "${MIN_BATTERY:-}" in
+    '' | *[!0-9]*) json_min_battery=null ;;
+    *) json_min_battery="$MIN_BATTERY" ;;
+    esac
+
+    case "${LAST_MEMORY:-}" in
+    '' | *[!0-9]*) json_memory=null ;;
+    *) json_memory="$LAST_MEMORY" ;;
+    esac
+
+    case "${LAST_BATTERY:-}" in
+    '' | *[!0-9]*) json_battery=null ;;
+    *) json_battery="$LAST_BATTERY" ;;
+    esac
+
+    case "${FREE_KB:-}" in
+    '' | *[!0-9]*) json_storage=null ;;
+    *) json_storage="$FREE_KB" ;;
+    esac
+
+    case "${LAST_CHARGING:-N/A}" in
+    1) json_charging=true ;;
+    0) json_charging=false ;;
+    *) json_charging=null ;;
+    esac
+
+    print -r -- \
+        "{\"success\":$json_success,\"mode\":\"$json_mode\",\"scope\":\"$json_scope\",\"dry_run\":$json_dry_run,\"force\":$json_force,\"cache_trim\":$json_cache_trim,\"require_charging\":$json_require_charging,\"min_battery_percent\":$json_min_battery,\"thermal\":\"${LAST_THERMAL:-N/A}\",\"memory_percent\":$json_memory,\"battery_percent\":$json_battery,\"charging\":$json_charging,\"data_free_kb\":$json_storage,\"compiled\":${TOTAL_COMPILED:-0},\"would_compile\":${TOTAL_WOULD_COMPILE:-0},\"skipped\":${TOTAL_SKIPPED:-0},\"failed\":${TOTAL_FAILED:-0},\"invalid\":${TOTAL_INVALID:-0},\"scanned\":${TOTAL_SCANNED:-0},\"duration_seconds\":${TOTAL_DURATION:-0},\"state\":\"$json_state\"}" >&4
+
+    return 0
 }
 
 # ============================================================================
@@ -550,6 +851,10 @@ get_battery_level() {
 # ============================================================================
 print_system_status() {
     label="$1"
+    LAST_THERMAL="N/A"
+    LAST_MEMORY="N/A"
+    LAST_BATTERY="N/A"
+
     print -r -- ''
     print -r -- '    ─────────────────────────────────'
     print -r -- "    $label"
@@ -557,6 +862,7 @@ print_system_status() {
 
     # Get and display thermal status
     thermal=$(get_thermal_status)
+    LAST_THERMAL="$thermal"
 
     case "$thermal" in
     N/A)
@@ -607,6 +913,7 @@ print_system_status() {
 
     # Get and display memory pressure
     memory=$(get_memory_pressure)
+    LAST_MEMORY="$memory"
 
     if [ "$memory" = "N/A" ]; then
         print -r -- "[*] Memory:   $memory"
@@ -624,8 +931,16 @@ print_system_status() {
         print -r -- "[*] Memory:   ${memory}% (OK)"
     fi
 
-    # Display battery level (informational only)
-    print -r -- "[*] Battery:  $(get_battery_level)%"
+    # Display battery level (informational unless an opt-in policy is active).
+    battery=$(get_battery_level)
+    LAST_BATTERY="$battery"
+
+    if [ "$battery" = "N/A" ]; then
+        print -r -- '[*] Battery:  N/A'
+    else
+        print -r -- "[*] Battery:  ${battery}%"
+    fi
+
     print -r -- '    ─────────────────────────────────'
     print -r -- ''
     return 0
@@ -1481,6 +1796,12 @@ runtime_setup() {
     QUIET=0
     FORCE=0
     NO_TRIM=0
+    REQUIRE_CHARGING=0
+    MIN_BATTERY=""
+    JSON=0
+    HEALTH_ONLY=0
+    USER_ONLY=0
+    JSON_OUTPUT_OPEN=0
 
     # Default temporary files to Android's writable /data/local/tmp.
     export TMPDIR="${TMPDIR:-/data/local/tmp}"
@@ -1498,6 +1819,16 @@ runtime_setup() {
     TOTAL_FAILED=0
     TOTAL_INVALID=0
     TOTAL_WOULD_COMPILE=0
+    TOTAL_SCANNED=0
+
+    # Last observed health/policy values used by opt-in JSON reporting.
+    LAST_THERMAL="N/A"
+    LAST_MEMORY="N/A"
+    LAST_BATTERY="N/A"
+    LAST_CHARGING="N/A"
+    FREE_KB=""
+    STORAGE_STATUS="unknown"
+    BATTERY_POLICY_ERROR=""
 
     # Package-pipeline state shared by process_packages().
     PREV_STATE=""
@@ -1594,9 +1925,10 @@ main() {
         esac
     done
 
-    # Parse command-line options.
-    for arg in "$@"; do
-        case "$arg" in
+    # Parse command-line options. --min-battery consumes the following value,
+    # while --min-battery=N is accepted as a convenience form.
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
         --debug)
             DEBUG=1
             ;;
@@ -1605,6 +1937,9 @@ main() {
             ;;
         --no-user)
             NO_USER=1
+            ;;
+        --user-only)
+            USER_ONLY=1
             ;;
         --quiet)
             QUIET=1
@@ -1615,18 +1950,69 @@ main() {
         --no-trim)
             NO_TRIM=1
             ;;
+        --require-charging)
+            REQUIRE_CHARGING=1
+            ;;
+        --min-battery)
+            if [ "$#" -lt 2 ]; then
+                print -r -- '[!] FATAL: --min-battery requires a value from 0 to 100.' >&2
+                exit 1
+            fi
+
+            MIN_BATTERY="$2"
+            shift
+            ;;
+        --min-battery=*)
+            MIN_BATTERY="${1#--min-battery=}"
+            ;;
+        --json)
+            JSON=1
+            ;;
+        --health-only)
+            HEALTH_ONLY=1
+            ;;
         --help)
             show_help
             exit 0
             ;;
         *)
-            print -r -- "[!] FATAL: Unknown option: $arg" >&2
+            print -r -- "[!] FATAL: Unknown option: $1" >&2
             print -r -- '' >&2
             show_help >&2
             exit 1
             ;;
         esac
+
+        shift
     done
+
+    case "$MIN_BATTERY" in
+    '')
+        ;;
+    *[!0-9]*)
+        print -r -- "[!] FATAL: --min-battery must be an integer from 0 to 100 (received: $MIN_BATTERY)." >&2
+        exit 1
+        ;;
+    *)
+        if [ "$MIN_BATTERY" -gt 100 ]; then
+            print -r -- "[!] FATAL: --min-battery must be between 0 and 100 (received: $MIN_BATTERY)." >&2
+            exit 1
+        fi
+        ;;
+    esac
+
+    if [ "$NO_USER" -eq 1 ] && [ "$USER_ONLY" -eq 1 ]; then
+        print -r -- '[!] FATAL: --no-user and --user-only are mutually exclusive.' >&2
+        exit 1
+    fi
+
+    # In JSON mode preserve the caller's stdout on FD 4, then route all existing
+    # human-readable stdout to stderr. The final JSON object alone is written to FD 4.
+    if [ "$JSON" -eq 1 ]; then
+        exec 4>&1
+        exec 1>&2
+        JSON_OUTPUT_OPEN=1
+    fi
 
     debug_print "Debug/Verbose mode initialized."
 
@@ -1636,6 +2022,10 @@ main() {
 
     if [ "$NO_USER" -eq 1 ]; then
         debug_print "User app optimization disabled (--no-user)."
+    fi
+
+    if [ "$USER_ONLY" -eq 1 ]; then
+        debug_print "System package optimization disabled (--user-only)."
     fi
 
     if [ "$QUIET" -eq 1 ]; then
@@ -1648,6 +2038,22 @@ main() {
 
     if [ "$NO_TRIM" -eq 1 ]; then
         debug_print "Cache trimming disabled (--no-trim)."
+    fi
+
+    if [ "$REQUIRE_CHARGING" -eq 1 ]; then
+        debug_print "Charging policy enabled (--require-charging)."
+    fi
+
+    if [ -n "$MIN_BATTERY" ]; then
+        debug_print "Minimum battery policy enabled: ${MIN_BATTERY}%."
+    fi
+
+    if [ "$JSON" -eq 1 ]; then
+        debug_print "JSON summary mode enabled; human-readable stdout redirected to stderr."
+    fi
+
+    if [ "$HEALTH_ONLY" -eq 1 ]; then
+        debug_print "Health-only mode enabled; package maintenance will be skipped."
     fi
 
     # ============================================================================
@@ -1680,17 +2086,6 @@ main() {
     done
 
     # ============================================================================
-    # PACKAGE SERVICE GUARD
-    # Purpose: Verify package manager IPC service is registered on the binder bus
-    # ============================================================================
-    case "$(service check package 2>/dev/null)" in
-    *"not found"* | "")
-        echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting." >&2
-        exit 1
-        ;;
-    esac
-
-    # ============================================================================
     # INITIALIZATION: Timing and System Detection
     # ============================================================================
     # Start total runtime timer.
@@ -1717,11 +2112,75 @@ main() {
         exit 1
     fi
 
-    if [ "$DRY_RUN" -eq 1 ]; then
+    if [ "$HEALTH_ONLY" -eq 1 ]; then
+        echo "[+] Starting ART Smart Maintenance health check on Android $android_version (SDK $sdk_version)..."
+    elif [ "$DRY_RUN" -eq 1 ]; then
         echo "[+] Starting ART Smart Maintenance (DRY RUN) on Android $android_version (SDK $sdk_version)..."
     else
         echo "[+] Starting ART Smart Maintenance on Android $android_version (SDK $sdk_version)..."
     fi
+
+    # ============================================================================
+    # HEALTH-ONLY FAST PATH
+    # ============================================================================
+    # This path intentionally avoids package-manager work, temporary package files,
+    # persistent state, and the maintenance concurrency lock.
+    if [ "$HEALTH_ONLY" -eq 1 ]; then
+        TOTAL_START_TIME=$SECONDS
+
+        if ! print_system_status "HEALTH CHECK"; then
+            print -r -- '[!] FATAL: System health check failed.' >&2
+            TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
+            emit_json_summary 0
+            return 1
+        fi
+
+        LAST_CHARGING=$(get_charging_status)
+        case "$LAST_CHARGING" in
+        1) print -r -- '[*] Charging: Yes' ;;
+        0) print -r -- '[*] Charging: No' ;;
+        *) print -r -- '[*] Charging: N/A' ;;
+        esac
+
+        if check_data_storage; then
+            case "$STORAGE_STATUS" in
+            ok)
+                print -r -- "[*] /data free: $((FREE_KB / 1024)) MB (OK)"
+                ;;
+            *)
+                print -r -- '[!] /data free: N/A (unable to verify)'
+                ;;
+            esac
+        else
+            print -r -- "[!] /data free: $((FREE_KB / 1024)) MB (LOW; 500 MB required)" >&2
+            TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
+            emit_json_summary 0
+            return 1
+        fi
+
+        if ! check_battery_requirements; then
+            print -r -- "[!] FATAL: $BATTERY_POLICY_ERROR" >&2
+            TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
+            emit_json_summary 0
+            return 1
+        fi
+
+        TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
+        print -r -- "[+] Health-only checks completed in ${TOTAL_DURATION}s."
+        emit_json_summary 1
+        return 0
+    fi
+
+    # ============================================================================
+    # PACKAGE SERVICE GUARD
+    # Purpose: Verify package manager IPC service is registered on the binder bus
+    # ============================================================================
+    case "$(service check package 2>/dev/null)" in
+    *"not found"* | "")
+        echo "[!] FATAL: Package manager service is not running or unresponsive. Aborting." >&2
+        exit 1
+        ;;
+    esac
 
     # ============================================================================
     # TEMP FILE & STATE MANAGEMENT VARIABLES
@@ -1750,14 +2209,17 @@ main() {
     # Persistent state files used to skip recompiling unchanged packages.
     #
     # .last_optimized is the authoritative complete state from a normal full run.
-    # .last_optimized_system is used only by --no-user runs.
+    # Scope-limited runs use independent caches so neither can claim complete state.
     FULL_STATE_FILE="${SCRIPT_DIR}/.last_optimized"
     NO_USER_STATE_FILE="${SCRIPT_DIR}/.last_optimized_system"
-    readonly FULL_STATE_FILE NO_USER_STATE_FILE
+    USER_ONLY_STATE_FILE="${SCRIPT_DIR}/.last_optimized_user"
+    readonly FULL_STATE_FILE NO_USER_STATE_FILE USER_ONLY_STATE_FILE
 
     # Select the state file this run is allowed to update.
     if [ "$NO_USER" -eq 1 ]; then
         STATE_FILE="$NO_USER_STATE_FILE"
+    elif [ "$USER_ONLY" -eq 1 ]; then
+        STATE_FILE="$USER_ONLY_STATE_FILE"
     else
         STATE_FILE="$FULL_STATE_FILE"
     fi
@@ -1806,53 +2268,19 @@ main() {
         exit 1
     fi
 
-    # Validate available storage on /data (minimum 500MB required for compilation buffers)
-    # Reset parser state so values left by earlier functions cannot affect df parsing.
-    FREE_KB=""
-    prev1=""
-    prev2=""
-
-    # Run df once, disable globbing, and assign output to positional parameters natively.
-    case "$-" in
-    *f*) df_noglob_was_set=1 ;;
-    *) df_noglob_was_set=0 ;;
-    esac
-
-    set -f
-    # shellcheck disable=SC2046
-    set -- $(df -k /data 2>/dev/null)
-
-    if [ "$df_noglob_was_set" -eq 0 ]; then
-        set +f
+    if ! check_battery_requirements; then
+        report_error "[!] FATAL: $BATTERY_POLICY_ERROR"
+        exit 1
     fi
 
-    # Parse df output: df outputs columns [filesystem, 1k-blocks, used, available, use%, mount]
-    # We need the "available" column (index 3), so we track previous values as we iterate.
-    # When we find /data*, prev2 contains the available space from two positions back.
-    for i in "$@"; do
-        case "$i" in
-        /data*)
-            FREE_KB="$prev2"
-            break
-            ;;
-        esac
-        prev2="${prev1:-}"
-        prev1="$i"
-    done
-
-    case "$FREE_KB" in
-    '' | *[!0-9]*)
-        FREE_KB=""
-        ;;
-    esac
-
-    debug_print "Available storage on /data: ${FREE_KB:-N/A} KB"
-
-    if [ -z "$FREE_KB" ]; then
-        report_error "    [!] WARNING: Could not determine free storage on /data. Proceeding with caution."
-    elif [ "$FREE_KB" -lt 512000 ]; then
+    # Validate available storage on /data (minimum 500MB required for compilation buffers).
+    if ! check_data_storage; then
         report_error "[!] FATAL: Insufficient storage on /data ($((FREE_KB / 1024)) MB available, 500 MB required). Aborting."
         exit 1
+    fi
+
+    if [ "$STORAGE_STATUS" = "unknown" ]; then
+        report_error "    [!] WARNING: Could not determine free storage on /data. Proceeding with caution."
     fi
 
     # Create the temporary files required by process_packages().
@@ -1861,12 +2289,14 @@ main() {
     fi
 
     # Select the state baseline.
-    # Normal runs use .last_optimized. --no-user prefers its system-only state,
-    # falling back to .last_optimized when none exists. Exact fingerprint matching
-    # prevents user-app records from affecting system processing.
+    # Scope-limited runs prefer their dedicated state and fall back to the complete
+    # state when needed. Exact fingerprint matching keeps unrelated scope records
+    # from affecting the selected package set.
     STATE_READ_FILE="$STATE_FILE"
 
     if [ "$NO_USER" -eq 1 ] && [ ! -r "$NO_USER_STATE_FILE" ]; then
+        STATE_READ_FILE="$FULL_STATE_FILE"
+    elif [ "$USER_ONLY" -eq 1 ] && [ ! -r "$USER_ONLY_STATE_FILE" ]; then
         STATE_READ_FILE="$FULL_STATE_FILE"
     fi
 
@@ -1880,6 +2310,8 @@ $(<"$STATE_READ_FILE")
 "
     elif [ "$NO_USER" -eq 1 ]; then
         debug_print "No system-only or complete state file found. Full system optimization expected."
+    elif [ "$USER_ONLY" -eq 1 ]; then
+        debug_print "No user-only or complete state file found. Full user-app optimization expected."
     else
         debug_print "No existing complete state file found. Full optimization run expected."
     fi
@@ -1923,32 +2355,50 @@ $(<"$STATE_READ_FILE")
     # ============================================================================
     STEP2_START=$SECONDS
 
-    if [ "$DRY_RUN" -eq 1 ]; then
-        print -r -- '[+] Step 2: (DRY RUN) Smart-optimizing system packages...'
-    else
-        print -r -- '[+] Step 2: Smart-optimizing system packages...'
-    fi
+    if [ "$USER_ONLY" -eq 1 ]; then
+        SYSTEM_PKGS_COUNT=0
 
-    # List all system packages (-s flag) with full paths (-f flag)
-    debug_print "Querying system packages via pm list packages -f -s..."
-    system_package_list=$(pm list packages -f -s 2>&1)
-    sys_exit=$?
-
-    if [ "$sys_exit" -ne 0 ]; then
-        report_error "    [!] WARNING: Failed to query system packages (Exit Code: $sys_exit)."
-
-        if [ -n "$system_package_list" ]; then
-            report_error "        Output: $system_package_list"
+        if [ "$DRY_RUN" -eq 1 ]; then
+            print -r -- '[+] Step 2: (DRY RUN) System package optimization disabled (--user-only).'
+        else
+            print -r -- '[+] Step 2: System package optimization disabled (--user-only).'
         fi
 
-        SYSTEM_PKGS_COUNT=0
-        STATE_COMMIT_SAFE=0
-    elif ! process_packages "$system_package_list" "system"; then
-        STATE_COMMIT_SAFE=0
+        debug_print "Skipping system package query and processing because --user-only is enabled."
+
+    else
+        if [ "$DRY_RUN" -eq 1 ]; then
+            print -r -- '[+] Step 2: (DRY RUN) Smart-optimizing system packages...'
+        else
+            print -r -- '[+] Step 2: Smart-optimizing system packages...'
+        fi
+
+        # List all system packages (-s flag) with full paths (-f flag)
+        debug_print "Querying system packages via pm list packages -f -s..."
+        system_package_list=$(pm list packages -f -s 2>&1)
+        sys_exit=$?
+
+        if [ "$sys_exit" -ne 0 ]; then
+            report_error "    [!] WARNING: Failed to query system packages (Exit Code: $sys_exit)."
+
+            if [ -n "$system_package_list" ]; then
+                report_error "        Output: $system_package_list"
+            fi
+
+            SYSTEM_PKGS_COUNT=0
+            STATE_COMMIT_SAFE=0
+        elif ! process_packages "$system_package_list" "system"; then
+            STATE_COMMIT_SAFE=0
+        fi
     fi
 
     STEP2_DURATION=$((SECONDS - STEP2_START))
-    print -r -- "[+] System package optimization finished in ${STEP2_DURATION}s."
+
+    if [ "$USER_ONLY" -eq 1 ]; then
+        print -r -- "[+] System package optimization skipped in ${STEP2_DURATION}s."
+    else
+        print -r -- "[+] System package optimization finished in ${STEP2_DURATION}s."
+    fi
 
     # ============================================================================
     # STEP 3: User App Optimization
@@ -2072,9 +2522,9 @@ $(<"$STATE_READ_FILE")
     # ============================================================================
     # POST-OPTIMIZATION: State Management
     # ============================================================================
-    # Normal runs commit the complete state to .last_optimized.
-    # --no-user runs commit system-only state to .last_optimized_system and never
-    # modify the authoritative complete .last_optimized file.
+    # Normal runs commit complete state to .last_optimized.
+    # --no-user and --user-only runs commit their own scope-limited state files and
+    # never modify the authoritative complete .last_optimized file.
     #
     # Dry runs never modify persistent state.
     # Incomplete or unsafe runs preserve the previous trusted state.
@@ -2147,6 +2597,8 @@ $(<"$STATE_READ_FILE")
                         STATE_STAGE_TMP=""
                         if [ "$NO_USER" -eq 1 ]; then
                             print -r -- '[+] System-only persistent state updated atomically.'
+                        elif [ "$USER_ONLY" -eq 1 ]; then
+                            print -r -- '[+] User-only persistent state updated atomically.'
                         else
                             print -r -- '[+] Complete persistent state updated atomically.'
                         fi
@@ -2156,20 +2608,23 @@ $(<"$STATE_READ_FILE")
         fi
     fi
 
-    # A successful normal/full run supersedes any older --no-user state cache.
-    # Remove it only after the complete run has remained state-safe. This avoids
-    # maintaining two state files on every normal run while guaranteeing the next
-    # --no-user run starts from the authoritative complete state.
+    # A successful normal/full run supersedes older scope-specific state caches.
+    # Remove them only after the complete run has remained state-safe so the next
+    # scope-limited run can fall back to the authoritative complete state.
     if [ "$DRY_RUN" -eq 0 ] &&
         [ "$NO_USER" -eq 0 ] &&
-        [ "$STATE_COMMIT_SAFE" -eq 1 ] &&
-        [ -f "$NO_USER_STATE_FILE" ]; then
+        [ "$USER_ONLY" -eq 0 ] &&
+        [ "$STATE_COMMIT_SAFE" -eq 1 ]; then
 
-        debug_print "Removing superseded system-only state file: $NO_USER_STATE_FILE"
+        for scope_state_file in "$NO_USER_STATE_FILE" "$USER_ONLY_STATE_FILE"; do
+            [ -f "$scope_state_file" ] || continue
 
-        if ! rm -f "$NO_USER_STATE_FILE" 2>/dev/null; then
-            report_error "    [!] WARNING: Failed to remove superseded system-only state file $NO_USER_STATE_FILE"
-        fi
+            debug_print "Removing superseded scope-specific state file: $scope_state_file"
+
+            if ! rm -f "$scope_state_file" 2>/dev/null; then
+                report_error "    [!] WARNING: Failed to remove superseded scope-specific state file $scope_state_file"
+            fi
+        done
     fi
 
     # ============================================================================
@@ -2227,6 +2682,16 @@ $(<"$STATE_READ_FILE")
 
     if [ "$NO_USER" -eq 1 ]; then
         print -r -- '    - User app stage:            Skipped (--no-user)'
+    elif [ "$USER_ONLY" -eq 1 ]; then
+        print -r -- '    - System package stage:      Skipped (--user-only)'
+    fi
+
+    if [ "$REQUIRE_CHARGING" -eq 1 ]; then
+        print -r -- '    - Charging policy:           Required and satisfied'
+    fi
+
+    if [ -n "$MIN_BATTERY" ]; then
+        print -r -- "    - Minimum battery:           ${MIN_BATTERY}% (satisfied)"
     fi
 
     if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
@@ -2234,6 +2699,8 @@ $(<"$STATE_READ_FILE")
     elif [ "$DRY_RUN" -eq 0 ]; then
         if [ "$NO_USER" -eq 1 ]; then
             print -r -- '    - Persistent state:          System-only state current.'
+        elif [ "$USER_ONLY" -eq 1 ]; then
+            print -r -- '    - Persistent state:          User-only state current.'
         else
             print -r -- '    - Persistent state:          Complete state current.'
         fi
@@ -2252,6 +2719,8 @@ $(<"$STATE_READ_FILE")
 
     # Only now has the entire run completed successfully.
     SUCCESSFUL_RUN=1
+
+    emit_json_summary 1
 }
 
 # Execute normal maintenance unless this file was sourced for function reuse.
