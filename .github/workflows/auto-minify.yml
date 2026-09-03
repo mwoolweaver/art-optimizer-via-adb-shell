@@ -45,11 +45,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mksh
 
-      - name: Fetch source and laboratory from main
+      - name: Fetch authoritative inputs from main
         shell: bash
         run: |
           set -euo pipefail
 
+          # The minification branch is a generated-artifact branch only.
+          # Nothing already present on it is trusted as a build, documentation,
+          # validation, or publication input. All authoritative inputs come
+          # from main.
           git fetch --depth=1 origin main
 
           git show origin/main:maintenance.sh > /tmp/maintenance.sh
@@ -72,6 +76,14 @@ jobs:
             exit 1
           fi
 
+          # LICENSE is an intentional distributable artifact when it exists on
+          # main. Refresh it from main rather than trusting the branch copy.
+          if git cat-file -e origin/main:LICENSE 2>/dev/null; then
+            git show origin/main:LICENSE > LICENSE
+          else
+            rm -f LICENSE
+          fi
+
       - name: Minify maintenance.sh
         shell: bash
         run: |
@@ -79,7 +91,11 @@ jobs:
 
           echo "[+] Minifying maintenance.sh with pinned mksh-aware shfmt 3.14.0..."
 
-          shfmt             -ln mksh             -mn             /tmp/maintenance.sh             > minification-maintenance.sh
+          shfmt \
+            -ln mksh \
+            -mn \
+            /tmp/maintenance.sh \
+            > minification-maintenance.sh
 
           if [ ! -s minification-maintenance.sh ]; then
             echo "::error::Minified maintenance script is empty."
@@ -112,9 +128,9 @@ jobs:
           rm -rf "$LAB_REPO"
           mkdir -p "$LAB_REPO"
 
-          # Always use the current tests from main. The minification branch is a
-          # generated-artifact branch and is not trusted to carry a current copy
-          # of test/.
+          # The minification branch is output only. Always stage the current
+          # laboratory from main; no file already present on the generated branch
+          # is trusted as a validation input.
           git archive --format=tar origin/main test |
             tar -xf - -C "$LAB_REPO"
 
@@ -222,12 +238,32 @@ jobs:
           )
           PY
 
-      - name: Remove obsolete canonical script
+      - name: Prune minification branch to artifact allowlist
         shell: bash
         run: |
           set -euo pipefail
 
-          git rm -f --ignore-unmatch maintenance.sh
+          echo "[+] Pruning generated branch to its artifact allowlist..."
+
+          # Keep only intentional distributable outputs. Every other tracked
+          # path is removed, including test/, .github/, maintenance.sh, and any
+          # future source/tooling files that accidentally appear on this branch.
+          while IFS= read -r -d '' tracked_file; do
+            case "$tracked_file" in
+              README.md|LICENSE|minification-maintenance.sh)
+                ;;
+              *)
+                echo "    [-] Removing non-artifact path: $tracked_file"
+                git rm -f -- "$tracked_file"
+                ;;
+            esac
+          done < <(git ls-files -z)
+
+          # If main does not publish LICENSE, it is not part of this branch's
+          # artifact set either.
+          if ! git cat-file -e origin/main:LICENSE 2>/dev/null; then
+            git rm -f --ignore-unmatch LICENSE
+          fi
 
       - name: Verify generated repository state
         shell: bash
@@ -239,6 +275,11 @@ jobs:
             exit 1
           fi
 
+          if [ ! -s README.md ]; then
+            echo "::error::README.md is missing or empty."
+            exit 1
+          fi
+
           if ! grep -Fq "<!-- SCRIPT_START -->" README.md ||
             ! grep -Fq "<!-- SCRIPT_END -->" README.md; then
 
@@ -246,12 +287,42 @@ jobs:
             exit 1
           fi
 
-          if git ls-files --error-unmatch maintenance.sh >/dev/null 2>&1; then
-            echo "::error::Canonical maintenance.sh must not remain tracked on the minification branch."
+          if git cat-file -e origin/main:LICENSE 2>/dev/null; then
+            if [ ! -s LICENSE ]; then
+              echo "::error::LICENSE exists on main but is missing or empty on the generated branch."
+              exit 1
+            fi
+
+            if ! cmp -s LICENSE <(git show origin/main:LICENSE); then
+              echo "::error::Generated-branch LICENSE does not match main."
+              exit 1
+            fi
+          elif [ -e LICENSE ] ||
+            git ls-files --error-unmatch LICENSE >/dev/null 2>&1; then
+
+            echo "::error::LICENSE is present on the generated branch but absent from main."
+            exit 1
+          fi
+
+          unexpected_files=0
+
+          while IFS= read -r -d '' tracked_file; do
+            case "$tracked_file" in
+              README.md|LICENSE|minification-maintenance.sh)
+                ;;
+              *)
+                echo "::error file=$tracked_file::Unexpected tracked path on generated minification branch."
+                unexpected_files=1
+                ;;
+            esac
+          done < <(git ls-files -z)
+
+          if [ "$unexpected_files" -ne 0 ]; then
             exit 1
           fi
 
           echo "[+] Generated minification artifacts verified."
+          echo "[+] Branch contains only the approved artifact allowlist."
 
       - name: Commit and push validated artifacts
         shell: bash
@@ -263,11 +334,16 @@ jobs:
 
           git add minification-maintenance.sh README.md
 
+          if [ -f LICENSE ]; then
+            git add LICENSE
+          fi
+
           if git diff --cached --quiet; then
             echo "[+] Minification branch is already current."
             exit 0
           fi
 
-          git commit             -m "build: sync validated minified maintenance script from main [skip ci]"
+          git commit \
+            -m "build: sync validated minification artifacts from main [skip ci]"
 
           git push origin HEAD:minification
