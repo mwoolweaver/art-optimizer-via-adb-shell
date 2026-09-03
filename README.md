@@ -801,9 +801,26 @@ $fingerprint
             else
                 print -r -- "    [!] ($current/$total_pkgs) Failed: $pkg_name (Exit: $compile_exit)"
                 stage3_failed=$((stage3_failed + 1))
-                if ! print -r -- "FAIL ($compile_exit): $pkg_name
+                if [ -z "$ERROR_TMPFILE" ]; then
+                    ERROR_TMPFILE=$(mktemp "${TMPDIR}/errors.$$.XXXXXX")
+                    error_tmp_exit=$?
+                    if [ "$error_tmp_exit" -ne 0 ] ||
+                        [ -z "$ERROR_TMPFILE" ] ||
+                        [ ! -f "$ERROR_TMPFILE" ]; then
+                        ERROR_TMPFILE=""
+                        report_error "    [!] CRITICAL: Failed to create compile error tempfile in $TMPDIR."
+                        if [ -n "$err_output" ]; then
+                            report_error "        Compile output: $err_output"
+                        fi
+                    else
+                        debug_print "Created compile error tempfile: $ERROR_TMPFILE"
+                    fi
+                fi
+                if [ -n "$ERROR_TMPFILE" ]; then
+                    if ! print -r -- "FAIL ($compile_exit): $pkg_name
 $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
-                    report_error "    [!] CRITICAL: Failed to write to compile error log! Storage may be full."
+                        report_error "    [!] CRITICAL: Failed to write to compile error log! Storage may be full."
+                    fi
                 fi
             fi
         fi
@@ -896,19 +913,16 @@ package_pipeline_setup() {
     CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
     STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
     STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
-    ERROR_TMPFILE=$(mktemp "${TMPDIR}/errors.$$.XXXXXX")
-    debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED, errors=$ERROR_TMPFILE"
+    debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
     if [ -z "$CURRENT_RUN_STATE" ] ||
         [ -z "$STAGE_STATS" ] ||
-        [ -z "$STAGE_MERGED" ] ||
-        [ -z "$ERROR_TMPFILE" ]; then
+        [ -z "$STAGE_MERGED" ]; then
         report_error "[!] FATAL: One or more package-pipeline temporary file paths are empty."
         return 1
     fi
     if [ ! -f "$CURRENT_RUN_STATE" ] ||
         [ ! -f "$STAGE_STATS" ] ||
-        [ ! -f "$STAGE_MERGED" ] ||
-        [ ! -f "$ERROR_TMPFILE" ]; then
+        [ ! -f "$STAGE_MERGED" ]; then
         report_error "[!] FATAL: Failed to create one or more package-pipeline temporary files in $TMPDIR."
         return 1
     fi
@@ -1175,7 +1189,11 @@ $(<"$STATE_READ_FILE")
     TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
     error_notice=""
     if [ "$TOTAL_FAILED" -gt 0 ] && [ "$DRY_RUN" -eq 0 ]; then
-        error_notice="    - [!] Errors occurred. See $ERROR_LOG"
+        if [ -n "$ERROR_TMPFILE" ] && [ -s "$ERROR_TMPFILE" ]; then
+            error_notice="    - [!] Errors occurred. See $ERROR_LOG"
+        else
+            error_notice="    - [!] Compilation errors occurred; compile error log unavailable."
+        fi
     fi
     if [ "$DEBUG" -eq 1 ]; then
         if [ "$DRY_RUN" -eq 1 ]; then
