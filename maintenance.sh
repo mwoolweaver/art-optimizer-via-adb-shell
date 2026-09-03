@@ -994,6 +994,7 @@ process_packages() {
     stage3_unverified=0
     stage3_invalid=0
     stage3_would_compile=0
+    stage3_state_error=0
 
     if ! exec 3>>"$CURRENT_RUN_STATE"; then
         report_error "    [!] ERROR: Unable to open current-run state file for writing."
@@ -1114,10 +1115,15 @@ process_packages() {
 $fingerprint
 "*)
 
-                echo "$fingerprint" >&3
+                stage3_skipped=$((stage3_skipped + 1))
+
+                if ! print -r -- "$fingerprint" >&3; then
+                    report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
+                    stage3_state_error=1
+                    break
+                fi
 
                 echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
-                stage3_skipped=$((stage3_skipped + 1))
 
                 continue
                 ;;
@@ -1159,17 +1165,28 @@ $fingerprint
 
                 print -r -- "    [+] ($current/$total_pkgs) Compiled: $pkg_name"
 
+                # The compilation itself succeeded even if recording its state fails.
+                stage3_compiled=$((stage3_compiled + 1))
+
                 # Write state only after successful compilation.
                 # Use current metadata when trustworthy; otherwise preserve a previous
-                # trustworthy fingerprint. Failures write no state and are retried.
+                # trustworthy fingerprint. A state-write failure makes the run unsafe.
                 if [ "$state_writable" -eq 1 ]; then
-                    echo "$fingerprint" >&3
+                    if ! print -r -- "$fingerprint" >&3; then
+                        report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
+                        stage3_state_error=1
+                        break
+                    fi
+
                 elif [ -n "$preserved_fingerprint" ]; then
-                    echo "$preserved_fingerprint" >&3
+                    if ! print -r -- "$preserved_fingerprint" >&3; then
+                        report_error "    [!] ERROR: Failed to preserve current-run state for $pkg_name."
+                        stage3_state_error=1
+                        break
+                    fi
+
                     debug_print "Preserved previous trustworthy fingerprint for [$pkg_name] after successful compilation."
                 fi
-
-                stage3_compiled=$((stage3_compiled + 1))
 
             else
 
@@ -1237,7 +1254,10 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
     # Close current-run state file
     # ========================================================================
 
-    exec 3>&-
+    if ! exec 3>&-; then
+        report_error "    [!] ERROR: Failed to close current-run state file."
+        stage3_state_error=1
+    fi
 
     # ========================================================================
     # Accumulate Stage 3 counts globally
@@ -1248,6 +1268,10 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
     TOTAL_SKIPPED=$((TOTAL_SKIPPED + stage3_skipped))
     TOTAL_FAILED=$((TOTAL_FAILED + stage3_failed))
     TOTAL_INVALID=$((TOTAL_INVALID + stage3_invalid))
+
+    if [ "$stage3_state_error" -ne 0 ]; then
+        return 1
+    fi
 
     return 0
 }
