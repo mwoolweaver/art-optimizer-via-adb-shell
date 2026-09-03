@@ -47,6 +47,21 @@ lab_cleanup() {
     exit "$lab_exit"
 }
 
+assert_eq() {
+    actual="$1"
+    expected="$2"
+    label="$3"
+
+    if [ "$actual" -ne "$expected" ]; then
+        printf '[!] TEST ASSERTION FAILED: %s: expected %d, got %d\n' \
+            "$label" "$expected" "$actual" >&2
+        return 1
+    fi
+
+    printf '[+] Assertion passed: %s = %d\n' "$label" "$actual"
+    return 0
+}
+
 trap 'lab_cleanup' EXIT
 
 case "$TEST_MODE" in
@@ -95,6 +110,52 @@ if ! process_packages "$package_list" "$TEST_MODE"; then
     printf '\n[!] PACKAGE PIPELINE TEST FAILED\n' >&2
     exit 1
 fi
+
+# ============================================================================
+# ASSERT EXPECTED TEST RESULTS
+# ============================================================================
+#
+# These values are deterministic for the fixtures produced by
+# make_test_fixtures.sh. Any change indicates a package-pipeline regression
+# or an intentional fixture change that requires updating these assertions.
+# ============================================================================
+
+printf '\n'
+printf '============================================================\n'
+printf ' PACKAGE PIPELINE ASSERTIONS\n'
+printf '============================================================\n'
+
+assertions_failed=0
+
+assert_eq "$SYSTEM_PKGS_COUNT" 0 "Parsed system packages" ||
+    assertions_failed=1
+
+assert_eq "$USER_PKGS_COUNT" 8 "Parsed user packages" ||
+    assertions_failed=1
+
+assert_eq "$TOTAL_COMPILED" 0 "Packages compiled" ||
+    assertions_failed=1
+
+assert_eq "$TOTAL_SKIPPED" 4 "Skipped unchanged" ||
+    assertions_failed=1
+
+assert_eq "$TOTAL_WOULD_COMPILE" 3 "Would compile" ||
+    assertions_failed=1
+
+assert_eq "$TOTAL_FAILED" 0 "Compilation failures" ||
+    assertions_failed=1
+
+assert_eq "$TOTAL_INVALID" 1 "Invalid records" ||
+    assertions_failed=1
+
+printf '============================================================\n'
+
+if [ "$assertions_failed" -ne 0 ]; then
+    printf '\n[!] PACKAGE PIPELINE ASSERTIONS FAILED\n' >&2
+    exit 1
+fi
+
+printf '[+] All package-pipeline assertions passed.\n'
 
 printf '\n'
 printf '============================================================\n'
