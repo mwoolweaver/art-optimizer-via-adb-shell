@@ -85,7 +85,7 @@ Expand the section below, paste the block into your terminal, and press **Enter*
 
 <!-- SCRIPT_START -->
 ```bash
-cat << 'EOF' > /sdcard/monthly/maintenance.sh
+cat << '__ART_MAINTENANCE_SCRIPT_EOF__' > /sdcard/monthly/maintenance.sh
 #!/system/bin/sh
 # shellcheck shell=ksh
 
@@ -2188,7 +2188,7 @@ $(<"$STATE_READ_FILE")
 if [ "${MAINTENANCE_SOURCE_ONLY-0}" -ne 1 ]; then
     main "$@"
 fi
-EOF
+__ART_MAINTENANCE_SCRIPT_EOF__
 ```
 <!-- SCRIPT_END -->
 
