@@ -537,12 +537,22 @@ process_packages() {
                     path = substr(line, 1, idx - 1)
                     pkg  = substr(line, idx + 1)
 
-                    if (path != "" && pkg != "") {
-                        record = pkg "|" path
+                    if (path == "" || pkg == "")
+                        next
 
-                        if (!seen[record]++)
-                            print record
-                    }
+                    # PM package paths should be absolute.
+                    if (path !~ /^\//)
+                        next
+
+                    # "|" is reserved as the internal package|path delimiter.
+                    if (index(path, "|") != 0 ||
+                        index(pkg, "|") != 0)
+                        next
+
+                    record = pkg "|" path
+
+                    if (!seen[record]++)
+                        print record
                 }
             }
         '
