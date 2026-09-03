@@ -150,7 +150,7 @@ get_thermal_status() {
         printf '%s\n' "$therm_status"
         return 0
     fi
-    out=$(dumpsys hardware_properties 2>/dev/null || true)
+    out=$(dumpsys hardware_properties 2>/dev/null)
     if [ -n "$out" ]; then
         debug_print "Parsed thermal status from hardware_properties dumpsys."
         temp=$(printf "%s\n" "$out" | awk '
@@ -783,7 +783,7 @@ runtime_setup() {
     RUN_ERROR_TMPFILE=""
     STATE_STAGE_TMP=""
     LOCK_DIR=""
-    CR=$(printf '\r')
+    CR=$'\r'
     readonly CR
 }
 package_pipeline_setup() {
