@@ -3,7 +3,7 @@
 
 # ============================================================================
 # ART PACKAGE PIPELINE TEST FIXTURE GENERATOR
-# Purpose: Build deterministic package/state inputs for laboratory.sh.
+# Purpose: Build deterministic package/state inputs for the maintenance laboratory.
 # ============================================================================
 
 TEST_DIR="${0%/*}"
@@ -16,6 +16,10 @@ PACKAGE_FILE="${TEST_DIR}/test_packages_list.txt"
 STATE_FILE="${TEST_DIR}/test_last_optimized"
 EXPECTED_STATE_FILE="${TEST_DIR}/test_expected_state.txt"
 EXPECTED_FAILURE_STATE_FILE="${TEST_DIR}/test_expected_state_failed.txt"
+CLI_SYSTEM_PACKAGE_FILE="${TEST_DIR}/test_cli_system_packages.txt"
+CLI_USER_PACKAGE_FILE="${TEST_DIR}/test_cli_user_packages.txt"
+CLI_FULL_STATE_FILE="${TEST_DIR}/test_cli_full_state.txt"
+CLI_USER_STATE_FILE="${TEST_DIR}/test_cli_user_state.txt"
 
 # LAB_ROOT is recursively deleted below. Require an absolute, non-system root.
 case "$LAB_ROOT" in
@@ -126,11 +130,40 @@ com.test.unavailable|$LAB_ROOT/no-parent/base.apk|1234567890:123:456
 com.test.crlf|$LAB_ROOT/crlf/base.apk|$CRLF_META
 EOF_EXPECTED_FAILURE
 
+# Small deterministic package sets for mocked full-CLI integration tests.
+# These use only directly stat-able APKs so CLI/state lifecycle assertions stay
+# independent of the pipeline laboratory's fallback and invalid-record cases.
+cat >"$CLI_SYSTEM_PACKAGE_FILE" <<EOF_CLI_SYSTEM
+package:$LAB_ROOT/exact/base.apk=com.test.exact
+package:$LAB_ROOT/changed/base.apk=com.test.changed
+EOF_CLI_SYSTEM
+
+cat >"$CLI_USER_PACKAGE_FILE" <<EOF_CLI_USER
+package:$LAB_ROOT/equals==path/base.apk=com.test.equals
+package:$LAB_ROOT/crlf/base.apk=com.test.crlf
+EOF_CLI_USER
+
+cat >"$CLI_FULL_STATE_FILE" <<EOF_CLI_FULL_STATE
+com.test.exact|$LAB_ROOT/exact/base.apk|$EXACT_META
+com.test.changed|$LAB_ROOT/changed/base.apk|$CHANGED_META
+com.test.equals|$LAB_ROOT/equals==path/base.apk|$EQUALS_META
+com.test.crlf|$LAB_ROOT/crlf/base.apk|$CRLF_META
+EOF_CLI_FULL_STATE
+
+cat >"$CLI_USER_STATE_FILE" <<EOF_CLI_USER_STATE
+com.test.equals|$LAB_ROOT/equals==path/base.apk|$EQUALS_META
+com.test.crlf|$LAB_ROOT/crlf/base.apk|$CRLF_META
+EOF_CLI_USER_STATE
+
 print -r -- '[+] Created test fixtures:'
 print -r -- "    Package input:         $PACKAGE_FILE"
 print -r -- "    State baseline:        $STATE_FILE"
 print -r -- "    Expected state:        $EXPECTED_STATE_FILE"
 print -r -- "    Expected failed state: $EXPECTED_FAILURE_STATE_FILE"
+print -r -- "    CLI system packages:   $CLI_SYSTEM_PACKAGE_FILE"
+print -r -- "    CLI user packages:     $CLI_USER_PACKAGE_FILE"
+print -r -- "    CLI full state:        $CLI_FULL_STATE_FILE"
+print -r -- "    CLI user state:        $CLI_USER_STATE_FILE"
 print -r -- "    Laboratory root:       $LAB_ROOT"
 
 print -r -- ''
