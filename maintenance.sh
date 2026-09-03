@@ -613,6 +613,8 @@ process_packages() {
         set +f
     fi
 
+    IFS="$OLD_IFS"
+
     # ========================================================================
     # DEBUG NORMALIZED INPUT
     # ========================================================================
@@ -623,8 +625,6 @@ process_packages() {
         echo "$pkg_list" | head -n 10 >&2
         debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
     fi
-
-    IFS="$OLD_IFS"
 
     # Preserve the parsed package count even if a later stage fails.
     if [ "$default_mode" = "system" ]; then
