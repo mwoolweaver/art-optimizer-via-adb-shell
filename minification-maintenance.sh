@@ -610,9 +610,11 @@ process_packages() {
     stage3_invalid=0
     stage3_would_compile=0
     stage3_state_error=0
-    if ! exec 3>>"$CURRENT_RUN_STATE"; then
-        report_error "    [!] ERROR: Unable to open current-run state file for writing."
-        return 1
+    if [ "$DRY_RUN" -eq 0 ]; then
+        if ! exec 3>>"$CURRENT_RUN_STATE"; then
+            report_error "    [!] ERROR: Unable to open current-run state file for writing."
+            return 1
+        fi
     fi
     while IFS='|' read -r pkg_name apk_path file_meta; do
         current=$((current + 1))
@@ -680,10 +682,12 @@ process_packages() {
 $fingerprint
 "*)
                 stage3_skipped=$((stage3_skipped + 1))
-                if ! print -r -- "$fingerprint" >&3; then
-                    report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
-                    stage3_state_error=1
-                    break
+                if [ "$DRY_RUN" -eq 0 ]; then
+                    if ! print -r -- "$fingerprint" >&3; then
+                        report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
+                        stage3_state_error=1
+                        break
+                    fi
                 fi
                 echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
                 continue
@@ -780,9 +784,11 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
         fi
         debug_print "--- end DEBUG STAGE 3 ---"
     fi
-    if ! exec 3>&-; then
-        report_error "    [!] ERROR: Failed to close current-run state file."
-        stage3_state_error=1
+    if [ "$DRY_RUN" -eq 0 ]; then
+        if ! exec 3>&-; then
+            report_error "    [!] ERROR: Failed to close current-run state file."
+            stage3_state_error=1
+        fi
     fi
     TOTAL_COMPILED=$((TOTAL_COMPILED + stage3_compiled))
     TOTAL_WOULD_COMPILE=$((TOTAL_WOULD_COMPILE + stage3_would_compile))
@@ -834,21 +840,29 @@ package_pipeline_setup() {
         report_error "[!] FATAL: Temporary directory $TMPDIR is missing or not writable."
         return 1
     fi
-    CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
+    if [ "$DRY_RUN" -eq 0 ]; then
+        CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
+    fi
     STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
     STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
-    debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
-    if [ -z "$CURRENT_RUN_STATE" ] ||
-        [ -z "$STAGE_STATS" ] ||
-        [ -z "$STAGE_MERGED" ]; then
+    if [ "$DRY_RUN" -eq 0 ]; then
+        debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
+    else
+        debug_print "Created dry-run package-pipeline temp files: stats=$STAGE_STATS, merged=$STAGE_MERGED"
+    fi
+    if [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ]; then
         report_error "[!] FATAL: One or more package-pipeline temporary file paths are empty."
         return 1
     fi
-    if [ ! -f "$CURRENT_RUN_STATE" ] ||
-        [ ! -f "$STAGE_STATS" ] ||
-        [ ! -f "$STAGE_MERGED" ]; then
+    if [ ! -f "$STAGE_STATS" ] || [ ! -f "$STAGE_MERGED" ]; then
         report_error "[!] FATAL: Failed to create one or more package-pipeline temporary files in $TMPDIR."
         return 1
+    fi
+    if [ "$DRY_RUN" -eq 0 ]; then
+        if [ -z "$CURRENT_RUN_STATE" ] || [ ! -f "$CURRENT_RUN_STATE" ]; then
+            report_error "[!] FATAL: Failed to create current-run state tempfile in $TMPDIR."
+            return 1
+        fi
     fi
     return 0
 }
