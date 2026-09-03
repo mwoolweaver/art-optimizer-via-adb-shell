@@ -435,40 +435,58 @@ print_system_status() {
 
     # Get and display thermal status
     thermal=$(get_thermal_status)
+
     if [ "$thermal" = "N/A" ]; then
         printf '[*] Thermal:  %s\n' "$thermal"
+
     elif [ "$thermal" -le 6 ]; then
         # Android OS Thermal Status Code (0-6)
         # Critical: >= 3 (SEVERE, CRITICAL, EMERGENCY, SHUTDOWN)
-        [ "$thermal" -ge 3 ] && {
+        if [ "$thermal" -ge 3 ]; then
             printf '[!] Thermal:  Status %d (CRITICAL)\n' "$thermal"
             return 1
-        }
+
         # Warm: >= 1 (LIGHT, MODERATE)
-        [ "$thermal" -ge 1 ] && printf '[!] Thermal:  Status %d (WARM)\n' "$thermal" || printf '[*] Thermal:  Status %d (OK)\n' "$thermal"
+        elif [ "$thermal" -ge 1 ]; then
+            printf '[!] Thermal:  Status %d (WARM)\n' "$thermal"
+
+        else
+            printf '[*] Thermal:  Status %d (OK)\n' "$thermal"
+        fi
+
     else
         # Fallback Celsius Temperature (> 6)
         # Critical: > 55°C (likely throttling/damage risk)
-        [ "$thermal" -gt 55 ] && {
+        if [ "$thermal" -gt 55 ]; then
             printf '[!] Thermal:  %d°C (CRITICAL)\n' "$thermal"
             return 1
-        }
+
         # Warm: > 45°C (approaching throttle point)
-        [ "$thermal" -gt 45 ] && printf '[!] Thermal:  %d°C (WARM)\n' "$thermal" || printf '[*] Thermal:  %d°C (OK)\n' "$thermal"
+        elif [ "$thermal" -gt 45 ]; then
+            printf '[!] Thermal:  %d°C (WARM)\n' "$thermal"
+
+        else
+            printf '[*] Thermal:  %d°C (OK)\n' "$thermal"
+        fi
     fi
 
     # Get and display memory pressure
     memory=$(get_memory_pressure)
+
     if [ "$memory" = "N/A" ]; then
         printf '[*] Memory:   %s\n' "$memory"
+
+    # Critical: > 99% (virtually no free memory)
+    elif [ "$memory" -gt 99 ]; then
+        printf '[!] Memory:   %s%% (HIGH)\n' "$memory"
+        return 1
+
+    # Moderate: > 85% (significant pressure, may cause slowdowns)
+    elif [ "$memory" -gt 85 ]; then
+        printf '[!] Memory:   %s%% (MODERATE)\n' "$memory"
+
     else
-        # Critical: > 99% (virtually no free memory)
-        [ "$memory" -gt 99 ] && {
-            printf '[!] Memory:   %s%% (HIGH)\n' "$memory"
-            return 1
-        }
-        # Moderate: > 85% (significant pressure, may cause slowdowns)
-        [ "$memory" -gt 85 ] && printf '[!] Memory:   %s%% (MODERATE)\n' "$memory" || printf '[*] Memory:   %s%% (OK)\n' "$memory"
+        printf '[*] Memory:   %s%% (OK)\n' "$memory"
     fi
 
     # Display battery level (informational only)
@@ -1015,11 +1033,10 @@ process_packages() {
         compile_mode="$default_mode"
 
         if [ "$default_mode" = "system" ]; then
-            # Distinguish between core system packages (/system/*) and third-party updates (/data/app/*)
-            # Core system packages use full AOT compilation (-m speed) for maximum performance.
-            # Third-party updates use speed-profile compilation to balance speed and storage.
+            # Distinguish preinstalled system packages from updated system apps.
+            # Preinstalled packages use full AOT compilation (-m speed).
+            # Updated system apps installed under /data/ use speed-profile.
 
-            # System packages installed under /data/ are third-party updates.
             if [ "$apk_path" != "${apk_path#/data/}" ]; then
                 compile_mode="speed-profile"
             else
@@ -1114,53 +1131,35 @@ $fingerprint
         esac
 
         # ====================================================================
-        # COMPILATION MODE DETECTION
-        # ====================================================================
-
-        if [ "$compile_mode" = "speed" ]; then
-
-            if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
-            fi
-
-            actual_mode="speed"
-
-        elif [ "$default_mode" = "system" ]; then
-
-            if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [-] (%d/%d) Play Store update compile (-m speed-profile): %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
-            fi
-
-            actual_mode="speed-profile"
-
-        else
-
-            if [ "$DRY_RUN" -eq 0 ]; then
-                printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
-            fi
-
-            actual_mode="speed-profile"
-        fi
-
-        # ====================================================================
         # Execute compilation
         # ====================================================================
 
         if [ "$DRY_RUN" -eq 1 ]; then
 
             printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' \
-                "$current" "$total_pkgs" "$actual_mode" "$pkg_name"
+                "$current" "$total_pkgs" "$compile_mode" "$pkg_name"
 
             stage3_would_compile=$((stage3_would_compile + 1))
 
         else
 
-            debug_print "Executing command: cmd package compile -m $actual_mode -f $pkg_name"
+            # Report the selected compilation policy for real runs.
+            if [ "$compile_mode" = "speed" ]; then
+                printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' \
+                    "$current" "$total_pkgs" "$pkg_name"
 
-            err_output=$(cmd package compile -m "$actual_mode" -f "$pkg_name" 2>&1 3>&-)
+            elif [ "$default_mode" = "system" ]; then
+                printf '    [-] (%d/%d) Updated system app compile (-m speed-profile): %s\n' \
+                    "$current" "$total_pkgs" "$pkg_name"
+
+            else
+                printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' \
+                    "$current" "$total_pkgs" "$pkg_name"
+            fi
+
+            debug_print "Executing command: cmd package compile -m $compile_mode -f $pkg_name"
+
+            err_output=$(cmd package compile -m "$compile_mode" -f "$pkg_name" 2>&1 3>&-)
             compile_exit=$?
 
             if [ "$compile_exit" -eq 0 ]; then
@@ -1188,7 +1187,6 @@ $fingerprint
                 # IMPORTANT:
                 # Failed compilations are NOT written to state.
                 # They will therefore be retried on the next run.
-
                 stage3_failed=$((stage3_failed + 1))
 
                 if ! printf 'FAIL (%d): %s\n%s\n' \
@@ -1665,12 +1663,10 @@ main() {
         PREV_STATE="
 $(<"$STATE_READ_FILE")
 "
+    elif [ "$NO_USER" -eq 1 ]; then
+        debug_print "No system-only or complete state file found. Full system optimization expected."
     else
-        if [ "$NO_USER" -eq 1 ]; then
-            debug_print "No system-only or complete state file found. Full system optimization expected."
-        else
-            debug_print "No existing complete state file found. Full optimization run expected."
-        fi
+        debug_print "No existing complete state file found. Full optimization run expected."
     fi
 
     # ============================================================================
@@ -1725,10 +1721,8 @@ $(<"$STATE_READ_FILE")
 
         SYSTEM_PKGS_COUNT=0
         STATE_COMMIT_SAFE=0
-    else
-        if ! process_packages "$system_package_list" "system"; then
-            STATE_COMMIT_SAFE=0
-        fi
+    elif ! process_packages "$system_package_list" "system"; then
+        STATE_COMMIT_SAFE=0
     fi
 
     STEP2_DURATION=$((SECONDS - STEP2_START))
@@ -1770,10 +1764,8 @@ $(<"$STATE_READ_FILE")
 
             USER_PKGS_COUNT=0
             STATE_COMMIT_SAFE=0
-        else
-            if ! process_packages "$user_package_list" "speed-profile"; then
-                STATE_COMMIT_SAFE=0
-            fi
+        elif ! process_packages "$user_package_list" "speed-profile"; then
+            STATE_COMMIT_SAFE=0
         fi
     fi
 
@@ -1872,11 +1864,7 @@ $(<"$STATE_READ_FILE")
             # Stage the completed state in SCRIPT_DIR first. The final mv then
             # renames a file within the same directory/filesystem as STATE_FILE,
             # making replacement of the selected persistent state file atomic.
-            if [ "$NO_USER" -eq 1 ]; then
-                STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized_system.$$.XXXXXX")
-            else
-                STATE_STAGE_TMP=$(mktemp "${SCRIPT_DIR}/.last_optimized.$$.XXXXXX")
-            fi
+            STATE_STAGE_TMP=$(mktemp "${STATE_FILE}.$$.XXXXXX")
             state_stage_exit=$?
 
             if [ "$state_stage_exit" -ne 0 ] ||
