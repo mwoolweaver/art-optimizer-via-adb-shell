@@ -241,7 +241,7 @@ get_thermal_status() {
     out=$(dumpsys hardware_properties 2>/dev/null)
     if [ -n "$out" ]; then
         debug_print "Parsed thermal status from hardware_properties dumpsys."
-        temp=$(printf "%s\n" "$out" | awk '
+        temp=$(print -r -- "$out" | awk '
             /CPU temperatures:/ {
                 if (match($0, /\[[^]]*\]/)) {
                     line = substr($0, RSTART + 1, RLENGTH - 2)
@@ -411,7 +411,7 @@ process_packages() {
     pkg_list="${pkg_list//package:/}"
     pkg_list="${pkg_list//$CR/}"
     normalized_pkg_list=$(
-        printf '%s\n' "$pkg_list" |
+        print -r --  "$pkg_list" |
             awk '
             {
                 line = $0
@@ -477,7 +477,7 @@ process_packages() {
     fi
     debug_print "Running STAGE 1: Extracting file paths..."
     STAGE_PATHS="${STAGE_STATS}.paths"
-    printf '%s\n' "$pkg_list" |
+    print -r --  "$pkg_list" |
         awk -F '|' '
         {
             if (NF < 2)
@@ -537,7 +537,7 @@ process_packages() {
         debug_print "--- end DEBUG STAGE 1b ACCOUNTING ---"
     fi
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
-    printf '%s\n' "$pkg_list" |
+    print -r --  "$pkg_list" |
         awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DEBUG" '
         BEGIN {
             while ((getline line < sf) > 0) {
@@ -770,21 +770,17 @@ $fingerprint
             stage3_would_compile=$((stage3_would_compile + 1))
         else
             if [ "$compile_mode" = "speed" ]; then
-                printf '    [+] (%d/%d) Core system compile (-m speed): %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
+                print -r -- "    [+] ($current/$total_pkgs) Core system compile (-m speed): $pkg_name"
             elif [ "$default_mode" = "system" ]; then
-                printf '    [-] (%d/%d) Updated system app compile (-m speed-profile): %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
+                print -r -- "    [+] ($current/$total_pkgs) pdated system app compile (-m speed-profile): $pkg_name"
             else
-                printf '    [+] (%d/%d) User app compile (-m speed-profile): %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
+                print -r -- "    [+] ($current/$total_pkgs) User app compile (-m speed-profile): $pkg_name"
             fi
             debug_print "Executing command: cmd package compile -m $compile_mode -f $pkg_name"
             err_output=$(cmd package compile -m "$compile_mode" -f "$pkg_name" 2>&1 3>&-)
             compile_exit=$?
             if [ "$compile_exit" -eq 0 ]; then
-                printf '    [+] (%d/%d) Compiled: %s\n' \
-                    "$current" "$total_pkgs" "$pkg_name"
+                print -r -- "    [+] ($current/$total_pkgs) Compiled: $pkg_name"
                 if [ "$state_writable" -eq 1 ]; then
                     echo "$fingerprint" >&3
                 elif [ -n "$preserved_fingerprint" ]; then
@@ -793,8 +789,7 @@ $fingerprint
                 fi
                 stage3_compiled=$((stage3_compiled + 1))
             else
-                printf '    [!] (%d/%d) Failed: %s (Exit: %d)\n' \
-                    "$current" "$total_pkgs" "$pkg_name" "$compile_exit"
+                print -r -- "    [!] ($current/$total_pkgs) Failed: $pkg_name (Exit: $compile_exit)"
                 stage3_failed=$((stage3_failed + 1))
                 if ! printf 'FAIL (%d): %s\n%s\n' \
                     "$compile_exit" "$pkg_name" "$err_output" \
