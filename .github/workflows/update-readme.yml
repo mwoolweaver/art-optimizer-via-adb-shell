@@ -15,9 +15,14 @@ permissions: {}
 jobs:
   update-readme:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
     permissions:
       contents: write
       pull-requests: write
+
+    env:
+      PRETTIER_VERSION: "3.6.2"
 
     steps:
       - name: Checkout repository
@@ -30,103 +35,217 @@ jobs:
       - name: Setup shfmt
         uses: mfinelli/setup-shfmt@a25fda4c1fe115aec0f85e04126610841bc3141d # v4.0.1
 
-      - name: Auto-Format All Repository Files & Inject Script
+      - name: Auto-format repository and inject script
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
 
           if [ ! -f "maintenance.sh" ] || [ ! -f "README.md" ]; then
-            echo "::error::Required files missing!"
+            echo "::error::Required files maintenance.sh and/or README.md are missing."
             exit 1
           fi
 
-          # Clean up any residual data files
-          rm -f shellcheck-results.json shellcheck-results.sarif
+          # ==================================================================
+          # DETECT WHETHER maintenance.sh CHANGED IN THE INCOMING PUSH
+          # ==================================================================
 
-          # Check if maintenance.sh was modified in the incoming commit
-          WAS_IN_COMMIT=false
-          if git rev-parse HEAD~1 &>/dev/null && git diff --name-only HEAD~1 HEAD | grep -q "^maintenance.sh$"; then
-            WAS_IN_COMMIT=true
+          WAS_IN_PUSH=false
+
+          if [ "$EVENT_NAME" = "push" ] &&
+            [ -n "${BEFORE_SHA:-}" ] &&
+            [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] &&
+            git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+
+            if git diff --name-only "$BEFORE_SHA" "$GITHUB_SHA" -- maintenance.sh |
+              grep -Fxq "maintenance.sh"; then
+              WAS_IN_PUSH=true
+            fi
           fi
 
-          # Capture maintenance.sh hash before formatting
+          # ==================================================================
+          # 1. FORMAT SHELL SCRIPTS
+          # ==================================================================
+
           SH_BEFORE_HASH=$(git hash-object maintenance.sh)
 
-          echo "[+] 1. Auto-formatting all Shell scripts (.sh)..."
-          /home/runner/bin/shfmt -w -ln mksh -i 4 .
+          echo "[+] 1. Auto-formatting Shell scripts..."
 
-          echo "[+] 1.1. Auto-formatting all YAML files (.yml)..."
-          npx --yes prettier --write "**/*.yml"
+          shfmt -w -ln mksh -i 4 .
 
-          # Check if shfmt modified maintenance.sh during this run
           SH_AFTER_HASH=$(git hash-object maintenance.sh)
           WAS_FORMATTED=false
+
           if [ "$SH_BEFORE_HASH" != "$SH_AFTER_HASH" ]; then
             WAS_FORMATTED=true
           fi
 
-          echo "[+] 2. Normalizing all Markdown files (.md)..."
-          python3 -c '
-          import glob
-          for f in glob.glob("**/*.md", recursive=True, include_hidden=True):
-              if ".git/" in f or "/.git" in f: continue
-              with open(f, "r", encoding="utf-8") as file:
-                  lines = [line.rstrip() for line in file.readlines()]
-              content = "\n".join(lines).strip() + "\n"
-              with open(f, "w", encoding="utf-8") as file:
-                  file.write(content)
-          '
+          # ==================================================================
+          # 2. FORMAT YAML
+          # ==================================================================
 
-          # Capture README hash before script injection
+          echo "[+] 2. Auto-formatting YAML files..."
+
+          npx --yes "prettier@${PRETTIER_VERSION}" \
+            --write ".github/**/*.yml" "**/*.yml"
+
+          # ==================================================================
+          # 3. NORMALIZE MARKDOWN SAFELY
+          # ==================================================================
+
+          echo "[+] 3. Normalizing Markdown line endings..."
+
+          python3 <<'PY'
+          import glob
+          from pathlib import Path
+
+          for filename in glob.glob(
+              "**/*.md",
+              recursive=True,
+              include_hidden=True,
+          ):
+              if ".git/" in filename or "/.git" in filename:
+                  continue
+
+              path = Path(filename)
+              content = path.read_text(encoding="utf-8")
+
+              # Normalize line endings without removing intentional Markdown
+              # trailing spaces used for hard line breaks.
+              content = content.replace("\r\n", "\n").replace("\r", "\n")
+
+              # Ensure exactly one terminating newline.
+              content = content.rstrip("\n") + "\n"
+
+              path.write_text(content, encoding="utf-8")
+          PY
+
+          # ==================================================================
+          # 4. VALIDATE AND INJECT maintenance.sh INTO README.md
+          # ==================================================================
+
           README_BEFORE_HASH=$(git hash-object README.md)
 
-          echo "[+] 3. Injecting maintenance.sh into README.md..."
-          awk '/<!-- SCRIPT_START -->/{
-            print
-            print "```bash"
-            print "cat << \x27EOF\x27 > /sdcard/monthly/maintenance.sh"
-            while ((getline line < "maintenance.sh") > 0) {
-              sub(/\r$/, "", line)
-              print line
-            }
-            close("maintenance.sh")
-            print "EOF"
-            print "```"
-            flag=1
-            next
-          }
-          /<!-- SCRIPT_END -->/{
-            flag=0
-          }
-          !flag' README.md > README.md.tmp && mv README.md.tmp README.md
+          echo "[+] 4. Validating README injection markers and injecting maintenance.sh..."
 
-          # Check if README was updated/desynced
+          python3 <<'PY'
+          from pathlib import Path
+
+          readme_path = Path("README.md")
+          script_path = Path("maintenance.sh")
+
+          start_marker = "<!-- SCRIPT_START -->"
+          end_marker = "<!-- SCRIPT_END -->"
+          heredoc_marker = "__ART_MAINTENANCE_SCRIPT_EOF__"
+
+          readme = readme_path.read_text(encoding="utf-8")
+          script = script_path.read_text(encoding="utf-8")
+
+          if readme.count(start_marker) != 1:
+              raise SystemExit(
+                  "README.md must contain exactly one "
+                  "<!-- SCRIPT_START --> marker."
+              )
+
+          if readme.count(end_marker) != 1:
+              raise SystemExit(
+                  "README.md must contain exactly one "
+                  "<!-- SCRIPT_END --> marker."
+              )
+
+          if readme.index(start_marker) >= readme.index(end_marker):
+              raise SystemExit(
+                  "README.md SCRIPT_START marker must appear before "
+                  "SCRIPT_END."
+              )
+
+          script = script.replace("\r\n", "\n").replace("\r", "\n")
+          script = script.rstrip("\n")
+
+          if heredoc_marker in script.splitlines():
+              raise SystemExit(
+                  f"maintenance.sh contains reserved heredoc marker: "
+                  f"{heredoc_marker}"
+              )
+
+          replacement = (
+              f"{start_marker}\n"
+              "```bash\n"
+              f"cat << '{heredoc_marker}' "
+              "> /sdcard/monthly/maintenance.sh\n"
+              f"{script}\n"
+              f"{heredoc_marker}\n"
+              "```\n"
+              f"{end_marker}"
+          )
+
+          before, remainder = readme.split(start_marker, 1)
+          _, after = remainder.split(end_marker, 1)
+
+          readme_path.write_text(
+              before + replacement + after,
+              encoding="utf-8",
+          )
+          PY
+
           README_AFTER_HASH=$(git hash-object README.md)
           README_DESYNCED=false
+
           if [ "$README_BEFORE_HASH" != "$README_AFTER_HASH" ]; then
             README_DESYNCED=true
           fi
 
+          # ==================================================================
+          # FINAL REPORT
+          # ==================================================================
+
+          REPOSITORY_CHANGED=false
+
+          if ! git diff --quiet; then
+            REPOSITORY_CHANGED=true
+          fi
+
           echo "=========================================="
           echo " PIPELINE EXECUTION SCENARIO REPORT:"
-          if [ "$WAS_IN_COMMIT" = true ] && [ "$WAS_FORMATTED" = true ]; then
-            echo " [SCENARIO 1] maintenance.sh was modified in commit AND auto-formatted by shfmt."
-          elif [ "$WAS_IN_COMMIT" = true ] && [ "$WAS_FORMATTED" = false ]; then
-            echo " [SCENARIO 2] maintenance.sh was modified in commit (already properly formatted)."
-          elif [ "$WAS_IN_COMMIT" = false ] && [ "$WAS_FORMATTED" = true ]; then
-            echo " [SCENARIO 3] maintenance.sh was unmodified in commit but formatted by shfmt during run."
+
+          if [ "$WAS_IN_PUSH" = true ] &&
+            [ "$WAS_FORMATTED" = true ]; then
+
+            echo " [SCENARIO 1] maintenance.sh changed in the push and was auto-formatted by shfmt."
+
+          elif [ "$WAS_IN_PUSH" = true ] &&
+            [ "$WAS_FORMATTED" = false ]; then
+
+            echo " [SCENARIO 2] maintenance.sh changed in the push and was already properly formatted."
+
+          elif [ "$WAS_IN_PUSH" = false ] &&
+            [ "$WAS_FORMATTED" = true ]; then
+
+            echo " [SCENARIO 3] maintenance.sh was not changed in the push but required shfmt formatting."
+
           elif [ "$README_DESYNCED" = true ]; then
-            echo " [SCENARIO 4] README.md script block was desynced or empty and has been re-injected."
+
+            echo " [SCENARIO 4] README.md script block was desynchronized and has been regenerated."
+
+          elif [ "$REPOSITORY_CHANGED" = true ]; then
+
+            echo " [SCENARIO 5] Repository formatting produced changes outside the maintenance.sh/README sync."
+
           else
-            echo " [SCENARIO 5] All files are completely clean and in sync. No changes detected."
+
+            echo " [SCENARIO 6] Repository files are clean and README.md is synchronized."
+
           fi
+
           echo "=========================================="
 
-      - name: Create Pull Request for File Sync
+      - name: Create pull request for file sync
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ secrets.ACTION_TOKEN }}
-          commit-message: "style/docs: auto-format, lint, and sync repository files"
+          commit-message: "style/docs: auto-format and sync repository files"
           title: "style/docs: auto-format and sync repository files"
           branch: "auto-update-readme"
           base: "main"

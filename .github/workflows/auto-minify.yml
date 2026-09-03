@@ -9,73 +9,194 @@ on:
       - "README.md"
   workflow_dispatch:
 
+concurrency:
+  group: auto-minify-minification
+  cancel-in-progress: true
+
+permissions: {}
+
 jobs:
   minify-and-inject:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
     permissions:
       contents: write
+
     steps:
       - name: Checkout minification branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: minification
-          fetch-depth: 0
+          fetch-depth: 1
 
-      - name: Configure Git User
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Setup shfmt
+        uses: mfinelli/setup-shfmt@a25fda4c1fe115aec0f85e04126610841bc3141d # v4.0.1
 
-      - name: Fetch latest maintenance.sh and README.md from main
+      - name: Install mksh
+        shell: bash
         run: |
-          git fetch origin main
-          git checkout origin/main -- maintenance.sh README.md
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y mksh
+
+      - name: Fetch source files from main
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --depth=1 origin main
+
+          git show origin/main:maintenance.sh > /tmp/maintenance.sh
+          git show origin/main:README.md > README.md
+
+          if [ ! -s /tmp/maintenance.sh ]; then
+            echo "::error::maintenance.sh from main is empty or unavailable."
+            exit 1
+          fi
+
+          if [ ! -s README.md ]; then
+            echo "::error::README.md from main is empty or unavailable."
+            exit 1
+          fi
 
       - name: Minify maintenance.sh
+        shell: bash
         run: |
-          python3 -c '
-          with open("maintenance.sh", "r") as f:
-              lines = f.readlines()
-          out = []
-          for idx, line in enumerate(lines):
-              if idx == 0 and line.startswith("#!"):
-                  out.append(line)
-                  continue
-              stripped = line.strip()
-              if not stripped or stripped.startswith("#"):
-                  continue
-              out.append(line)
-          with open("maintenance.sh", "w") as f:
-              f.writelines(out)
-          '
+          set -euo pipefail
 
-      - name: Verify shell script syntax
-        run: bash -n maintenance.sh
+          echo "[+] Minifying maintenance.sh with the mksh-aware shfmt parser..."
 
-      - name: Inject minified script into README.md
+          shfmt \
+            -ln mksh \
+            -mn \
+            /tmp/maintenance.sh \
+            > minification-maintenance.sh
+
+          if [ ! -s minification-maintenance.sh ]; then
+            echo "::error::Minified maintenance script is empty."
+            exit 1
+          fi
+
+      - name: Verify minified script syntax
+        shell: bash
         run: |
-          python3 -c '
-          with open("maintenance.sh", "r") as f:
-              code = f.read()
-          with open("README.md", "r") as f:
-              readme = f.read()
-          start, end = "<!-- SCRIPT_START -->", "<!-- SCRIPT_END -->"
-          if start in readme and end in readme:
-              pre = readme.split(start)[0]
-              post = readme.split(end)[1]
-              heredoc_block = "cat << '\''EOF'\'' > /sdcard/monthly/minification-maintenance.sh\n" + code + "EOF"
-              new_readme = f"{pre}{start}\n```bash\n{heredoc_block}\n```\n{end}{post}"
-              with open("README.md", "w") as f:
-                  f.write(new_readme)
-          '
+          set -euo pipefail
 
-      - name: Rename to minification-maintenance.sh and untrack old file
+          echo "[+] Validating minified script with mksh..."
+
+          mksh -n minification-maintenance.sh
+
+          echo "[+] Minified script syntax passed."
+
+      - name: Inject minified script into README
+        shell: bash
         run: |
-          mv maintenance.sh minification-maintenance.sh
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          readme_path = Path("README.md")
+          script_path = Path("minification-maintenance.sh")
+
+          start_marker = "<!-- SCRIPT_START -->"
+          end_marker = "<!-- SCRIPT_END -->"
+          heredoc_marker = "__ART_MINIFIED_SCRIPT_EOF__"
+
+          readme = readme_path.read_text(encoding="utf-8")
+          script = script_path.read_text(encoding="utf-8")
+
+          if readme.count(start_marker) != 1:
+              raise SystemExit(
+                  "README.md must contain exactly one "
+                  "<!-- SCRIPT_START --> marker."
+              )
+
+          if readme.count(end_marker) != 1:
+              raise SystemExit(
+                  "README.md must contain exactly one "
+                  "<!-- SCRIPT_END --> marker."
+              )
+
+          if readme.index(start_marker) >= readme.index(end_marker):
+              raise SystemExit(
+                  "README.md SCRIPT_START marker must appear before "
+                  "SCRIPT_END."
+              )
+
+          script = script.replace("\r\n", "\n").replace("\r", "\n")
+          script = script.rstrip("\n")
+
+          if heredoc_marker in script.splitlines():
+              raise SystemExit(
+                  f"Minified script contains reserved heredoc marker: "
+                  f"{heredoc_marker}"
+              )
+
+          replacement = (
+              f"{start_marker}\n"
+              "```bash\n"
+              f"cat << '{heredoc_marker}' "
+              "> /sdcard/monthly/minification-maintenance.sh\n"
+              f"{script}\n"
+              f"{heredoc_marker}\n"
+              "```\n"
+              f"{end_marker}"
+          )
+
+          before, remainder = readme.split(start_marker, 1)
+          _, after = remainder.split(end_marker, 1)
+
+          readme_path.write_text(
+              before + replacement + after,
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Remove obsolete canonical script
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git rm -f --ignore-unmatch maintenance.sh
+
+      - name: Verify generated repository state
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -s minification-maintenance.sh ]; then
+            echo "::error::minification-maintenance.sh is missing or empty."
+            exit 1
+          fi
+
+          if ! grep -Fq "<!-- SCRIPT_START -->" README.md ||
+            ! grep -Fq "<!-- SCRIPT_END -->" README.md; then
+
+            echo "::error::README.md injection markers are missing."
+            exit 1
+          fi
+
+          echo "[+] Generated minification artifacts verified."
 
       - name: Commit and push changes
+        shell: bash
         run: |
-          git rm -f maintenance.sh || true
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add minification-maintenance.sh README.md
-          git commit -m "Sync latest README and minified script from main [skip ci]" || echo "No changes to commit"
-          git push origin minification
+
+          if git diff --cached --quiet; then
+            echo "[+] Minification branch is already current."
+            exit 0
+          fi
+
+          git commit \
+            -m "build: sync minified maintenance script from main [skip ci]"
+
+          git push origin HEAD:minification
