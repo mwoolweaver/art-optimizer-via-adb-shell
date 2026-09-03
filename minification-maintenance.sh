@@ -23,13 +23,25 @@ debug_print() {
 }
 report_error() {
     print -r -- "$1" >&2
-    if [ "${DRY_RUN:-0}" -eq 0 ] &&
-        [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
-        [ -f "$RUN_ERROR_TMPFILE" ]; then
-        if ! print -r -- "$1" >>"$RUN_ERROR_TMPFILE" 2>/dev/null; then
-            print -r -- '    [!] CRITICAL: Failed to write to maintenance error log tempfile.' >&2
-        fi
+    if [ "${DRY_RUN:-0}" -ne 0 ]; then
+        return 0
     fi
+    if [ -z "${RUN_ERROR_TMPFILE:-}" ]; then
+        RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX" 2>/dev/null)
+        run_error_tmp_exit=$?
+        if [ "$run_error_tmp_exit" -ne 0 ] ||
+            [ -z "$RUN_ERROR_TMPFILE" ] ||
+            [ ! -f "$RUN_ERROR_TMPFILE" ]; then
+            RUN_ERROR_TMPFILE=""
+            print -r -- '    [!] CRITICAL: Failed to create maintenance error log tempfile.' >&2
+            return 0
+        fi
+        debug_print "Created maintenance error tempfile: $RUN_ERROR_TMPFILE"
+    fi
+    if ! print -r -- "$1" >>"$RUN_ERROR_TMPFILE" 2>/dev/null; then
+        print -r -- '    [!] CRITICAL: Failed to write to maintenance error log tempfile.' >&2
+    fi
+    return 0
 }
 check_deps() {
     missing=""
@@ -965,12 +977,6 @@ main() {
         exit 1
     fi
     trap 'cleanup' EXIT
-    RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX")
-    if [ -z "$RUN_ERROR_TMPFILE" ] || [ ! -f "$RUN_ERROR_TMPFILE" ]; then
-        print -r -- "[!] FATAL: Failed to create maintenance error tempfile in $TMPDIR. Aborting." >&2
-        exit 1
-    fi
-    debug_print "Created maintenance error tempfile: $RUN_ERROR_TMPFILE"
     if ! print_system_status "PRE-FLIGHT CHECK"; then
         report_error "[!] FATAL: Pre-flight system health check failed. Aborting."
         exit 1
