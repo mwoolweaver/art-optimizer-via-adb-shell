@@ -7,6 +7,8 @@ on:
     paths:
       - "maintenance.sh"
       - "README.md"
+      - "test/**"
+      - ".github/workflows/auto-minify.yml"
   workflow_dispatch:
 
 concurrency:
@@ -32,6 +34,8 @@ jobs:
 
       - name: Setup shfmt
         uses: mfinelli/setup-shfmt@a25fda4c1fe115aec0f85e04126610841bc3141d  # v4.0.1
+        with:
+          shfmt-version: "3.14.0"
 
       - name: Install mksh
         shell: bash
@@ -41,7 +45,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mksh
 
-      - name: Fetch source files from main
+      - name: Fetch source and laboratory from main
         shell: bash
         run: |
           set -euo pipefail
@@ -61,23 +65,32 @@ jobs:
             exit 1
           fi
 
+          if ! git cat-file -e origin/main:test/laboratory.sh 2>/dev/null ||
+            ! git cat-file -e origin/main:test/make_test_fixtures.sh 2>/dev/null; then
+
+            echo "::error::Required laboratory files are missing from main."
+            exit 1
+          fi
+
       - name: Minify maintenance.sh
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "[+] Minifying maintenance.sh with the mksh-aware shfmt parser..."
+          echo "[+] Minifying maintenance.sh with pinned mksh-aware shfmt 3.14.0..."
 
-          shfmt \
-            -ln mksh \
-            -mn \
-            /tmp/maintenance.sh \
-            > minification-maintenance.sh
+          shfmt             -ln mksh             -mn             /tmp/maintenance.sh             > minification-maintenance.sh
 
           if [ ! -s minification-maintenance.sh ]; then
             echo "::error::Minified maintenance script is empty."
             exit 1
           fi
+
+          canonical_bytes=$(wc -c < /tmp/maintenance.sh)
+          minified_bytes=$(wc -c < minification-maintenance.sh)
+
+          echo "[+] Canonical size: ${canonical_bytes} bytes"
+          echo "[+] Minified size:  ${minified_bytes} bytes"
 
       - name: Verify minified script syntax
         shell: bash
@@ -89,6 +102,60 @@ jobs:
           mksh -n minification-maintenance.sh
 
           echo "[+] Minified script syntax passed."
+
+      - name: Stage current laboratory against minified artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LAB_REPO=/tmp/art-minified-laboratory
+          rm -rf "$LAB_REPO"
+          mkdir -p "$LAB_REPO"
+
+          # Always use the current tests from main. The minification branch is a
+          # generated-artifact branch and is not trusted to carry a current copy
+          # of test/.
+          git archive --format=tar origin/main test |
+            tar -xf - -C "$LAB_REPO"
+
+          # laboratory.sh intentionally expects ../maintenance.sh. Place an
+          # exact copy of the generated artifact there so the same 12 tests run
+          # unchanged against the minified script.
+          cp minification-maintenance.sh "$LAB_REPO/maintenance.sh"
+
+          if [ ! -s "$LAB_REPO/maintenance.sh" ] ||
+            [ ! -s "$LAB_REPO/test/laboratory.sh" ] ||
+            [ ! -s "$LAB_REPO/test/make_test_fixtures.sh" ]; then
+
+            echo "::error::Failed to stage minified maintenance laboratory."
+            exit 1
+          fi
+
+      - name: Run minified maintenance laboratory
+        shell: bash
+        env:
+          TMPDIR: /tmp
+          LAB_ROOT: /tmp/art-minified-pipeline-lab
+        run: |
+          set -euo pipefail
+
+          LAB_REPO=/tmp/art-minified-laboratory
+
+          echo "[+] Syntax-checking staged minified laboratory..."
+          mksh -n "$LAB_REPO/maintenance.sh"
+          mksh -n "$LAB_REPO/test/laboratory.sh"
+          mksh -n "$LAB_REPO/test/make_test_fixtures.sh"
+
+          echo "[+] Creating deterministic fixtures for minified artifact..."
+          mksh "$LAB_REPO/test/make_test_fixtures.sh"
+
+          echo "============================================================"
+          echo " MINIFIED MAINTENANCE SCRIPT"
+          echo "============================================================"
+
+          mksh "$LAB_REPO/test/laboratory.sh"
+
+          echo "[+] Minified artifact passed the complete maintenance laboratory."
 
       - name: Inject minified script into README
         shell: bash
@@ -179,9 +246,14 @@ jobs:
             exit 1
           fi
 
+          if git ls-files --error-unmatch maintenance.sh >/dev/null 2>&1; then
+            echo "::error::Canonical maintenance.sh must not remain tracked on the minification branch."
+            exit 1
+          fi
+
           echo "[+] Generated minification artifacts verified."
 
-      - name: Commit and push changes
+      - name: Commit and push validated artifacts
         shell: bash
         run: |
           set -euo pipefail
@@ -196,7 +268,6 @@ jobs:
             exit 0
           fi
 
-          git commit \
-            -m "build: sync minified maintenance script from main [skip ci]"
+          git commit             -m "build: sync validated minified maintenance script from main [skip ci]"
 
           git push origin HEAD:minification
