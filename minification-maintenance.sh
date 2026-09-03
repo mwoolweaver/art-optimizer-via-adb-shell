@@ -326,6 +326,11 @@ process_packages() {
     pkg_list="$1"
     default_mode="$2"
     if [ -z "$pkg_list" ]; then
+        if [ "$default_mode" = "speed-profile" ]; then
+            USER_PKGS_COUNT=0
+            debug_print "No user/third-party packages found; user stage completed with 0 packages."
+            return 0
+        fi
         report_error "    [!] ERROR: Package list for mode '$default_mode' is unexpectedly empty."
         return 1
     fi
@@ -965,7 +970,7 @@ main() {
     esac
     readonly SCRIPT_DIR
     debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
-    if ! [ -w "$SCRIPT_DIR" ]; then
+    if [ "$DRY_RUN" -eq 0 ] && [ ! -w "$SCRIPT_DIR" ]; then
         echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting." >&2
         exit 1
     fi
