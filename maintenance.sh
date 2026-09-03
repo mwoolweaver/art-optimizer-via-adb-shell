@@ -1272,7 +1272,7 @@ runtime_setup() {
 
     # Default temporary files to Android's writable /data/local/tmp.
     export TMPDIR="${TMPDIR:-/data/local/tmp}"
-    debug_print "Set TMPDIR to $TMPDIR"
+    debug_print "Using TMPDIR: $TMPDIR"
 
     MIN_SDK=24
     SUCCESSFUL_RUN=0
@@ -1426,24 +1426,17 @@ main() {
     # ============================================================================
     # Wait for Android boot completion before optimization.
     BOOT_WAIT_ELAPSED=0
-    boot_complete=0
 
-    while [ "$BOOT_WAIT_ELAPSED" -lt 300 ]; do
-        if [ "$(getprop sys.boot_completed)" = "1" ]; then
-            boot_complete=1
-            break
+    while [ "$(getprop sys.boot_completed)" != "1" ]; do
+        if [ "$BOOT_WAIT_ELAPSED" -ge 300 ]; then
+            echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
+            exit 1
         fi
 
         sleep 2
         BOOT_WAIT_ELAPSED=$((BOOT_WAIT_ELAPSED + 2))
         debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
     done
-
-    # Abort on boot timeout.
-    if [ "$boot_complete" -ne 1 ]; then
-        echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
-        exit 1
-    fi
 
     check_deps
 
