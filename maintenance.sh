@@ -17,17 +17,22 @@
 #   4. Incremental fingerprint-based tracking (.last_optimized, saved in same dir as script)
 #      to skip unchanged application packages and reduce CPU wake locks.
 #   5. Atomic temporary file handling and robust signal cleanup traps.
+#   6. Quiet routine package progress (--quiet) for low-output automated runs.
+#   7. Explicit fingerprint-cache bypass (--force) for deliberate recompilation.
+#   8. Optional Package Manager cache-trim bypass (--no-trim).
 # ============================================================================
 
 # ============================================================================
-# DEBUG, DRY_RUN & NO_USER CONFIGURATION
-# Purpose: Enable debug logging, dry-run ability, or explicit user-app skipping
-#          via validated environment variables or command-line flags.
+# RUNTIME OPTION CONFIGURATION
+# Purpose: Initialize environment-configurable modes and CLI-only behavior flags.
 # ============================================================================
 
 DEBUG="${DEBUG-0}"
 DRY_RUN="${DRY_RUN-0}"
 NO_USER="${NO_USER-0}"
+QUIET=0
+FORCE=0
+NO_TRIM=0
 
 show_help() {
     print -r -- 'ART Smart Maintenance Script
@@ -38,6 +43,9 @@ Usage:
 Options:
     --no-user     Skip user/third-party app optimization and use the system-only state cache.
     --dry-run     Simulate maintenance without compiling packages or modifying persistent state.
+    --quiet       Suppress routine per-package progress output.
+    --force       Recompile selected packages even when their fingerprints are unchanged.
+    --no-trim     Skip Package Manager cache trimming.
     --debug       Enable verbose debug output.
     --help        Display this help text and exit.
 
@@ -1151,26 +1159,34 @@ process_packages() {
 
             debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
 
-            case "$PREV_STATE" in
-            *"
+            # --force bypasses unchanged-fingerprint skipping while preserving
+            # PREV_STATE for trustworthy UNAVAILABLE-metadata fallback handling.
+            if [ "$FORCE" -eq 0 ]; then
+                case "$PREV_STATE" in
+                *"
 $fingerprint
 "*)
 
-                stage3_skipped=$((stage3_skipped + 1))
+                    stage3_skipped=$((stage3_skipped + 1))
 
-                if [ "$DRY_RUN" -eq 0 ]; then
-                    if ! print -r -- "$fingerprint" >&3; then
-                        report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
-                        stage3_state_error=1
-                        break
+                    if [ "$DRY_RUN" -eq 0 ]; then
+                        if ! print -r -- "$fingerprint" >&3; then
+                            report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
+                            stage3_state_error=1
+                            break
+                        fi
                     fi
-                fi
 
-                echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
+                    if [ "$QUIET" -eq 0 ]; then
+                        echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
+                    fi
 
-                continue
-                ;;
-            esac
+                    continue
+                    ;;
+                esac
+            else
+                debug_print "Force mode bypassing cached fingerprint for [$pkg_name]."
+            fi
 
             ;;
         esac
@@ -1181,22 +1197,26 @@ $fingerprint
 
         if [ "$DRY_RUN" -eq 1 ]; then
 
-            print -r -- "    [DRY-RUN] ($current/$total_pkgs) Would compile (-m $compile_mode): $pkg_name"
+            if [ "$QUIET" -eq 0 ]; then
+                print -r -- "    [DRY-RUN] ($current/$total_pkgs) Would compile (-m $compile_mode): $pkg_name"
+            fi
 
             stage3_would_compile=$((stage3_would_compile + 1))
 
         else
 
-            # Report the selected compilation policy for real runs.
-            if [ "$compile_mode" = "speed" ]; then
-                print -r -- "    [+] ($current/$total_pkgs) Core system compile (-m speed): $pkg_name"
+            # Report routine per-package progress unless --quiet is active.
+            if [ "$QUIET" -eq 0 ]; then
+                if [ "$compile_mode" = "speed" ]; then
+                    print -r -- "    [+] ($current/$total_pkgs) Core system compile (-m speed): $pkg_name"
 
-            elif [ "$default_mode" = "system" ]; then
-                print -r -- "    [-] ($current/$total_pkgs) Updated system app compile (-m speed-profile): $pkg_name"
+                elif [ "$default_mode" = "system" ]; then
+                    print -r -- "    [-] ($current/$total_pkgs) Updated system app compile (-m speed-profile): $pkg_name"
 
-            else
-                print -r -- "    [+] ($current/$total_pkgs) User app compile (-m speed-profile): $pkg_name"
+                else
+                    print -r -- "    [+] ($current/$total_pkgs) User app compile (-m speed-profile): $pkg_name"
 
+                fi
             fi
 
             debug_print "Executing command: cmd package compile -m $compile_mode -f $pkg_name"
@@ -1206,7 +1226,9 @@ $fingerprint
 
             if [ "$compile_exit" -eq 0 ]; then
 
-                print -r -- "    [+] ($current/$total_pkgs) Compiled: $pkg_name"
+                if [ "$QUIET" -eq 0 ]; then
+                    print -r -- "    [+] ($current/$total_pkgs) Compiled: $pkg_name"
+                fi
 
                 # The compilation itself succeeded even if recording its state fails.
                 stage3_compiled=$((stage3_compiled + 1))
@@ -1359,6 +1381,9 @@ runtime_setup() {
     DEBUG="${DEBUG-0}"
     DRY_RUN="${DRY_RUN-0}"
     NO_USER="${NO_USER-0}"
+    QUIET=0
+    FORCE=0
+    NO_TRIM=0
 
     # Default temporary files to Android's writable /data/local/tmp.
     export TMPDIR="${TMPDIR:-/data/local/tmp}"
@@ -1484,6 +1509,15 @@ main() {
         --no-user)
             NO_USER=1
             ;;
+        --quiet)
+            QUIET=1
+            ;;
+        --force)
+            FORCE=1
+            ;;
+        --no-trim)
+            NO_TRIM=1
+            ;;
         --help)
             show_help
             exit 0
@@ -1505,6 +1539,18 @@ main() {
 
     if [ "$NO_USER" -eq 1 ]; then
         debug_print "User app optimization disabled (--no-user)."
+    fi
+
+    if [ "$QUIET" -eq 1 ]; then
+        debug_print "Quiet mode enabled; routine per-package progress will be suppressed."
+    fi
+
+    if [ "$FORCE" -eq 1 ]; then
+        debug_print "Force mode enabled; unchanged-package fingerprint skips will be bypassed."
+    fi
+
+    if [ "$NO_TRIM" -eq 1 ]; then
+        debug_print "Cache trimming disabled (--no-trim)."
     fi
 
     # ============================================================================
@@ -1746,8 +1792,12 @@ $(<"$STATE_READ_FILE")
     # ============================================================================
     STEP1_START=$SECONDS
 
-    if [ "$DRY_RUN" -eq 1 ]; then
+    if [ "$NO_TRIM" -eq 1 ]; then
+        print -r -- '[+] Step 1: Cache trimming disabled (--no-trim).'
+
+    elif [ "$DRY_RUN" -eq 1 ]; then
         print -r -- '[+] Step 1: (DRY RUN) Would trim system and app caches...'
+
     else
         print -r -- '[+] Step 1: Trimming system and app caches...'
 
@@ -1766,7 +1816,10 @@ $(<"$STATE_READ_FILE")
     fi
 
     STEP1_DURATION=$((SECONDS - STEP1_START))
-    print -r -- "[+] Cache trim finished in ${STEP1_DURATION}s."
+
+    if [ "$NO_TRIM" -eq 0 ]; then
+        print -r -- "[+] Cache trim finished in ${STEP1_DURATION}s."
+    fi
 
     # ============================================================================
     # STEP 2: System Package Optimization
@@ -2063,6 +2116,14 @@ $(<"$STATE_READ_FILE")
 
     print -r -- "    - Packages Invalid:          $TOTAL_INVALID"
     print -r -- "    - Total Scanned:             $TOTAL_SCANNED"
+
+    if [ "$FORCE" -eq 1 ]; then
+        print -r -- '    - Force mode:                Enabled'
+    fi
+
+    if [ "$NO_TRIM" -eq 1 ]; then
+        print -r -- '    - Cache trim:                Skipped (--no-trim)'
+    fi
 
     [ -n "$error_notice" ] && print -r -- "$error_notice"
     [ -n "$run_error_notice" ] && print -r -- "$run_error_notice"
