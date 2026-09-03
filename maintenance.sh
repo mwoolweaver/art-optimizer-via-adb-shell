@@ -58,14 +58,33 @@ debug_print() {
 report_error() {
     print -r -- "$1" >&2
 
-    if [ "${DRY_RUN:-0}" -eq 0 ] &&
-        [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
-        [ -f "$RUN_ERROR_TMPFILE" ]; then
-
-        if ! print -r -- "$1" >>"$RUN_ERROR_TMPFILE" 2>/dev/null; then
-            print -r -- '    [!] CRITICAL: Failed to write to maintenance error log tempfile.' >&2
-        fi
+    # Dry runs never create or persist operational error logs.
+    if [ "${DRY_RUN:-0}" -ne 0 ]; then
+        return 0
     fi
+
+    # Create the maintenance-error tempfile only on the first real-run error.
+    if [ -z "${RUN_ERROR_TMPFILE:-}" ]; then
+        RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX" 2>/dev/null)
+        run_error_tmp_exit=$?
+
+        if [ "$run_error_tmp_exit" -ne 0 ] ||
+            [ -z "$RUN_ERROR_TMPFILE" ] ||
+            [ ! -f "$RUN_ERROR_TMPFILE" ]; then
+
+            RUN_ERROR_TMPFILE=""
+            print -r -- '    [!] CRITICAL: Failed to create maintenance error log tempfile.' >&2
+            return 0
+        fi
+
+        debug_print "Created maintenance error tempfile: $RUN_ERROR_TMPFILE"
+    fi
+
+    if ! print -r -- "$1" >>"$RUN_ERROR_TMPFILE" 2>/dev/null; then
+        print -r -- '    [!] CRITICAL: Failed to write to maintenance error log tempfile.' >&2
+    fi
+
+    return 0
 }
 
 # ============================================================================
@@ -1591,17 +1610,6 @@ main() {
 
     # Set the EXIT trap to run the unified cleanup function
     trap 'cleanup' EXIT
-
-    # Create the operational/runtime error tempfile early so pre-flight and all
-    # subsequent real-run failures can be captured persistently.
-    RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX")
-
-    if [ -z "$RUN_ERROR_TMPFILE" ] || [ ! -f "$RUN_ERROR_TMPFILE" ]; then
-        print -r -- "[!] FATAL: Failed to create maintenance error tempfile in $TMPDIR. Aborting." >&2
-        exit 1
-    fi
-
-    debug_print "Created maintenance error tempfile: $RUN_ERROR_TMPFILE"
 
     # MAIN EXECUTION !!!!!!!!!! MAIN EXECUTION !!!!!!!!! MAIN EXECUTION !!!!!!!!!!
     # ============================================================================
