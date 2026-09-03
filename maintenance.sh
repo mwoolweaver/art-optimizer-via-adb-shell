@@ -524,8 +524,15 @@ process_packages() {
     pkg_list="$1"
     default_mode="$2"
 
-    # An empty package list is unsafe because it could replace valid state.
+    # A system package list must never be empty. An empty user-app list is
+    # legitimate on devices with no third-party packages installed.
     if [ -z "$pkg_list" ]; then
+        if [ "$default_mode" = "speed-profile" ]; then
+            USER_PKGS_COUNT=0
+            debug_print "No user/third-party packages found; user stage completed with 0 packages."
+            return 0
+        fi
+
         report_error "    [!] ERROR: Package list for mode '$default_mode' is unexpectedly empty."
         return 1
     fi
@@ -1577,9 +1584,9 @@ main() {
     esac
     readonly SCRIPT_DIR
     debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
-
-    # Validate that SCRIPT_DIR is writable for persistent state files
-    if ! [ -w "$SCRIPT_DIR" ]; then
+    
+    # Real runs require SCRIPT_DIR to be writable for persistent state and logs.
+    if [ "$DRY_RUN" -eq 0 ] && [ ! -w "$SCRIPT_DIR" ]; then
         echo "[!] FATAL: Script directory $SCRIPT_DIR is not writable. Aborting." >&2
         exit 1
     fi
