@@ -25,13 +25,13 @@ jobs:
 
     steps:
       - name: Checkout minification branch
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           ref: minification
           fetch-depth: 1
 
       - name: Setup shfmt
-        uses: mfinelli/setup-shfmt@a25fda4c1fe115aec0f85e04126610841bc3141d # v4.0.1
+        uses: mfinelli/setup-shfmt@a25fda4c1fe115aec0f85e04126610841bc3141d  # v4.0.1
 
       - name: Install mksh
         shell: bash
