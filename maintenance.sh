@@ -1434,15 +1434,21 @@ main() {
     # ============================================================================
     # Wait for Android boot completion before optimization.
     BOOT_WAIT_ELAPSED=0
-    while [ $BOOT_WAIT_ELAPSED -lt 300 ]; do
-        [ "$(getprop sys.boot_completed)" = "1" ] && break
+    boot_complete=0
+
+    while [ "$BOOT_WAIT_ELAPSED" -lt 300 ]; do
+        if [ "$(getprop sys.boot_completed)" = "1" ]; then
+            boot_complete=1
+            break
+        fi
+
         sleep 2
         BOOT_WAIT_ELAPSED=$((BOOT_WAIT_ELAPSED + 2))
         debug_print "Waiting for boot completion... elapsed: ${BOOT_WAIT_ELAPSED}s"
     done
 
     # Abort on boot timeout.
-    if [ "$(getprop sys.boot_completed)" != "1" ]; then
+    if [ "$boot_complete" -ne 1 ]; then
         echo "[!] FATAL: Device failed to report boot completion after 300 seconds. Aborting." >&2
         exit 1
     fi
