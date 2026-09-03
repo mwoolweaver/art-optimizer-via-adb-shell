@@ -537,7 +537,7 @@ process_packages() {
     pkg_list="${pkg_list//$CR/}"
 
     normalized_pkg_list=$(
-        print -r --  "$pkg_list" |
+        print -r -- "$pkg_list" |
             awk '
             {
                 line = $0
@@ -652,7 +652,7 @@ process_packages() {
     # Only filesystem paths are allowed through to stat.
     # ========================================================================
 
-    print -r --  "$pkg_list" |
+    print -r -- "$pkg_list" |
         awk -F '|' '
         {
             if (NF < 2)
@@ -760,7 +760,7 @@ process_packages() {
     #   package|path|mtime:size:inode
     # ========================================================================
 
-    print -r --  "$pkg_list" |
+    print -r -- "$pkg_list" |
         awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DEBUG" '
         BEGIN {
             # Load stat cache into memory.
@@ -1131,8 +1131,7 @@ $fingerprint
 
         if [ "$DRY_RUN" -eq 1 ]; then
 
-            printf '    [DRY-RUN] (%d/%d) Would compile (-m %s): %s\n' \
-                "$current" "$total_pkgs" "$compile_mode" "$pkg_name"
+            print -r -- "    [DRY-RUN] ($current/$total_pkgs) Would compile (-m $compile_mode): $pkg_name"
 
             stage3_would_compile=$((stage3_would_compile + 1))
 
@@ -1143,7 +1142,7 @@ $fingerprint
                 print -r -- "    [+] ($current/$total_pkgs) Core system compile (-m speed): $pkg_name"
 
             elif [ "$default_mode" = "system" ]; then
-                print -r -- "    [+] ($current/$total_pkgs) pdated system app compile (-m speed-profile): $pkg_name"
+                print -r -- "    [+] ($current/$total_pkgs) Updated system app compile (-m speed-profile): $pkg_name"
 
             else
                 print -r -- "    [+] ($current/$total_pkgs) User app compile (-m speed-profile): $pkg_name"
@@ -1180,10 +1179,7 @@ $fingerprint
                 # They will therefore be retried on the next run.
                 stage3_failed=$((stage3_failed + 1))
 
-                if ! printf 'FAIL (%d): %s\n%s\n' \
-                    "$compile_exit" "$pkg_name" "$err_output" \
-                    >>"$ERROR_TMPFILE" 2>/dev/null; then
-
+                if ! print -r -- "FAIL ($compile_exit): $pkg_name $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
                     report_error "    [!] CRITICAL: Failed to write to compile error log! Storage may be full."
                 fi
             fi
