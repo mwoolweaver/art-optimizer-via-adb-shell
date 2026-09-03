@@ -98,6 +98,9 @@ cat << '__ART_MINIFIED_SCRIPT_EOF__' > /sdcard/monthly/minification-maintenance.
 DEBUG="${DEBUG-0}"
 DRY_RUN="${DRY_RUN-0}"
 NO_USER="${NO_USER-0}"
+QUIET=0
+FORCE=0
+NO_TRIM=0
 show_help(){
 print -r -- 'ART Smart Maintenance Script
 
@@ -107,6 +110,9 @@ Usage:
 Options:
     --no-user     Skip user/third-party app optimization and use the system-only state cache.
     --dry-run     Simulate maintenance without compiling packages or modifying persistent state.
+    --quiet       Suppress routine per-package progress output.
+    --force       Recompile selected packages even when their fingerprints are unchanged.
+    --no-trim     Skip Package Manager cache trimming.
     --debug       Enable verbose debug output.
     --help        Display this help text and exit.
 
@@ -854,6 +860,7 @@ fi
 IFS="$state_old_ifs"
 ;;
 *)debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
+if [ "$FORCE" -eq 0 ];then
 case "$PREV_STATE" in
 *"
 $fingerprint
@@ -865,14 +872,22 @@ stage3_state_error=1
 break
 fi
 fi
+if [ "$QUIET" -eq 0 ];then
 echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
+fi
 continue
 esac
+else
+debug_print "Force mode bypassing cached fingerprint for [$pkg_name]."
+fi
 esac
 if [ "$DRY_RUN" -eq 1 ];then
+if [ "$QUIET" -eq 0 ];then
 print -r -- "    [DRY-RUN] ($current/$total_pkgs) Would compile (-m $compile_mode): $pkg_name"
+fi
 stage3_would_compile=$((stage3_would_compile+1))
 else
+if [ "$QUIET" -eq 0 ];then
 if [ "$compile_mode" = "speed" ];then
 print -r -- "    [+] ($current/$total_pkgs) Core system compile (-m speed): $pkg_name"
 elif [ "$default_mode" = "system" ];then
@@ -880,11 +895,14 @@ print -r -- "    [-] ($current/$total_pkgs) Updated system app compile (-m speed
 else
 print -r -- "    [+] ($current/$total_pkgs) User app compile (-m speed-profile): $pkg_name"
 fi
+fi
 debug_print "Executing command: cmd package compile -m $compile_mode -f $pkg_name"
 err_output=$(cmd package compile -m "$compile_mode" -f "$pkg_name" 2>&1 3>&-)
 compile_exit=$?
 if [ "$compile_exit" -eq 0 ];then
+if [ "$QUIET" -eq 0 ];then
 print -r -- "    [+] ($current/$total_pkgs) Compiled: $pkg_name"
+fi
 stage3_compiled=$((stage3_compiled+1))
 if [ "$state_writable" -eq 1 ];then
 if ! print -r -- "$fingerprint" >&3;then
@@ -979,6 +997,9 @@ export LC_ALL=C
 DEBUG="${DEBUG-0}"
 DRY_RUN="${DRY_RUN-0}"
 NO_USER="${NO_USER-0}"
+QUIET=0
+FORCE=0
+NO_TRIM=0
 export TMPDIR="${TMPDIR:-/data/local/tmp}"
 debug_print "Using TMPDIR: $TMPDIR"
 MIN_SDK=24
@@ -1063,6 +1084,12 @@ case "$arg" in
 ;;
 --no-user)NO_USER=1
 ;;
+--quiet)QUIET=1
+;;
+--force)FORCE=1
+;;
+--no-trim)NO_TRIM=1
+;;
 --help)show_help
 exit 0
 ;;
@@ -1078,6 +1105,15 @@ debug_print "Dry-run mode enabled."
 fi
 if [ "$NO_USER" -eq 1 ];then
 debug_print "User app optimization disabled (--no-user)."
+fi
+if [ "$QUIET" -eq 1 ];then
+debug_print "Quiet mode enabled; routine per-package progress will be suppressed."
+fi
+if [ "$FORCE" -eq 1 ];then
+debug_print "Force mode enabled; unchanged-package fingerprint skips will be bypassed."
+fi
+if [ "$NO_TRIM" -eq 1 ];then
+debug_print "Cache trimming disabled (--no-trim)."
 fi
 SCRIPT_UID=${USER_ID:-1}
 debug_print "Checked user ID: $SCRIPT_UID"
@@ -1205,7 +1241,9 @@ else
 debug_print "No existing complete state file found. Full optimization run expected."
 fi
 STEP1_START=$SECONDS
-if [ "$DRY_RUN" -eq 1 ];then
+if [ "$NO_TRIM" -eq 1 ];then
+print -r -- '[+] Step 1: Cache trimming disabled (--no-trim).'
+elif [ "$DRY_RUN" -eq 1 ];then
 print -r -- '[+] Step 1: (DRY RUN) Would trim system and app caches...'
 else
 print -r -- '[+] Step 1: Trimming system and app caches...'
@@ -1219,7 +1257,9 @@ fi
 fi
 fi
 STEP1_DURATION=$((SECONDS-STEP1_START))
+if [ "$NO_TRIM" -eq 0 ];then
 print -r -- "[+] Cache trim finished in ${STEP1_DURATION}s."
+fi
 STEP2_START=$SECONDS
 if [ "$DRY_RUN" -eq 1 ];then
 print -r -- '[+] Step 2: (DRY RUN) Smart-optimizing system packages...'
@@ -1405,6 +1445,12 @@ print -r -- "    - Packages Failed:           $TOTAL_FAILED"
 fi
 print -r -- "    - Packages Invalid:          $TOTAL_INVALID"
 print -r -- "    - Total Scanned:             $TOTAL_SCANNED"
+if [ "$FORCE" -eq 1 ];then
+print -r -- '    - Force mode:                Enabled'
+fi
+if [ "$NO_TRIM" -eq 1 ];then
+print -r -- '    - Cache trim:                Skipped (--no-trim)'
+fi
 [ -n "$error_notice" ]&&print -r -- "$error_notice"
 [ -n "$run_error_notice" ]&&print -r -- "$run_error_notice"
 if [ "$NO_USER" -eq 1 ];then
