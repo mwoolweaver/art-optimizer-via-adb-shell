@@ -48,7 +48,7 @@ Before running the script, ensure your environment meets the following requireme
 3. **Execution Environment**
    * **Shell Privileges:** Standard `adb shell` access (UID 2000) or `root` (UID 0).
    * **Script Location:** This README uses `/sdcard/monthly/` as the persistent script location. Real runs require the directory containing the script to be writable for state and diagnostic files.
-   * **Temporary Directory:** Temporary working files default to `/data/local/tmp/` through `$TMPDIR`, which must exist and be writable.
+   * **Temporary Directory:** Temporary working files use $TMPDIR. If TMPDIR is unset or empty, the script defaults to /data/local/tmp/. If a custom TMPDIR is specified, it must already exist and be writable or the script will abort.
 
 ## Usage
 
@@ -147,6 +147,7 @@ The environment-configurable modes remain:
 DEBUG=0|1
 DRY_RUN=0|1
 NO_USER=0|1
+TMPDIR=/path/to/writable/temp/directory
 ```
 
 The newer operational flags are CLI-only.
