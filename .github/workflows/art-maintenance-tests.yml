@@ -1,0 +1,36 @@
+name: ART Maintenance Tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  package-pipeline:
+    name: Package Pipeline Laboratory
+    runs-on: ubuntu-latest
+
+    env:
+      TMPDIR: /tmp
+      LAB_ROOT: /tmp/art-pipeline-lab
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install mksh
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mksh
+
+      - name: Syntax check
+        run: |
+          mksh -n maintenance.sh
+          mksh -n test/laboratory.sh
+          mksh -n test/make_test_fixtures.sh
+
+      - name: Create test fixtures
+        run: |
+          mksh test/make_test_fixtures.sh
+
+      - name: Run package-pipeline laboratory
+        run: |
+          mksh test/laboratory.sh
