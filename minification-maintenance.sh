@@ -3,22 +3,18 @@ DEBUG="${DEBUG-0}"
 DRY_RUN="${DRY_RUN-0}"
 NO_USER="${NO_USER-0}"
 show_help() {
-    printf '%s\n' \
-        'ART Smart Maintenance Script' \
-        '' \
-        'Usage:' \
-        '    maintenance.sh [OPTIONS]' \
-        '' \
-        'Options:' \
-        '    --no-user     Skip user/third-party app optimization and use the system-only state cache.' \
-        '    --dry-run     Simulate maintenance without compiling packages or modifying persistent state.' \
-        '    --debug       Enable verbose debug output.' \
-        '    --help        Display this help text and exit.' \
-        '' \
-        'Environment variables:' \
-        '    DEBUG=0|1' \
-        '    DRY_RUN=0|1' \
-        '    NO_USER=0|1'
+    print -r -- 'ART Smart Maintenance Script
+Usage:
+    maintenance.sh [OPTIONS]
+Options:
+    --no-user     Skip user/third-party app optimization and use the system-only state cache.
+    --dry-run     Simulate maintenance without compiling packages or modifying persistent state.
+    --debug       Enable verbose debug output.
+    --help        Display this help text and exit.
+Environment variables:
+    DEBUG=0|1
+    DRY_RUN=0|1
+    NO_USER=0|1'
 }
 debug_print() {
     if [ "$DEBUG" -eq 1 ]; then
@@ -26,12 +22,12 @@ debug_print() {
     fi
 }
 report_error() {
-    printf '%s\n' "$1" >&2
+    print -r -- "$1" >&2
     if [ "${DRY_RUN:-0}" -eq 0 ] &&
         [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
         [ -f "$RUN_ERROR_TMPFILE" ]; then
-        if ! printf '%s\n' "$1" >>"$RUN_ERROR_TMPFILE" 2>/dev/null; then
-            printf '    [!] CRITICAL: Failed to write to maintenance error log tempfile.\n' >&2
+        if ! print -r -- "$1" >>"$RUN_ERROR_TMPFILE" 2>/dev/null; then
+            print -r -- '    [!] CRITICAL: Failed to write to maintenance error log tempfile.' >&2
         fi
     fi
 }
@@ -147,7 +143,7 @@ get_thermal_status() {
     therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
     if [ -n "$therm_status" ] && [ "$therm_status" -eq "$therm_status" ] 2>/dev/null; then
         debug_print "Parsed global thermal status code: $therm_status"
-        printf '%s\n' "$therm_status"
+        print -r -- "$therm_status"
         return 0
     fi
     out=$(dumpsys hardware_properties 2>/dev/null)
@@ -186,7 +182,7 @@ get_thermal_status() {
             }
         ')
         if [ -n "$temp" ]; then
-            printf '%s\n' "$temp"
+            print -r -- "$temp"
             return 0
         fi
     fi
@@ -209,7 +205,7 @@ get_thermal_status() {
             *)
                 bat_temp=$((i / 10))
                 if [ "$bat_temp" -gt 0 ]; then
-                    printf '%d\n' "$bat_temp"
+                    print -r -- "$bat_temp"
                     return 0
                 fi
                 ;;
@@ -229,14 +225,14 @@ get_thermal_status() {
         case "$val_out" in *[!0-9]*) continue ;; esac
         debug_print "Read thermal zone from sysfs: $f = $val_out"
         if [ "$val_out" -gt 1000 ]; then
-            printf '%d\n' $((val_out / 1000))
+            print -r -- $((val_out / 1000))
         else
-            printf '%s\n' "$val_out"
+            print -r -- "$val_out"
         fi
         return 0
     done
     debug_print "Thermal sensors unavailable, returning N/A."
-    printf 'N/A\n'
+    print -r --'N/A\n'
 }
 get_memory_pressure() {
     if [ -r /proc/meminfo ]; then
@@ -250,12 +246,12 @@ get_memory_pressure() {
             [ -n "$t" ] && [ -n "$a" ] && break
         done </proc/meminfo
         if [ -n "$t" ] && [ -n "$a" ] && [ "$t" -gt 0 ]; then
-            printf '%d\n' "$(((t - a) * 100 / t))"
+            print -r -- "$(((t - a) * 100 / t))"
         else
-            printf 'N/A\n'
+            print -r -- 'N/A'
         fi
     else
-        printf 'N/A\n'
+        print -r -- 'N/A'
     fi
 }
 get_battery_level() {
@@ -264,7 +260,7 @@ get_battery_level() {
         cap_out=$(<"$batt_path" 2>&1)
         cap_exit=$?
         if [ $cap_exit -eq 0 ] && [ -n "$cap_out" ]; then
-            printf '%s\n' "$cap_out"
+            print -r -- "$cap_out"
         else
             debug_print "Failed to read battery capacity (Exit: $cap_exit): $cap_out"
             echo "N/A"
@@ -275,41 +271,46 @@ get_battery_level() {
 }
 print_system_status() {
     label="$1"
-    printf '\n    ─────────────────────────────────\n    %s\n    ─────────────────────────────────\n' "$label"
+    print -r -- ''
+    print -r -- '    ─────────────────────────────────'
+    print -r -- "    $label"
+    print -r -- '    ─────────────────────────────────'
     thermal=$(get_thermal_status)
     if [ "$thermal" = "N/A" ]; then
-        printf '[*] Thermal:  %s\n' "$thermal"
+        print -r -- "[*] Thermal:  $thermal"
     elif [ "$thermal" -le 6 ]; then
         if [ "$thermal" -ge 3 ]; then
-            printf '[!] Thermal:  Status %d (CRITICAL)\n' "$thermal"
+            print -r -- "[!] Thermal:  Status $thermal (CRITICAL)"
             return 1
         elif [ "$thermal" -ge 1 ]; then
-            printf '[!] Thermal:  Status %d (WARM)\n' "$thermal"
+            print -r -- "[!] Thermal:  Status $thermal (WARM)"
         else
-            printf '[*] Thermal:  Status %d (OK)\n' "$thermal"
+            print -r -- "[*] Thermal:  Status $thermal (OK)"
         fi
     else
         if [ "$thermal" -gt 55 ]; then
-            printf '[!] Thermal:  %d°C (CRITICAL)\n' "$thermal"
+            print -r -- "[!] Thermal:  ${thermal}°C (CRITICAL)"
             return 1
         elif [ "$thermal" -gt 45 ]; then
-            printf '[!] Thermal:  %d°C (WARM)\n' "$thermal"
+            print -r -- "[!] Thermal:  ${thermal}°C (WARM)"
         else
-            printf '[*] Thermal:  %d°C (OK)\n' "$thermal"
+            print -r -- "[*] Thermal:  ${thermal}°C (OK)"
         fi
     fi
     memory=$(get_memory_pressure)
     if [ "$memory" = "N/A" ]; then
-        printf '[*] Memory:   %s\n' "$memory"
+        print -r -- "[*] Memory:   $memory"
     elif [ "$memory" -gt 99 ]; then
-        printf '[!] Memory:   %s%% (HIGH)\n' "$memory"
+        print -r -- "[!] Memory:   ${memory}% (HIGH)"
         return 1
     elif [ "$memory" -gt 85 ]; then
-        printf '[!] Memory:   %s%% (MODERATE)\n' "$memory"
+        print -r -- "[!] Memory:   ${memory}% (MODERATE)"
     else
-        printf '[*] Memory:   %s%% (OK)\n' "$memory"
+        print -r -- "[*] Memory:   ${memory}% (OK)"
     fi
-    printf '[*] Battery:  %s%%\n    ─────────────────────────────────\n\n' "$(get_battery_level)"
+    print -r -- "[*] Battery:  $(get_battery_level)%"
+    print -r -- '    ─────────────────────────────────'
+    print -r -- ''
     return 0
 }
 process_packages() {
@@ -683,7 +684,7 @@ $fingerprint
             if [ "$compile_mode" = "speed" ]; then
                 print -r -- "    [+] ($current/$total_pkgs) Core system compile (-m speed): $pkg_name"
             elif [ "$default_mode" = "system" ]; then
-                print -r -- "    [+] ($current/$total_pkgs) Updated system app compile (-m speed-profile): $pkg_name"
+                print -r -- "    [-] ($current/$total_pkgs) Updated system app compile (-m speed-profile): $pkg_name"
             else
                 print -r -- "    [+] ($current/$total_pkgs) User app compile (-m speed-profile): $pkg_name"
             fi
@@ -702,7 +703,8 @@ $fingerprint
             else
                 print -r -- "    [!] ($current/$total_pkgs) Failed: $pkg_name (Exit: $compile_exit)"
                 stage3_failed=$((stage3_failed + 1))
-                if ! print -r -- "FAIL ($compile_exit): $pkg_name $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
+                if ! print -r -- "FAIL ($compile_exit): $pkg_name
+                $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
                     report_error "    [!] CRITICAL: Failed to write to compile error log! Storage may be full."
                 fi
             fi
@@ -999,9 +1001,9 @@ $(<"$STATE_READ_FILE")
     fi
     STEP1_START=$SECONDS
     if [ "$DRY_RUN" -eq 1 ]; then
-        printf '[+] Step 1: (DRY RUN) Would trim system and app caches...\n'
+        print -r -- '[+] Step 1: (DRY RUN) Would trim system and app caches...'
     else
-        printf '[+] Step 1: Trimming system and app caches...\n'
+        print -r -- '[+] Step 1: Trimming system and app caches...'
         trim_out=$(pm trim-caches 99999999999 2>&1)
         trim_exit=$?
         if [ $trim_exit -ne 0 ]; then
@@ -1012,12 +1014,12 @@ $(<"$STATE_READ_FILE")
         fi
     fi
     STEP1_DURATION=$((SECONDS - STEP1_START))
-    printf '[+] Cache trim finished in %ss.\n' "$STEP1_DURATION"
+    print -r -- "[+] Cache trim finished in ${STEP1_DURATION}s."
     STEP2_START=$SECONDS
     if [ "$DRY_RUN" -eq 1 ]; then
-        printf '[+] Step 2: (DRY RUN) Smart-optimizing system packages...\n'
+        print -r -- '[+] Step 2: (DRY RUN) Smart-optimizing system packages...'
     else
-        printf '[+] Step 2: Smart-optimizing system packages...\n'
+        print -r -- '[+] Step 2: Smart-optimizing system packages...'
     fi
     debug_print "Querying system packages via pm list packages -f -s..."
     system_package_list=$(pm list packages -f -s 2>&1)
@@ -1033,21 +1035,21 @@ $(<"$STATE_READ_FILE")
         STATE_COMMIT_SAFE=0
     fi
     STEP2_DURATION=$((SECONDS - STEP2_START))
-    printf '[+] System package optimization finished in %ss.\n' "$STEP2_DURATION"
+    print -r -- "[+] System package optimization finished in ${STEP2_DURATION}s."
     STEP3_START=$SECONDS
     if [ "$NO_USER" -eq 1 ]; then
         USER_PKGS_COUNT=0
         if [ "$DRY_RUN" -eq 1 ]; then
-            printf '[+] Step 3: (DRY RUN) User app optimization disabled (--no-user).\n'
+            print -r -- '[+] Step 3: (DRY RUN) User app optimization disabled (--no-user).'
         else
-            printf '[+] Step 3: User app optimization disabled (--no-user).\n'
+            print -r -- '[+] Step 3: User app optimization disabled (--no-user).'
         fi
         debug_print "Skipping user package query and processing because --no-user is enabled."
     else
         if [ "$DRY_RUN" -eq 1 ]; then
-            printf '[+] Step 3: (DRY RUN) Smart-optimizing user apps...\n'
+            print -r -- '[+] Step 3: (DRY RUN) Smart-optimizing user apps...'
         else
-            printf '[+] Step 3: Smart-optimizing user apps...\n'
+            print -r -- '[+] Step 3: Smart-optimizing user apps...'
         fi
         debug_print "Querying user packages via pm list packages -f -3..."
         user_package_list=$(pm list packages -f -3 2>&1)
@@ -1065,9 +1067,9 @@ $(<"$STATE_READ_FILE")
     fi
     STEP3_DURATION=$((SECONDS - STEP3_START))
     if [ "$NO_USER" -eq 1 ]; then
-        printf '[+] User app optimization skipped in %ss.\n' "$STEP3_DURATION"
+        print -r -- "[+] User app optimization skipped in ${STEP3_DURATION}s."
     else
-        printf '[+] User app optimization finished in %ss.\n' "$STEP3_DURATION"
+        print -r -- "[+] User app optimization finished in ${STEP3_DURATION}s."
     fi
     TOTAL_SCANNED=$((SYSTEM_PKGS_COUNT + USER_PKGS_COUNT))
     error_notice=""
@@ -1170,42 +1172,43 @@ $(<"$STATE_READ_FILE")
         run_error_notice="    - [!] Maintenance errors occurred. See $RUN_ERROR_LOG"
     fi
     TOTAL_DURATION=$((SECONDS - TOTAL_START_TIME))
-    printf '\n==========================================\n'
+    print -r -- ''
+    print -r -- '=========================================='
     if [ "$DRY_RUN" -eq 1 ]; then
-        printf '[+] Maintenance Summary (DRY RUN):\n'
+        print -r -- '[+] Maintenance Summary (DRY RUN):'
     else
-        printf '[+] Maintenance Summary:\n'
+        print -r -- '[+] Maintenance Summary:'
     fi
-    printf '    - Step 1 (Cache Trim):       %ss\n' "$STEP1_DURATION"
-    printf '    - Step 2 (System Stage):     %ss\n' "$STEP2_DURATION"
-    printf '    - Step 3 (User Stage):       %ss\n' "$STEP3_DURATION"
-    printf '    --------------------------------------\n'
-    printf '    - Grand Total:               %ss\n' "$TOTAL_DURATION"
+    print -r -- "    - Step 1 (Cache Trim):       ${STEP1_DURATION}s"
+    print -r -- "    - Step 2 (System Stage):     ${STEP2_DURATION}s"
+    print -r -- "    - Step 3 (User Stage):       ${STEP3_DURATION}s"
+    print -r -- '    --------------------------------------'
+    print -r -- "    - Grand Total:               ${TOTAL_DURATION}s"
     if [ "$DRY_RUN" -eq 1 ]; then
-        printf '    - Packages Would Compile:    %d\n' "$TOTAL_WOULD_COMPILE"
-        printf '    - Packages Would Skip:       %d\n' "$TOTAL_SKIPPED"
+        print -r -- "    - Packages Would Compile:    $TOTAL_WOULD_COMPILE"
+        print -r -- "    - Packages Would Skip:       $TOTAL_SKIPPED"
     else
-        printf '    - Packages Compiled:         %d\n' "$TOTAL_COMPILED"
-        printf '    - Packages Skipped (Cached): %d\n' "$TOTAL_SKIPPED"
-        printf '    - Packages Failed:           %d\n' "$TOTAL_FAILED"
+        print -r -- "    - Packages Compiled:         $TOTAL_COMPILED"
+        print -r -- "    - Packages Skipped (Cached): $TOTAL_SKIPPED"
+        print -r -- "    - Packages Failed:           $TOTAL_FAILED"
     fi
-    printf '    - Packages Invalid:          %d\n' "$TOTAL_INVALID"
-    printf '    - Total Scanned:             %d\n' "$TOTAL_SCANNED"
-    [ -n "$error_notice" ] && printf '%s\n' "$error_notice"
-    [ -n "$run_error_notice" ] && printf '%s\n' "$run_error_notice"
+    print -r -- "    - Packages Invalid:          $TOTAL_INVALID"
+    print -r -- "    - Total Scanned:             $TOTAL_SCANNED"
+    [ -n "$error_notice" ] && print -r -- "$error_notice"
+    [ -n "$run_error_notice" ] && print -r -- "$run_error_notice"
     if [ "$NO_USER" -eq 1 ]; then
-        printf '    - User app stage:            Skipped (--no-user)\n'
+        print -r -- '    - User app stage:            Skipped (--no-user)'
     fi
     if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
-        printf '    - [!] Run incomplete: trusted persistent state was not updated.\n'
+        print -r -- '    - [!] Run incomplete: trusted persistent state was not updated.'
     elif [ "$DRY_RUN" -eq 0 ]; then
         if [ "$NO_USER" -eq 1 ]; then
-            printf '    - Persistent state:          System-only state current.\n'
+            print -r -- '    - Persistent state:          System-only state current.'
         else
-            printf '    - Persistent state:          Complete state current.\n'
+            print -r -- '    - Persistent state:          Complete state current.'
         fi
     fi
-    printf '==========================================\n'
+    print -r -- '=========================================='
     if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
         exit 1
     fi
