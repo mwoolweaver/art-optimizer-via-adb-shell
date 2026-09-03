@@ -329,8 +329,11 @@ process_packages() {
                 if (idx > 0) {
                     path = substr(line, 1, idx - 1)
                     pkg  = substr(line, idx + 1)
-                    if (path != "" && pkg != "")
-                        print pkg "|" path
+                    if (path != "" && pkg != "") {
+                        record = pkg "|" path
+                        if (!seen[record]++)
+                            print record
+                    }
                 }
             }
         '
