@@ -21,25 +21,16 @@ jobs:
       contents: write
       pull-requests: write
 
-    env:
-      PRETTIER_VERSION: "3.6.2"
-
     steps:
       - name: Checkout repository
         id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: 1
           persist-credentials: false
 
-      - name: Setup shfmt
-        uses: mfinelli/setup-shfmt@a25fda4c1fe115aec0f85e04126610841bc3141d # v4.0.1
-
-      - name: Auto-format repository and inject script
+      - name: Validate and inject maintenance.sh
         shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
 
@@ -48,89 +39,11 @@ jobs:
             exit 1
           fi
 
-          # ==================================================================
-          # DETECT WHETHER maintenance.sh CHANGED IN THE INCOMING PUSH
-          # ==================================================================
-
-          WAS_IN_PUSH=false
-
-          if [ "$EVENT_NAME" = "push" ] &&
-            [ -n "${BEFORE_SHA:-}" ] &&
-            [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] &&
-            git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
-
-            if git diff --name-only "$BEFORE_SHA" "$GITHUB_SHA" -- maintenance.sh |
-              grep -Fxq "maintenance.sh"; then
-              WAS_IN_PUSH=true
-            fi
-          fi
-
-          # ==================================================================
-          # 1. FORMAT SHELL SCRIPTS
-          # ==================================================================
-
-          SH_BEFORE_HASH=$(git hash-object maintenance.sh)
-
-          echo "[+] 1. Auto-formatting Shell scripts..."
-
-          shfmt -w -ln mksh -i 4 .
-
-          SH_AFTER_HASH=$(git hash-object maintenance.sh)
-          WAS_FORMATTED=false
-
-          if [ "$SH_BEFORE_HASH" != "$SH_AFTER_HASH" ]; then
-            WAS_FORMATTED=true
-          fi
-
-          # ==================================================================
-          # 2. FORMAT YAML
-          # ==================================================================
-
-          echo "[+] 2. Auto-formatting YAML files..."
-
-          npx --yes "prettier@${PRETTIER_VERSION}" \
-            --write ".github/**/*.yml" "**/*.yml"
-
-          # ==================================================================
-          # 3. NORMALIZE MARKDOWN SAFELY
-          # ==================================================================
-
-          echo "[+] 3. Normalizing Markdown line endings..."
-
-          python3 <<'PY'
-          import glob
-          from pathlib import Path
-
-          for filename in glob.glob(
-              "**/*.md",
-              recursive=True,
-              include_hidden=True,
-          ):
-              if ".git/" in filename or "/.git" in filename:
-                  continue
-
-              path = Path(filename)
-              content = path.read_text(encoding="utf-8")
-
-              # Normalize line endings without removing intentional Markdown
-              # trailing spaces used for hard line breaks.
-              content = content.replace("\r\n", "\n").replace("\r", "\n")
-
-              # Ensure exactly one terminating newline.
-              content = content.rstrip("\n") + "\n"
-
-              path.write_text(content, encoding="utf-8")
-          PY
-
-          # ==================================================================
-          # 4. VALIDATE AND INJECT maintenance.sh INTO README.md
-          # ==================================================================
-
           README_BEFORE_HASH=$(git hash-object README.md)
 
-          echo "[+] 4. Validating README injection markers and injecting maintenance.sh..."
+          echo "[+] Validating README injection markers and injecting maintenance.sh..."
 
-          python3 <<'PY'
+          python3 <<'PYTHON'
           from pathlib import Path
 
           readme_path = Path("README.md")
@@ -140,8 +53,22 @@ jobs:
           end_marker = "<!-- SCRIPT_END -->"
           heredoc_marker = "__ART_MAINTENANCE_SCRIPT_EOF__"
 
-          readme = readme_path.read_text(encoding="utf-8")
-          script = script_path.read_text(encoding="utf-8")
+          # Read raw bytes so this workflow does not silently normalize line
+          # endings outside the injected block. Formatting belongs to Gatekeeper.
+          readme = readme_path.read_bytes().decode("utf-8")
+          script = script_path.read_bytes().decode("utf-8")
+
+          if "\r" in readme:
+              raise SystemExit(
+                  "README.md contains carriage returns. "
+                  "Fix formatting before README synchronization."
+              )
+
+          if "\r" in script:
+              raise SystemExit(
+                  "maintenance.sh contains carriage returns. "
+                  "Fix formatting before README synchronization."
+              )
 
           if readme.count(start_marker) != 1:
               raise SystemExit(
@@ -161,14 +88,13 @@ jobs:
                   "SCRIPT_END."
               )
 
-          script = script.replace("\r\n", "\n").replace("\r", "\n")
-          script = script.rstrip("\n")
-
           if heredoc_marker in script.splitlines():
               raise SystemExit(
                   f"maintenance.sh contains reserved heredoc marker: "
                   f"{heredoc_marker}"
               )
+
+          script = script.rstrip("\n")
 
           replacement = (
               f"{start_marker}\n"
@@ -184,69 +110,30 @@ jobs:
           before, remainder = readme.split(start_marker, 1)
           _, after = remainder.split(end_marker, 1)
 
-          readme_path.write_text(
-              before + replacement + after,
-              encoding="utf-8",
+          readme_path.write_bytes(
+              (before + replacement + after).encode("utf-8")
           )
-          PY
+          PYTHON
 
           README_AFTER_HASH=$(git hash-object README.md)
-          README_DESYNCED=false
+
+          echo "=========================================="
+          echo " README SYNCHRONIZATION REPORT:"
 
           if [ "$README_BEFORE_HASH" != "$README_AFTER_HASH" ]; then
-            README_DESYNCED=true
-          fi
-
-          # ==================================================================
-          # FINAL REPORT
-          # ==================================================================
-
-          REPOSITORY_CHANGED=false
-
-          if ! git diff --quiet; then
-            REPOSITORY_CHANGED=true
-          fi
-
-          echo "=========================================="
-          echo " PIPELINE EXECUTION SCENARIO REPORT:"
-
-          if [ "$WAS_IN_PUSH" = true ] &&
-            [ "$WAS_FORMATTED" = true ]; then
-
-            echo " [SCENARIO 1] maintenance.sh changed in the push and was auto-formatted by shfmt."
-
-          elif [ "$WAS_IN_PUSH" = true ] &&
-            [ "$WAS_FORMATTED" = false ]; then
-
-            echo " [SCENARIO 2] maintenance.sh changed in the push and was already properly formatted."
-
-          elif [ "$WAS_IN_PUSH" = false ] &&
-            [ "$WAS_FORMATTED" = true ]; then
-
-            echo " [SCENARIO 3] maintenance.sh was not changed in the push but required shfmt formatting."
-
-          elif [ "$README_DESYNCED" = true ]; then
-
-            echo " [SCENARIO 4] README.md script block was desynchronized and has been regenerated."
-
-          elif [ "$REPOSITORY_CHANGED" = true ]; then
-
-            echo " [SCENARIO 5] Repository formatting produced changes outside the maintenance.sh/README sync."
-
+            echo " [UPDATED] README.md script block was desynchronized and has been regenerated."
           else
-
-            echo " [SCENARIO 6] Repository files are clean and README.md is synchronized."
-
+            echo " [CLEAN] README.md is already synchronized with maintenance.sh."
           fi
 
           echo "=========================================="
 
-      - name: Create pull request for file sync
+      - name: Create pull request for README sync
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ secrets.ACTION_TOKEN }}
-          commit-message: "style/docs: auto-format and sync repository files"
-          title: "style/docs: auto-format and sync repository files"
+          commit-message: "docs: sync maintenance.sh into README"
+          title: "docs: sync maintenance.sh into README"
           branch: "auto-update-readme"
           base: "main"
           delete-branch: true
