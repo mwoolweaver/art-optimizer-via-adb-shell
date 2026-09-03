@@ -8,6 +8,13 @@ on:
       - "maintenance.sh"
       - "test/**"
       - ".github/workflows/art-maintenance-tests.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "maintenance.sh"
+      - "test/**"
+      - ".github/workflows/art-maintenance-tests.yml"
   workflow_dispatch:
 
 concurrency:
@@ -18,7 +25,7 @@ permissions: {}
 
 jobs:
   maintenance-laboratory:
-    name: Maintenance Laboratory
+    name: Canonical Maintenance Laboratory
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -44,7 +51,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y mksh
 
-      - name: Syntax check
+      - name: Syntax check canonical test inputs
         shell: bash
         run: |
           set -euo pipefail
@@ -53,16 +60,20 @@ jobs:
           mksh -n test/laboratory.sh
           mksh -n test/make_test_fixtures.sh
 
-      - name: Create test fixtures
+      - name: Create canonical test fixtures
         shell: bash
         run: |
           set -euo pipefail
 
           mksh test/make_test_fixtures.sh
 
-      - name: Run maintenance laboratory
+      - name: Run canonical maintenance laboratory
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "============================================================"
+          echo " CANONICAL MAINTENANCE SCRIPT"
+          echo "============================================================"
 
           mksh test/laboratory.sh
