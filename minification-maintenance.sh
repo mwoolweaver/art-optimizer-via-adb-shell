@@ -1393,9 +1393,28 @@ echo "[!] FATAL: Temporary directory $TMPDIR is missing or not writable. Abortin
 exit 1
 fi
 case "$0" in
-*/*)SCRIPT_DIR="$(cd "${0%/*}"&&pwd)";;
-*)SCRIPT_DIR="$(pwd)"
+*/*)script_path="$0"
+;;
+*)if
+[ -f "$0" ]
+then
+script_path="./$0"
+else
+script_path=$(command -v "$0" 2>/dev/null)
+fi
 esac
+case "$script_path" in
+*/*)
+;;
+*)echo "[!] FATAL: Unable to resolve script path for $0. Aborting." >&2
+exit 1
+esac
+script_dir="${script_path%/*}"
+[ -n "$script_dir" ]||script_dir="/"
+if ! SCRIPT_DIR=$(cd "$script_dir" 2>/dev/null&&pwd -P);then
+echo "[!] FATAL: Unable to resolve script directory for $script_path. Aborting." >&2
+exit 1
+fi
 readonly SCRIPT_DIR
 debug_print "Resolved SCRIPT_DIR to $SCRIPT_DIR"
 if [ "$DRY_RUN" -eq 0 ]&&[ ! -w "$SCRIPT_DIR" ];then
