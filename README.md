@@ -96,8 +96,6 @@ mkdir -p /sdcard/monthly/
 
 The repository README normally carries an expandable heredoc that writes `maintenance.sh` directly to `/sdcard/monthly/`; the canonical script travels with its own installation instructions.
 
-> **Note:** The embedded script body is intentionally absent from this returned copy. Keep `SCRIPT_START` and `SCRIPT_END` intact; the README-update workflow knows where the missing chapter belongs.
-
 <!-- NOTE: Do not remove SCRIPT_START and SCRIPT_END comments below.
      They are used by update-readme.yml to auto-inject maintenance.sh -->
 
