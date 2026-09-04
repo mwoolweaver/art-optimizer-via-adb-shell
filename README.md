@@ -136,7 +136,7 @@ cat << '__ART_MAINTENANCE_SCRIPT_EOF__' > /sdcard/monthly/maintenance.sh
 
 # ============================================================================
 # RUNTIME OPTION CONFIGURATION
-# Purpose: Initialize environment-configurable modes and CLI-only behavior flags.
+# Purpose: Make every mode explicit; ambiguity is charming in prose, expensive in automation.
 # ============================================================================
 
 DEBUG="${DEBUG-0}"
@@ -189,12 +189,12 @@ debug_print() {
 report_error() {
     print -r -- "$1" >&2
 
-    # Dry runs never create or persist operational error logs.
+    # Prof. Wilde's rule: dry runs may report trouble, but leave no persistent scandal behind.
     if [ "${DRY_RUN:-0}" -ne 0 ]; then
         return 0
     fi
 
-    # Create the maintenance-error tempfile only on the first real-run error.
+    # Prof. Twain's economy: create the maintenance-error tempfile only after a real error exists.
     if [ -z "${RUN_ERROR_TMPFILE:-}" ]; then
         RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX" 2>/dev/null)
         run_error_tmp_exit=$?
@@ -220,7 +220,7 @@ report_error() {
 
 # ============================================================================
 # FUNCTION: check_deps()
-# Purpose: Verify required commands and report all missing dependencies.
+# Purpose: Verify every dependency; confidence is not a substitute for command -v.
 # ============================================================================
 check_deps() {
     missing=""
@@ -241,7 +241,7 @@ check_deps() {
 # ============================================================================
 cleanup() {
     cleanup_exit=$?
-    # Prevent EXIT recursion and interruption during cleanup.
+    # Cleanup gets one curtain call: prevent EXIT recursion and interruption while it finishes.
     trap - EXIT
     trap '' INT TERM
 
@@ -265,8 +265,8 @@ cleanup() {
                 fi
 
             elif [ -f "${SCRIPT_DIR}/.early_exit" ]; then
-                # Latest failed run produced no usable state snapshot, so an
-                # older .early_exit must not masquerade as the latest failure.
+                # The newest failed run owns .early_exit; if it produced no usable snapshot,
+                # an older failure must not be permitted to impersonate the present.
                 debug_print "Removing stale early-exit snapshot: ${SCRIPT_DIR}/.early_exit"
 
                 if ! rm -f "${SCRIPT_DIR}/.early_exit" 2>/dev/null; then
@@ -379,11 +379,11 @@ cleanup() {
 
 # ============================================================================
 # FUNCTION: get_thermal_status()
-# Purpose: Retrieve Android thermal status or fallback temperature
+# Purpose: Ask Android for thermal truth, then fall back to measured temperature.
 # Returns: "status:N", "temp:N", or "N/A"
 # ============================================================================
 get_thermal_status() {
-    # Attempt 1: dumpsys thermalservice (Modern OS Status Code)
+    # Ask modern thermalservice first; let Android interpret its own thermal weather.
     therm_status=$(dumpsys thermalservice 2>/dev/null | awk '/^Thermal Status:/ {print $3; exit}')
 
     # Verify output is a valid integer
@@ -393,7 +393,7 @@ get_thermal_status() {
         return 0
     fi
 
-    # Attempt 2: dumpsys hardware_properties (Best for root, often denied for ADB)
+    # If thermalservice is silent, inspect hardware_properties; root sees more than ADB often can.
     out=$(dumpsys hardware_properties 2>/dev/null)
 
     if [ -n "$out" ]; then
@@ -444,7 +444,7 @@ get_thermal_status() {
         fi
     fi
 
-    # Attempt 3: dumpsys battery (Accessible to ADB/shell user)
+    # Third opinion: dumpsys battery is broadly available to the ADB/shell audience.
     # Battery temperature is in tenths of a degree (e.g. 350 = 35.0 C)
     case "$-" in
     *f*) battery_noglob_was_set=1 ;;
@@ -482,7 +482,7 @@ get_thermal_status() {
         prev1="$i"
     done
 
-    # Fallback: sysfs (Good for root, fails for ADB due to Android SELinux rules)
+    # Last resort: sysfs favors root; SELinux commonly declines the same invitation for ADB.
     for f in /sys/class/thermal/thermal_zone*/temp; do
         [ -r "$f" ] || continue
 
@@ -524,7 +524,7 @@ get_memory_pressure() {
     if [ -r /proc/meminfo ]; then
         t=""
         a=""
-        # Read natively and stop once both values are found.
+        # Read /proc/meminfo natively and stop once both values appear; no fork needs the invitation.
         while read -r key val _rest; do
             case "$key" in
             MemTotal:) t="$val" ;;
@@ -550,7 +550,7 @@ get_memory_pressure() {
 # Returns: Battery percentage, or "N/A" if unavailable
 # ============================================================================
 get_battery_level() {
-    # Most Android devices expose battery capacity at physical sysfs path.
+    # Prefer the physical sysfs percentage; battery truth is pleasantly numerical when available.
     batt_path="/sys/class/power_supply/battery/capacity"
 
     if [ -r "$batt_path" ]; then
@@ -572,7 +572,7 @@ get_battery_level() {
         debug_print "Failed to read a valid battery capacity (Exit: $cap_exit): $cap_out"
     fi
 
-    # Fallback to dumpsys battery when sysfs is unavailable or invalid.
+    # If sysfs declines to testify, ask dumpsys battery for the same percentage.
     battery_level_dump=$(dumpsys battery 2>/dev/null)
 
     if [ -n "$battery_level_dump" ]; then
@@ -614,7 +614,7 @@ get_battery_level() {
 
 # ============================================================================
 # FUNCTION: get_charging_status()
-# Purpose: Determine whether Android reports external power.
+# Purpose: Verify external power; optimism, regrettably, does not charge a battery.
 # Returns: "1" when externally powered, "0" when not, or "N/A" if unavailable.
 # ============================================================================
 get_charging_status() {
@@ -654,7 +654,7 @@ get_charging_status() {
 
 # ============================================================================
 # FUNCTION: check_battery_requirements()
-# Purpose: Enforce opt-in minimum-battery and charging policy gates.
+# Purpose: Enforce opt-in power gates; unattended optimism is not a power source.
 # Returns: 0 when requirements are satisfied, 1 otherwise.
 # ============================================================================
 check_battery_requirements() {
@@ -723,8 +723,8 @@ check_battery_requirements() {
 
 # ============================================================================
 # FUNCTION: check_data_storage()
-# Purpose: Determine whether /data has at least 500 MB available.
-# Returns: 0 for sufficient/unknown storage, 1 when definitely insufficient.
+# Purpose: Require 500 MB when free space is knowable; optimism does not create disk blocks.
+# Returns: 0 for sufficient/unknown storage, 1 only for a verified shortage.
 # Side effects: Sets FREE_KB and STORAGE_STATUS (ok, unknown, low).
 # ============================================================================
 check_data_storage() {
@@ -778,7 +778,7 @@ check_data_storage() {
 
 # ============================================================================
 # FUNCTION: emit_json_summary()
-# Purpose: Emit one machine-readable JSON object to the stdout preserved on FD 4.
+# Purpose: Give stdout exactly one machine-readable voice, preserved safely on FD 4.
 # ============================================================================
 emit_json_summary() {
     [ "$JSON" -eq 1 ] || return 0
@@ -861,7 +861,7 @@ emit_json_summary() {
 
 # ============================================================================
 # FUNCTION: print_system_status()
-# Purpose: Display formatted system health metrics
+# Purpose: Inspect and display system health; measurements first, congratulations later.
 # Params: $1 = Label to display at top
 # Returns: 0 if system is healthy, 1 if critical conditions detected
 # ============================================================================
@@ -964,7 +964,7 @@ print_system_status() {
 
 # ============================================================================
 # FUNCTION: process_packages()
-# Purpose: Compile a list of packages with intelligent change detection
+# Purpose: Walk packages through normalization, fingerprinting, and selective compilation.
 # Params:
 #   $1 = Package list (format: "package:/path/to/apk.apk=package.name\n...")
 #   $2 = Default compile mode (system, speed-profile)
@@ -973,8 +973,8 @@ process_packages() {
     pkg_list="$1"
     default_mode="$2"
 
-    # A system package list must never be empty. An empty user-app list is
-    # legitimate on devices with no third-party packages installed.
+    # The system package realm is foundational and must not vanish silently.
+    # An empty user-app realm is legitimate when no third-party packages are installed.
     if [ -z "$pkg_list" ]; then
         if [ "$default_mode" = "speed-profile" ]; then
             USER_PKGS_COUNT=0
@@ -997,9 +997,9 @@ process_packages() {
     # Convert once to our internal format:
     #   com.example.app|/path/to/base.apk
     #
-    # IMPORTANT:
-    # We must split on the LAST "=" because Android /data/app paths can
-    # themselves contain "=" characters, e.g.:
+    # Prof. Tolkien's warning: one does not simply split on the first "=".
+    # Android /data/app paths may contain "=" padding themselves, so the
+    # package separator is the LAST "="; for example:
     #
     #   /data/app/~~NFUaidAwYhRskD6PhHgvHA==/...
     #
@@ -1125,7 +1125,7 @@ process_packages() {
     #   /path/to/base.apk
     #   /path/to/parent/directory
     #
-    # Only filesystem paths are allowed through to stat.
+    # Prof. TEM+P's rule: only filesystem paths reach stat; keep the specimen tray clean.
     # ========================================================================
 
     print -r -- "$pkg_list" |
@@ -1181,7 +1181,7 @@ process_packages() {
     # STAGE 1b: STATS
     # ========================================================================
     #
-    # STAGE_PATHS contains only paths; keep stat errors visible in debug output.
+    # STAGE_PATHS is path-only; keep stat failures visible in debug rather than hiding evidence.
     # ========================================================================
 
     debug_print "Running stat on unique paths..."
@@ -1316,8 +1316,8 @@ process_packages() {
             } else {
                 # APK metadata unavailable.
                 #
-                # Fall back to parent directory metadata so that changes to
-                # split/partial APK installations can still be detected.
+                # Prof. JWST fallback: if the APK itself is absent from the catalog, consult
+                # its parent directory so split/partial installation changes remain detectable.
 
                 dir = path
                 sub("/[^/]+/?$", "", dir)
@@ -1507,9 +1507,9 @@ process_packages() {
         compile_mode="$default_mode"
 
         if [ "$default_mode" = "system" ]; then
-            # Distinguish preinstalled system packages from updated system apps.
-            # Preinstalled packages use full AOT compilation (-m speed).
-            # Updated system apps installed under /data/ use speed-profile.
+            # Prof. Wilde notes that not every package dresses for the same occasion:
+            # preinstalled system code gets full AOT (-m speed), while updated system
+            # apps under /data/ use profile-guided speed-profile compilation.
 
             if [ "$apk_path" != "${apk_path#/data/}" ]; then
                 compile_mode="speed-profile"
@@ -1522,8 +1522,8 @@ process_packages() {
         # Build fingerprint
         # ====================================================================
 
-        # Fingerprint: package|path|metadata.
-        # Unchanged fingerprints skip recompilation.
+        # Prof. Tolkien's lineage is package|path|metadata.
+        # Exact lineage matches skip recompilation; changed lineage proceeds.
 
         state_writable=1
         preserved_fingerprint=""
@@ -1587,8 +1587,8 @@ process_packages() {
 
             debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
 
-            # --force bypasses unchanged-fingerprint skipping while preserving
-            # PREV_STATE for trustworthy UNAVAILABLE-metadata fallback handling.
+            # --force deliberately ignores unchanged lineage while preserving PREV_STATE
+            # for trustworthy UNAVAILABLE-metadata fallback handling.
             if [ "$FORCE" -eq 0 ]; then
                 case "$PREV_STATE" in
                 *"
@@ -1685,9 +1685,9 @@ $fingerprint
 
                 print -r -- "    [!] ($current/$total_pkgs) Failed: $pkg_name (Exit: $compile_exit)" >&2
 
-                # IMPORTANT:
-                # Failed compilations are NOT written to state.
-                # They will therefore be retried on the next run.
+                # Prof. Twain's ledger: failed compilations are not written into history.
+                # Omitting them from state is deliberate; the next run will retry them.
+                # Success alone earns a persistent fingerprint.
                 stage3_failed=$((stage3_failed + 1))
 
                 if [ -z "$ERROR_TMPFILE" ]; then
@@ -1794,8 +1794,8 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
 
 # ============================================================================
 # FUNCTION: runtime_setup()
-# Purpose: Initialize shell policy, environment defaults, and shared runtime
-#          state without performing device checks or maintenance work.
+# Purpose: Establish shell policy, defaults, and shared state—the coordinate system
+#          for later device checks and maintenance work.
 # ============================================================================
 runtime_setup() {
     set -u # Treat unset variable expansions as errors.
@@ -1819,7 +1819,7 @@ runtime_setup() {
     USER_ONLY=0
     JSON_OUTPUT_OPEN=0
 
-    # Default temporary files to Android's writable /data/local/tmp.
+    # Default temporary work to Android's writable /data/local/tmp unless TMPDIR says otherwise.
     export TMPDIR="${TMPDIR:-/data/local/tmp}"
     debug_print "Using TMPDIR: $TMPDIR"
 
@@ -1866,7 +1866,7 @@ runtime_setup() {
 
 # ============================================================================
 # FUNCTION: package_pipeline_setup()
-# Purpose: Create the temporary files required by process_packages().
+# Purpose: Prepare clean temporary state/stat/merge files for process_packages().
 # ============================================================================
 package_pipeline_setup() {
     if ! command -v mktemp >/dev/null 2>&1; then
@@ -1879,7 +1879,7 @@ package_pipeline_setup() {
         return 1
     fi
 
-    # Current-run state is needed only by real runs; dry runs never commit it.
+    # The new state chronicle exists only for real runs; dry runs never commit one.
     if [ "$DRY_RUN" -eq 0 ]; then
         CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
     fi
@@ -1887,7 +1887,7 @@ package_pipeline_setup() {
     STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
     STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
 
-    # Compile-error storage is created lazily only if a compilation fails.
+    # Compile-error storage is lazy: without a failure, there is nothing worth writing.
     if [ "$DRY_RUN" -eq 0 ]; then
         debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
     else
@@ -1916,7 +1916,7 @@ package_pipeline_setup() {
 
 # ============================================================================
 # FUNCTION: main()
-# Purpose: Run normal ART maintenance.
+# Purpose: Orchestrate the complete ART maintenance lifecycle from preflight to final verdict.
 # ============================================================================
 main() {
     runtime_setup
@@ -2149,8 +2149,8 @@ main() {
     # ============================================================================
     # HEALTH-ONLY FAST PATH
     # ============================================================================
-    # This path intentionally avoids package-manager work, temporary package files,
-    # persistent state, and the maintenance concurrency lock.
+    # Prof. Wilde's economical path observes health without pretending to perform maintenance.
+    # It avoids package work, package tempfiles, persistent state, and the maintenance lock.
     if [ "$HEALTH_ONLY" -eq 1 ]; then
         TOTAL_START_TIME=$SECONDS
 
@@ -2356,8 +2356,8 @@ $(<"$STATE_READ_FILE")
     else
         print -r -- '[+] Step 1: Trimming system and app caches...'
 
-        # Use an intentionally unreachable free-space target to encourage aggressive
-        # Package Manager cache trimming.
+        # Prof. Twain's bureaucratic trick: request an unreachable free-space target so
+        # Package Manager trims aggressively rather than interpreting modesty literally.
         trim_out=$(pm trim-caches 99999999999 2>&1)
         trim_exit=$?
 
@@ -2537,8 +2537,8 @@ $(<"$STATE_READ_FILE")
     # ============================================================================
     # FINAL SYSTEM HEALTH CHECK
     # ============================================================================
-    # The final health check must succeed BEFORE persistent state can be committed.
-    # This ensures either state file represents only a fully completed healthy run.
+    # Never write success into the chronicle before the machine survives its final health check.
+    # Persistent state therefore represents only a fully completed healthy run.
     if ! print_system_status "FINAL STATUS"; then
         report_error "    [!] ERROR: Final system health check failed. Persistent state will not be updated."
         print -r -- '=========================================='
@@ -2548,11 +2548,11 @@ $(<"$STATE_READ_FILE")
     # ============================================================================
     # POST-OPTIMIZATION: State Management
     # ============================================================================
-    # Normal runs commit complete state to .last_optimized.
-    # --no-user and --user-only runs commit their own scope-limited state files and
-    # never modify the authoritative complete .last_optimized file.
+    # Prof. Tolkien's rule: the old chronicle remains authoritative until its successor is whole.
+    # Full runs commit .last_optimized; --no-user and --user-only keep their own
+    # scope-limited chronicles and never rewrite the authoritative complete state.
     #
-    # Dry runs never modify persistent state.
+    # Dry runs write no persistent history.
     # Incomplete or unsafe runs preserve the previous trusted state.
     if [ "$DRY_RUN" -eq 1 ]; then
         print -r -- '[+] Dry-run mode: Persistent state file and error logs were not modified.'
@@ -2561,8 +2561,8 @@ $(<"$STATE_READ_FILE")
         report_error "    [!] WARNING: Run was incomplete. Persistent state file was NOT updated."
 
     else
-        # Compare against existing trusted state when present. A missing state
-        # file is treated as different so the initial state can be created.
+        # Compare the completed chronicle with trusted state; identical state earns no write.
+        # A missing state is necessarily different so the first authoritative copy can be created.
         if [ -e "$STATE_FILE" ]; then
             cmp -s "$CURRENT_RUN_STATE" "$STATE_FILE"
             cmp_exit=$?
@@ -2738,18 +2738,18 @@ $(<"$STATE_READ_FILE")
     # FINAL SUCCESS DETERMINATION
     # ============================================================================
 
-    # An incomplete processing run or failed state commit is not a successful run.
+    # An incomplete run or failed state commit cannot receive the final "success" title.
     if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
         exit 1
     fi
 
-    # Only now has the entire run completed successfully.
+    # Only after every gate has passed may SUCCESSFUL_RUN become 1.
     SUCCESSFUL_RUN=1
 
     emit_json_summary 1
 }
 
-# Execute normal maintenance unless this file was sourced for function reuse.
+# Run the story normally unless this file was deliberately sourced for function reuse.
 if [ "${MAINTENANCE_SOURCE_ONLY-0}" -ne 1 ]; then
     main "$@"
 fi
