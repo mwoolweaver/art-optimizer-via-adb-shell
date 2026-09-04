@@ -890,8 +890,8 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
             } else {
                 # APK metadata unavailable.
                 #
-                # Fall back to parent directory metadata so that changes to
-                # split/partial APK installations can still be detected.
+                # Prof. JWST fallback: if the APK itself is absent from the catalog, consult
+                # its parent directory so split/partial installation changes remain detectable.
 
                 dir = path
                 sub("/[^/]+/?$", "", dir)
