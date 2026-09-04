@@ -126,23 +126,24 @@ Usage:
     maintenance.sh [OPTIONS]
 
 Options:
-    --no-user          Skip user/third-party app optimization and use the system-only state cache.
-    --user-only        Skip system package optimization and use the user-only state cache.
-    --dry-run          Simulate maintenance without compiling packages or modifying persistent state.
-    --quiet            Suppress routine per-package progress output.
-    --force            Recompile selected packages even when their fingerprints are unchanged.
-    --no-trim          Skip Package Manager cache trimming.
-    --require-charging Require external power before maintenance begins.
-    --min-battery N    Require battery level N (0-100) or higher before maintenance begins.
-    --json             Emit one JSON summary on stdout; suppress routine output; diagnostics stay on stderr.
-    --health-only      Run health, battery-policy, and storage checks without package maintenance.
-    --debug            Enable verbose debug output.
-    --help             Display this help text and exit.
+    --no-user          Keep user apps offstage and use the system-only state cache.
+    --user-only        Give the stage to user apps and use the user-only state cache.
+    --dry-run          Rehearse maintenance without compiling packages or rewriting persistent state.
+    --quiet            Dismiss per-package chatter; keep warnings, stages, and the final verdict.
+    --force            Give selected packages an encore even when their fingerprints are unchanged.
+    --no-trim          Excuse only Package Manager cache trimming; ART package work still proceeds.
+    --require-charging Require verified external power before maintenance begins.
+    --min-battery N    Require a verified battery level of N% (0-100) or higher before maintenance begins.
+    --json             Give stdout one JSON result; routine prose disappears; diagnostics stay on stderr.
+    --health-only      Inspect health, battery policy, and storage without performing package maintenance.
+    --debug            Open the backstage ledger with verbose diagnostics.
+    --help             Display this built-in usage guide and exit.
 
 Environment variables:
     DEBUG=0|1
     DRY_RUN=0|1
-    NO_USER=0|1'
+    NO_USER=0|1
+    TMPDIR=/path/to/writable/temp/directory'
 }
 debug_print(){
 if [ "$DEBUG" -eq 1 ];then
