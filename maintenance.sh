@@ -8,7 +8,8 @@
 #          intelligent cache management, profile-guided compilation (speed-profile),
 #          and change-detection state caching to minimize redundant I/O wear.
 # Target Environment: Android 7.0+ & API 24+, requiring root privileges or
-#                     ADB shell execution context.
+#                     ADB shell execution context and the dependencies checked below.
+#                     Stock pre-Android-P builds may require an added awk utility.
 #
 # Key Features:
 #   1. Dry-run simulation mode (--dry-run) for safe workflow testing.
@@ -73,8 +74,8 @@ Environment variables:
 }
 
 debug_print() {
-    if [ "$DEBUG" -eq 1 ]; then
-        echo "[DEBUG] $1" >&2
+    if [ "${DEBUG:-0}" = "1" ]; then
+        print -r -- "[DEBUG] $1" >&2
     fi
 }
 
@@ -93,9 +94,7 @@ report_error() {
         RUN_ERROR_TMPFILE=$(mktemp "${TMPDIR}/run_errors.$$.XXXXXX" 2>/dev/null)
         run_error_tmp_exit=$?
 
-        if [ "$run_error_tmp_exit" -ne 0 ] ||
-            [ -z "$RUN_ERROR_TMPFILE" ] ||
-            [ ! -f "$RUN_ERROR_TMPFILE" ]; then
+        if [ "$run_error_tmp_exit" -ne 0 ] || [ -z "$RUN_ERROR_TMPFILE" ] || [ ! -f "$RUN_ERROR_TMPFILE" ]; then
 
             RUN_ERROR_TMPFILE=""
             print -r -- '    [!] CRITICAL: Failed to create maintenance error log tempfile.' >&2
@@ -118,12 +117,20 @@ report_error() {
 # ============================================================================
 check_deps() {
     missing=""
-    for req in awk cmd cmp cp df dumpsys getprop head mkdir mktemp mv pm rm rmdir service sleep stat tr wc xargs; do
+
+    if [ "$HEALTH_ONLY" -eq 1 ]; then
+        set -- awk df dumpsys getprop sleep
+    else
+        set -- awk cmd cmp cp df dumpsys getprop head mkdir mktemp mv pm rm rmdir service sleep stat tr wc xargs
+    fi
+
+    for req in "$@"; do
         if ! command -v "$req" >/dev/null 2>&1; then
             missing="${missing}$req "
             debug_print "Missing required dependency: $req"
         fi
     done
+
     if [ -n "$missing" ]; then
         echo "[!] FATAL: Required commands missing: $missing" >&2
         exit 1
@@ -278,9 +285,7 @@ cleanup() {
             # --- ABORTED OR FAILED REAL RUN ---
 
             # .early_exit represents the most recent failed/aborted run.
-            if [ -n "${CURRENT_RUN_STATE:-}" ] &&
-                [ -f "$CURRENT_RUN_STATE" ] &&
-                [ -s "$CURRENT_RUN_STATE" ]; then
+            if [ -n "${CURRENT_RUN_STATE:-}" ] && [ -f "$CURRENT_RUN_STATE" ] && [ -s "$CURRENT_RUN_STATE" ]; then
 
                 debug_print "Saving latest failed-run snapshot to: ${SCRIPT_DIR}/.early_exit"
 
@@ -312,9 +317,7 @@ cleanup() {
         fi
 
         # compile_errors.log represents the most recent real run attempt.
-        if [ -n "${ERROR_TMPFILE:-}" ] &&
-            [ -f "$ERROR_TMPFILE" ] &&
-            [ -s "$ERROR_TMPFILE" ]; then
+        if [ -n "${ERROR_TMPFILE:-}" ] && [ -f "$ERROR_TMPFILE" ] && [ -s "$ERROR_TMPFILE" ]; then
 
             debug_print "Saving latest run compile error log to: $ERROR_LOG"
 
@@ -334,12 +337,8 @@ cleanup() {
     # Remove volatile temporary files other than RUN_ERROR_TMPFILE.
     # RUN_ERROR_TMPFILE is finalized last so cleanup failures can be logged too.
     for tmpfile in \
-        "${CURRENT_RUN_STATE:-}" \
-        "${STATE_STAGE_TMP:-}" \
-        "${STAGE2_PATHS:-}" \
-        "${STAGE3_STATS:-}" \
-        "${STAGE4_MERGED:-}" \
-        "${ERROR_TMPFILE:-}"; do
+        "${CURRENT_RUN_STATE:-}" "${STATE_STAGE_TMP:-}" "${STAGE1_PACKAGES:-}" \
+        "${STAGE2_PATHS:-}" "${STAGE3_STATS:-}" "${STAGE4_MERGED:-}" "${ERROR_TMPFILE:-}"; do
         if [ -n "$tmpfile" ] && [ -e "$tmpfile" ]; then
             debug_print "Cleaning up temporary file: $tmpfile"
 
@@ -353,9 +352,7 @@ cleanup() {
     # Finalize it while the concurrency lock is still held so another
     # invocation cannot modify persistent logs during this cleanup.
     if [ "${DRY_RUN:-0}" -eq 0 ]; then
-        if [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
-            [ -f "$RUN_ERROR_TMPFILE" ] &&
-            [ -s "$RUN_ERROR_TMPFILE" ]; then
+        if [ -n "${RUN_ERROR_TMPFILE:-}" ] && [ -f "$RUN_ERROR_TMPFILE" ] && [ -s "$RUN_ERROR_TMPFILE" ]; then
 
             debug_print "Saving latest maintenance error log to: $RUN_ERROR_LOG"
 
@@ -380,14 +377,11 @@ cleanup() {
             print -r -- "    [!] Warning: Failed to clean up $RUN_ERROR_TMPFILE" >&2
         fi
     fi
-    if [ "${LOCK_HELD:-0}" -eq 1 ] &&
-        [ -n "${LOCK_DIR:-}" ] &&
-        [ -d "$LOCK_DIR" ]; then
+    if [ "${LOCK_HELD:-0}" -eq 1 ] && [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
 
         debug_print "Releasing concurrency lock at $LOCK_DIR (PID $$)"
 
-        if [ -n "${LOCK_OWNER_FILE:-}" ] &&
-            [ -e "$LOCK_OWNER_FILE" ]; then
+        if [ -n "${LOCK_OWNER_FILE:-}" ] && [ -e "$LOCK_OWNER_FILE" ]; then
 
             if ! rm -f "$LOCK_OWNER_FILE" 2>/dev/null; then
                 lock_error="    [!] CRITICAL: Failed to remove lock owner file at $LOCK_OWNER_FILE."
@@ -453,7 +447,7 @@ get_thermal_status() {
                     max_t = 0
 
                     for (i = 1; i <= n; i++) {
-                        if (temps[i] ~ /^[0-9]+$/) {
+                        if (temps[i] ~ /^[0-9]+([.][0-9]+)?$/) {
                             t = temps[i] + 0
                             if (t > max_t && t < 120)
                                 max_t = t
@@ -461,7 +455,7 @@ get_thermal_status() {
                     }
 
                     if (max_t > 0) {
-                        printf "%d", max_t
+                        printf "%.0f", max_t
                         exit
                     }
                 }
@@ -470,14 +464,20 @@ get_thermal_status() {
             /Skin temperatures:/ {
                 if (match($0, /\[[^]]*\]/)) {
                     line = substr($0, RSTART + 1, RLENGTH - 2)
+                    n = split(line, temps, ",[ ]*")
+                    max_t = 0
 
-                    if (line ~ /^[0-9]+$/) {
-                        t = line + 0
-
-                        if (t > 0 && t < 120) {
-                            printf "%d", t
-                            exit
+                    for (i = 1; i <= n; i++) {
+                        if (temps[i] ~ /^[0-9]+([.][0-9]+)?$/) {
+                            t = temps[i] + 0
+                            if (t > max_t && t < 120)
+                                max_t = t
                         }
+                    }
+
+                    if (max_t > 0) {
+                        printf "%.0f", max_t
+                        exit
                     }
                 }
             }
@@ -606,8 +606,7 @@ get_battery_level() {
         '' | *[!0-9]*)
             ;;
         *)
-            if [ "$cap_exit" -eq 0 ] &&
-                [ "$cap_out" -le 100 ]; then
+            if [ "$cap_exit" -eq 0 ] && [ "$cap_out" -le 100 ]; then
                 print -r -- "$cap_out"
                 return 0
             fi
@@ -849,10 +848,12 @@ emit_json_summary() {
 
         if [ "$DRY_RUN" -eq 1 ]; then
             json_state="not-modified"
-        elif [ "$STATE_COMMIT_SAFE" -eq 1 ]; then
-            json_state="current"
-        else
+        elif [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
             json_state="incomplete"
+        elif [ "${TOTAL_FAILED:-0}" -gt 0 ]; then
+            json_state="partial"
+        else
+            json_state="current"
         fi
     fi
 
@@ -1012,17 +1013,20 @@ print_system_status() {
 # Purpose: Stage 1 - normalize raw Package Manager output into trusted records.
 # Params:
 #   $1 = Raw Package Manager package list
-# Writes:
-#   STAGE1_PACKAGES = package|path|versionCode records
+#   $2 = Reserved output file for package|path|versionCode records
 # ============================================================================
 normalize_package_list() {
     stage1_raw_pkg_list="$1"
-    stage1_work_list=""
+    stage1_output_packages="$2"
     stage1_exit=0
-    STAGE1_PACKAGES=""
 
     if [ -z "$stage1_raw_pkg_list" ]; then
         report_error "    [!] ERROR: Stage 1 received an empty package list."
+        return 1
+    fi
+
+    if [ -z "$stage1_output_packages" ] || [ ! -f "$stage1_output_packages" ]; then
+        report_error "    [!] ERROR: Stage 1 output staging file is unavailable."
         return 1
     fi
 
@@ -1047,89 +1051,88 @@ normalize_package_list() {
     # ========================================================================
 
     debug_print "Running STAGE 1: Normalizing package list to package|path|versionCode format..."
+    # Feed raw Package Manager records directly to the Stage 1 parser.
+    # AWK validates each raw record before deriving its normalized payload.
+    print -r -- "$stage1_raw_pkg_list" |
+        awk '
+        {
+            line = $0
+            sub(/\r$/, "", line)
 
-    # Strip "package:" prefix and carriage returns purely in RAM (Zero-Fork).
-    stage1_work_list="${stage1_raw_pkg_list//package:/}"
-    stage1_work_list="${stage1_work_list//$CR/}"
-
-    STAGE1_PACKAGES=$(
-        print -r -- "$stage1_work_list" |
-            awk '
-            {
-                line = $0
-                idx = 0
-
-                # Since Android paths can contain "=" themselves,
-                # use the LAST "=" rather than the first one.
-                for (i = 1; i <= length(line); i++) {
-                    if (substr(line, i, 1) == "=")
-                        idx = i
-                }
-
-                if (idx <= 0) {
-                    invalid_records++
-                    next
-                }
-
-                path = substr(line, 1, idx - 1)
-                rhs  = substr(line, idx + 1)
-
-                # --show-versioncode appends exactly:
-                #
-                #   " versionCode:<digits>"
-                #
-                # Parse it from the end so package-name handling stays simple.
-                if (!match(rhs, / versionCode:[0-9]+$/)) {
-                    invalid_records++
-                    next
-                }
-
-                pkg = substr(rhs, 1, RSTART - 1)
-                version = substr(rhs, RSTART + 13)
-
-                # Admit only a valid internal package record.
-                if (pkg == "" ||
-                    path !~ /^\// ||
-                    index(path, "|") != 0 ||
-                    index(pkg, "|") != 0 ||
-                    pkg ~ /[[:space:]]/) {
-
-                    invalid_records++
-                    next
-                }
-
-                identity = pkg "|" path
-
-                if (identity in seen_version) {
-                    if (seen_version[identity] != version)
-                        invalid_records++
-                    next
-                }
-
-                seen_version[identity] = version
-                print identity "|" version
+            # Validate Package Manager syntax before transforming the record.
+            if (substr(line, 1, 8) != "package:") {
+                invalid_records++
+                next
             }
 
-            END {
-                # versionCode is part of the trusted fingerprint.
-                # Any malformed PM record fails normalization closed.
-                if (invalid_records > 0)
-                    exit 2
+            # --show-versioncode appends exactly:
+            #
+            #   " versionCode:<digits>"
+            #
+            # Parse and remove this known suffix from the right first.
+            if (!match(line, / versionCode:[0-9]+$/)) {
+                invalid_records++
+                next
             }
-            '
-    )
+
+            version = substr(line, RSTART + 13)
+            core = substr(line, 1, RSTART - 1)
+
+            # "package:" is Package Manager syntax, not part of package identity.
+            # Derive the payload only after the raw record and suffix are validated.
+            payload = substr(core, 9)
+            idx = 0
+
+            # Since Android paths can contain "=" themselves,
+            # use the LAST "=" rather than the first one.
+            for (i = 1; i <= length(payload); i++) {
+                if (substr(payload, i, 1) == "=")
+                    idx = i
+            }
+
+            if (idx <= 0) {
+                invalid_records++
+                next
+            }
+
+            path = substr(payload, 1, idx - 1)
+            pkg = substr(payload, idx + 1)
+
+            # Admit only a valid internal package record.
+            if (pkg == "" || path !~ /^\// || index(path, "|") != 0 || index(pkg, "|") != 0 || pkg ~ /[[:space:]]/) {
+
+                invalid_records++
+                next
+            }
+
+            identity = pkg "|" path
+
+            if (identity in seen_version) {
+                if (seen_version[identity] != version)
+                    invalid_records++
+                next
+            }
+
+            seen_version[identity] = version
+            print identity "|" version
+        }
+
+        END {
+            # versionCode is part of the trusted fingerprint.
+            # Any malformed PM record fails normalization closed.
+            if (invalid_records > 0)
+                exit 2
+        }
+        ' >"$stage1_output_packages"
 
     stage1_exit=$?
 
     if [ "$stage1_exit" -ne 0 ]; then
-        STAGE1_PACKAGES=""
         report_error "    [!] ERROR: Package normalization failed in Stage 1 (Exit Code: $stage1_exit)."
         return 1
     fi
 
-    # A non-empty Package Manager result becoming empty means normalization
-    # failed even if awk itself happened to return success.
-    if [ -z "$STAGE1_PACKAGES" ]; then
+    if [ ! -s "$stage1_output_packages" ]; then
         report_error "    [!] ERROR: Stage 1 produced no normalized package records."
         return 1
     fi
@@ -1141,22 +1144,22 @@ normalize_package_list() {
 # FUNCTION: extract_package_paths()
 # Purpose: Stage 2 - extract unique APK and parent-directory filesystem paths.
 # Params:
-#   $1 = Stage 1 package list (package|path|versionCode)
-# Writes:
-#   STAGE2_PATHS = unique APK and parent-directory paths
+#   $1 = Stage 1 package-record input file
+#   $2 = Reserved output file for unique filesystem paths
 # ============================================================================
 extract_package_paths() {
-    stage2_pkg_list="$1"
+    stage2_input_packages="$1"
+    stage2_output_paths="$2"
     stage2_exit=0
     stage2_path_count=0
 
-    if [ -z "$stage2_pkg_list" ]; then
+    if [ -z "$stage2_input_packages" ] || [ ! -s "$stage2_input_packages" ]; then
         report_error "    [!] ERROR: Stage 2 received no normalized package records."
         return 1
     fi
 
-    if [ -z "${STAGE2_PATHS:-}" ] || [ ! -f "$STAGE2_PATHS" ]; then
-        report_error "    [!] ERROR: Stage 2 path staging file is unavailable."
+    if [ -z "$stage2_output_paths" ] || [ ! -f "$stage2_output_paths" ]; then
+        report_error "    [!] ERROR: Stage 2 output staging file is unavailable."
         return 1
     fi
 
@@ -1178,8 +1181,7 @@ extract_package_paths() {
     # Prof. TEM+P's rule: only filesystem paths reach stat.
     # ========================================================================
 
-    print -r -- "$stage2_pkg_list" |
-        awk -F '|' '
+    awk -F '|' '
         {
             if (NF != 3)
                 next
@@ -1199,14 +1201,12 @@ extract_package_paths() {
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
 
-                if (dir != "" &&
-                    length(dir) <= 1024 &&
-                    !seen[dir]++) {
+                if (dir != "" && length(dir) <= 1024 && !seen[dir]++) {
                     print dir
                 }
             }
         }
-        ' >"$STAGE2_PATHS"
+        ' "$stage2_input_packages" >"$stage2_output_paths"
 
     stage2_exit=$?
 
@@ -1215,17 +1215,17 @@ extract_package_paths() {
         return 1
     fi
 
-    if [ ! -s "$STAGE2_PATHS" ]; then
+    if [ ! -s "$stage2_output_paths" ]; then
         report_error "    [!] ERROR: Stage 2 produced no filesystem paths."
         return 1
     fi
 
     if [ "$DEBUG" -eq 1 ]; then
-        stage2_path_count=$(wc -l <"$STAGE2_PATHS")
+        stage2_path_count=$(wc -l <"$stage2_output_paths")
         debug_print "===== DEBUG STAGE 2: PATHS ====="
         debug_print "Paths: $stage2_path_count"
         debug_print "--- first 20 paths ---"
-        head -n 20 "$STAGE2_PATHS" >&2
+        head -n 20 "$stage2_output_paths" >&2
         debug_print "--- end DEBUG STAGE 2 PATHS ---"
     fi
 
@@ -1235,23 +1235,24 @@ extract_package_paths() {
 # ============================================================================
 # FUNCTION: collect_path_stats()
 # Purpose: Stage 3 - collect filesystem metadata for the Stage 2 path catalog.
-# Reads:
-#   STAGE2_PATHS
-# Writes:
-#   STAGE3_STATS = path=mtime:size:inode records
+# Params:
+#   $1 = Stage 2 filesystem-path input file
+#   $2 = Reserved output file for path=mtime:size:inode records
 # ============================================================================
 collect_path_stats() {
+    stage3_input_paths="$1"
+    stage3_output_stats="$2"
     stage3_exit=0
     stage3_path_count=0
     stage3_stat_count=0
 
-    if [ -z "${STAGE2_PATHS:-}" ] || [ ! -s "$STAGE2_PATHS" ]; then
+    if [ -z "$stage3_input_paths" ] || [ ! -s "$stage3_input_paths" ]; then
         report_error "    [!] ERROR: Stage 3 received no filesystem paths."
         return 1
     fi
 
-    if [ -z "${STAGE3_STATS:-}" ] || [ ! -f "$STAGE3_STATS" ]; then
-        report_error "    [!] ERROR: Stage 3 stat staging file is unavailable."
+    if [ -z "$stage3_output_stats" ] || [ ! -f "$stage3_output_stats" ]; then
+        report_error "    [!] ERROR: Stage 3 output staging file is unavailable."
         return 1
     fi
 
@@ -1259,15 +1260,13 @@ collect_path_stats() {
     # STAGE 3: COLLECT STAT METADATA
     # ========================================================================
     #
-    # STAGE2_PATHS is path-only; keep stat failures visible in debug rather
-    # than hiding evidence.
+    # The input is path-only; keep stat failures visible in debug rather than
+    # hiding evidence.
     # ========================================================================
 
     debug_print "Running STAGE 3: Collecting stat metadata from unique paths..."
 
-    tr '\n' '\0' <"$STAGE2_PATHS" |
-        xargs -0 -r stat -c '%n=%Y:%s:%i' \
-            >"$STAGE3_STATS"
+    tr '\n' '\0' <"$stage3_input_paths" | xargs -0 -r stat -c '%n=%Y:%s:%i' >"$stage3_output_stats"
 
     stage3_exit=$?
 
@@ -1275,14 +1274,14 @@ collect_path_stats() {
         debug_print "Stage 3 stat collection completed with missing/unreadable paths (Exit Code: $stage3_exit)."
     fi
 
-    if [ ! -s "$STAGE3_STATS" ]; then
+    if [ ! -s "$stage3_output_stats" ]; then
         report_error "    [!] ERROR: Stage 3 stat collection produced no metadata. Persistent state will not be updated."
         return 1
     fi
 
     if [ "$DEBUG" -eq 1 ]; then
-        stage3_path_count=$(wc -l <"$STAGE2_PATHS")
-        stage3_stat_count=$(wc -l <"$STAGE3_STATS")
+        stage3_path_count=$(wc -l <"$stage3_input_paths")
+        stage3_stat_count=$(wc -l <"$stage3_output_stats")
 
         debug_print "===== DEBUG STAGE 3: STAT ACCOUNTING ====="
         debug_print "Unique paths submitted to stat: $stage3_path_count"
@@ -1305,26 +1304,28 @@ collect_path_stats() {
 # FUNCTION: merge_package_metadata()
 # Purpose: Stage 4 - resolve normalized packages against collected filesystem metadata.
 # Params:
-#   $1 = Stage 1 package list (package|path|versionCode)
-# Reads:
-#   STAGE3_STATS
-# Writes:
-#   STAGE4_MERGED = package|path|versionCode|metadata
+#   $1 = Stage 1 package-record input file
+#   $2 = Stage 3 stat-catalog input file
+#   $3 = Reserved output file for package|path|versionCode|metadata records
 # ============================================================================
 merge_package_metadata() {
-    stage4_pkg_list="$1"
+    stage4_input_packages="$1"
+    stage4_input_stats="$2"
+    stage4_output_merged="$3"
+    stage4_exit=0
+    stage4_merged_count=0
 
-    if [ -z "$stage4_pkg_list" ]; then
+    if [ -z "$stage4_input_packages" ] || [ ! -s "$stage4_input_packages" ]; then
         report_error "    [!] ERROR: Metadata merge received no normalized package records."
         return 1
     fi
 
-    if [ -z "${STAGE3_STATS:-}" ] || [ ! -s "$STAGE3_STATS" ]; then
+    if [ -z "$stage4_input_stats" ] || [ ! -s "$stage4_input_stats" ]; then
         report_error "    [!] ERROR: Metadata merge received no stat catalog."
         return 1
     fi
 
-    if [ -z "${STAGE4_MERGED:-}" ] || [ ! -f "$STAGE4_MERGED" ]; then
+    if [ -z "$stage4_output_merged" ] || [ ! -f "$stage4_output_merged" ]; then
         report_error "    [!] ERROR: Merged-package staging file is unavailable."
         return 1
     fi
@@ -1348,8 +1349,7 @@ merge_package_metadata() {
     #   package|path|versionCode|mtime:size:inode
     # ========================================================================
 
-    print -r -- "$stage4_pkg_list" |
-        awk -F '|' -v OFS='|' -v sf="$STAGE3_STATS" -v debug="$DEBUG" '
+    awk -F '|' -v OFS='|' -v sf="$stage4_input_stats" -v debug="$DEBUG" '
         BEGIN {
             # Load stat cache into memory.
             #
@@ -1380,11 +1380,7 @@ merge_package_metadata() {
                     # the Unix epoch. Size and inode must be non-negative.
                     n = split(m, stat_meta, ":")
 
-                    if (p != "" &&
-                        n == 3 &&
-                        stat_meta[1] ~ /^-?[0-9]+$/ &&
-                        stat_meta[2] ~ /^[0-9]+$/ &&
-                        stat_meta[3] ~ /^[0-9]+$/) {
+                    if (p != "" && n == 3 && stat_meta[1] ~ /^-?[0-9]+$/ && stat_meta[2] ~ /^[0-9]+$/ && stat_meta[3] ~ /^[0-9]+$/) {
 
                         if (p in stats)
                             duplicate_stat_paths++
@@ -1414,9 +1410,7 @@ merge_package_metadata() {
             path    = $2
             version = $3
 
-            if (pkg == "" ||
-                path == "" ||
-                version !~ /^[0-9]+$/) {
+            if (pkg == "" || path == "" || version !~ /^[0-9]+$/) {
 
                 invalid_package_records++
                 next
@@ -1443,10 +1437,7 @@ merge_package_metadata() {
                 if (d_meta != "") {
                     n = split(d_meta, dir_meta, ":")
 
-                    if (n == 3 &&
-                        dir_meta[1] ~ /^-?[0-9]+$/ &&
-                        dir_meta[2] ~ /^[0-9]+$/ &&
-                        dir_meta[3] ~ /^[0-9]+$/) {
+                    if (n == 3 && dir_meta[1] ~ /^-?[0-9]+$/ && dir_meta[2] ~ /^[0-9]+$/ && dir_meta[3] ~ /^[0-9]+$/) {
 
                         # Preserve directory mtime and inode.
                         # Use zero for size because this is directory fallback
@@ -1468,8 +1459,22 @@ merge_package_metadata() {
         }
 
         END {
+            resolved_packages = direct_matches + directory_fallbacks + unavailable
+            stage4_integrity_error = 0
+
+            if (stat_records != valid_stat_records + invalid_stat_records ||
+                input_records != accepted_packages + invalid_package_records ||
+                invalid_stat_records > 0 ||
+                duplicate_stat_paths > 0 ||
+                invalid_package_records > 0 ||
+                accepted_packages != resolved_packages ||
+                accepted_packages != merged_records) {
+
+                stage4_integrity_error = 1
+            }
+
             # Debug diagnostics go to stderr so they never contaminate
-            # STAGE4_MERGED, which receives stdout.
+            # the Stage 4 output file, which receives stdout.
 
             if (debug == 1) {
                 print "" > "/dev/stderr"
@@ -1522,8 +1527,6 @@ merge_package_metadata() {
                 # Verify metadata-resolution accounting
                 # ------------------------------------------------------------
 
-                resolved_packages = direct_matches + directory_fallbacks + unavailable
-
                 if (accepted_packages == resolved_packages) {
                     print "[+] Metadata-resolution accounting verified." > "/dev/stderr"
                 } else {
@@ -1544,11 +1547,17 @@ merge_package_metadata() {
                         merged_records > "/dev/stderr"
                 }
 
+                if (stage4_integrity_error != 0)
+                    print "[!] ERROR: Stage 4 integrity checks failed." > "/dev/stderr"
+
                 print "===== END DEBUG STAGE 4 ACCOUNTING =====" > "/dev/stderr"
                 print "" > "/dev/stderr"
             }
+
+            if (stage4_integrity_error != 0)
+                exit 3
         }
-        ' >"$STAGE4_MERGED"
+        ' "$stage4_input_packages" >"$stage4_output_merged"
 
     stage4_exit=$?
 
@@ -1557,23 +1566,23 @@ merge_package_metadata() {
         return 1
     fi
 
-    if [ ! -s "$STAGE4_MERGED" ]; then
+    if [ ! -s "$stage4_output_merged" ]; then
         report_error "    [!] ERROR: Stage 4 produced no merged package records."
         return 1
     fi
 
     # ========================================================================
-    # DEBUG STAGE 4: STAGE4_MERGED
+    # DEBUG STAGE 4: MERGED OUTPUT
     # ========================================================================
 
     if [ "$DEBUG" -eq 1 ]; then
-        stage4_merged_count=$(wc -l <"$STAGE4_MERGED")
-        debug_print "===== DEBUG STAGE 4: STAGE4_MERGED ====="
-        debug_print "STAGE4_MERGED: $STAGE4_MERGED"
+        stage4_merged_count=$(wc -l <"$stage4_output_merged")
+        debug_print "===== DEBUG STAGE 4: MERGED OUTPUT ====="
+        debug_print "Merged output: $stage4_output_merged"
         debug_print "Merged: $stage4_merged_count"
         debug_print "--- first 10 records ---"
-        head -n 10 "$STAGE4_MERGED" >&2
-        debug_print "--- end DEBUG STAGE4_MERGED ---"
+        head -n 10 "$stage4_output_merged" >&2
+        debug_print "--- end DEBUG STAGE 4 MERGED OUTPUT ---"
     fi
 
     return 0
@@ -1583,10 +1592,9 @@ merge_package_metadata() {
 # FUNCTION: process_package_compilations()
 # Purpose: Stage 5 - evaluate fingerprints, selectively invoke ART, and record state.
 # Params:
-#   $1 = Default compile mode (system, speed-profile)
-#   $2 = Total package count for this realm
-# Reads:
-#   STAGE4_MERGED
+#   $1 = Stage 4 merged-record input file
+#   $2 = Default compile mode (system, speed-profile)
+#   $3 = Total package count for this realm
 # Updates:
 #   CURRENT_RUN_STATE
 #   TOTAL_COMPILED
@@ -1597,8 +1605,9 @@ merge_package_metadata() {
 #   TOTAL_INVALID
 # ============================================================================
 process_package_compilations() {
-    stage5_default_mode="$1"
-    stage5_total_pkgs="$2"
+    stage5_input_merged="$1"
+    stage5_default_mode="$2"
+    stage5_total_pkgs="$3"
 
     case "$stage5_default_mode" in
     system | speed-profile)
@@ -1616,7 +1625,7 @@ process_package_compilations() {
         ;;
     esac
 
-    if [ -z "${STAGE4_MERGED:-}" ] || [ ! -s "$STAGE4_MERGED" ]; then
+    if [ -z "$stage5_input_merged" ] || [ ! -s "$stage5_input_merged" ]; then
         report_error "    [!] ERROR: Compilation stage received no merged package records."
         return 1
     fi
@@ -1644,7 +1653,7 @@ process_package_compilations() {
         fi
     fi
 
-    # STAGE4_MERGED format:
+    # Stage 5 input format:
     #
     #   package|path|versionCode|metadata
     #
@@ -1954,9 +1963,7 @@ $stage5_fingerprint
                     ERROR_TMPFILE=$(mktemp "${TMPDIR}/errors.$$.XXXXXX")
                     stage5_error_tmp_exit=$?
 
-                    if [ "$stage5_error_tmp_exit" -ne 0 ] ||
-                        [ -z "$ERROR_TMPFILE" ] ||
-                        [ ! -f "$ERROR_TMPFILE" ]; then
+                    if [ "$stage5_error_tmp_exit" -ne 0 ] || [ -z "$ERROR_TMPFILE" ] || [ ! -f "$ERROR_TMPFILE" ]; then
 
                         ERROR_TMPFILE=""
                         report_error "    [!] CRITICAL: Failed to create compile error tempfile in $TMPDIR."
@@ -2004,49 +2011,52 @@ $stage5_compile_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
                 fi
             fi
         fi
-    done <"$STAGE4_MERGED"
+    done <"$stage5_input_merged"
 
     # ========================================================================
-    # DEBUG STAGE 5 ACCOUNTING
+    # STAGE 5 ACCOUNTING
     # ========================================================================
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        stage5_accounted=$((stage5_skipped + stage5_would_compile + stage5_invalid))
+    else
+        stage5_accounted=$((stage5_skipped + stage5_art_skipped + stage5_compiled + stage5_failed + stage5_invalid))
+    fi
+
+    if [ "$stage5_current" -ne "$stage5_total_pkgs" ] ||
+        [ "$stage5_current" -ne "$stage5_accounted" ] ||
+        [ "$stage5_invalid" -ne 0 ]; then
+
+        report_error "    [!] ERROR: Stage 5 package accounting failed (expected=$stage5_total_pkgs, read=$stage5_current, accounted=$stage5_accounted, invalid=$stage5_invalid)."
+        stage5_state_error=1
+    fi
 
     if [ "$DEBUG" -eq 1 ]; then
         debug_print "===== DEBUG STAGE 5: COMPILATION ====="
-        debug_print "Stage 5 input records: $stage5_current"
-        debug_print "Skipped unchanged:     $stage5_skipped"
+        debug_print "Stage 5 expected records: $stage5_total_pkgs"
+        debug_print "Stage 5 input records:    $stage5_current"
+        debug_print "Skipped unchanged:        $stage5_skipped"
 
         if [ "$DRY_RUN" -eq 1 ]; then
-            debug_print "Would compile:          $stage5_would_compile"
+            debug_print "Would compile:             $stage5_would_compile"
+            debug_print "Accounting check:          $stage5_skipped + $stage5_would_compile + $stage5_invalid = $stage5_accounted"
         else
             debug_print "ART performed/legacy success: $stage5_compiled"
             debug_print "ART skipped:                  $stage5_art_skipped"
             debug_print "Compilation failures:         $stage5_failed"
+            debug_print "Accounting check:             $stage5_skipped + $stage5_art_skipped + $stage5_compiled + $stage5_failed + $stage5_invalid = $stage5_accounted"
         fi
 
-        debug_print "Metadata unavailable:  $stage5_unverified"
-        debug_print "Invalid records:        $stage5_invalid"
+        debug_print "Metadata unavailable:     $stage5_unverified"
+        debug_print "Invalid records:           $stage5_invalid"
 
-        if [ "$DRY_RUN" -eq 1 ]; then
-            stage5_accounted=$((stage5_skipped + stage5_would_compile + stage5_invalid))
+        if [ "$stage5_current" -eq "$stage5_total_pkgs" ] &&
+            [ "$stage5_current" -eq "$stage5_accounted" ] &&
+            [ "$stage5_invalid" -eq 0 ]; then
 
-            debug_print "Accounting check:      $stage5_skipped + $stage5_would_compile + $stage5_invalid = $stage5_accounted"
-
-            if [ "$stage5_current" -eq "$stage5_accounted" ]; then
-                debug_print "[+] Stage 5 accounting verified."
-            else
-                debug_print "[!] WARNING: Stage 5 accounting mismatch."
-            fi
-
+            debug_print "[+] Stage 5 accounting verified."
         else
-            stage5_accounted=$((stage5_skipped + stage5_art_skipped + stage5_compiled + stage5_failed + stage5_invalid))
-
-            debug_print "Accounting check:      $stage5_skipped + $stage5_art_skipped + $stage5_compiled + $stage5_failed + $stage5_invalid = $stage5_accounted"
-
-            if [ "$stage5_current" -eq "$stage5_accounted" ]; then
-                debug_print "[+] Stage 5 accounting verified."
-            else
-                debug_print "[!] WARNING: Stage 5 accounting mismatch."
-            fi
+            debug_print "[!] ERROR: Stage 5 accounting mismatch."
         fi
 
         debug_print "--- end DEBUG STAGE 5 ---"
@@ -2092,8 +2102,6 @@ process_packages() {
     pipeline_raw_pkg_list="$1"
     pipeline_default_mode="$2"
     pipeline_package_count=0
-    pipeline_old_ifs=""
-    pipeline_noglob_was_set=0
     pipeline_item=""
 
     # ========================================================================
@@ -2122,12 +2130,13 @@ process_packages() {
         return 1
     fi
 
-    # The file-backed handoff artifacts are reserved once by package_pipeline_setup()
-    # and reused between the system and user realms. The conductor owns their
-    # per-transaction content lifecycle: erase every old realm before Stage 1.
-    if [ -z "${STAGE2_PATHS:-}" ] ||
+    # Setup owns artifact creation; cleanup owns destruction; this conductor owns
+    # the per-realm content lifecycle and is the only code that wires stages together.
+    if [ -z "${STAGE1_PACKAGES:-}" ] ||
+        [ -z "${STAGE2_PATHS:-}" ] ||
         [ -z "${STAGE3_STATS:-}" ] ||
         [ -z "${STAGE4_MERGED:-}" ] ||
+        [ ! -f "$STAGE1_PACKAGES" ] ||
         [ ! -f "$STAGE2_PATHS" ] ||
         [ ! -f "$STAGE3_STATS" ] ||
         [ ! -f "$STAGE4_MERGED" ]; then
@@ -2136,59 +2145,32 @@ process_packages() {
         return 1
     fi
 
-    STAGE1_PACKAGES=""
+    for pipeline_artifact in "$STAGE1_PACKAGES" "$STAGE2_PATHS" "$STAGE3_STATS" "$STAGE4_MERGED"; do
 
-    if ! : >"$STAGE2_PATHS"; then
-        report_error "    [!] ERROR: Unable to reset Stage 2 path staging file."
-        return 1
-    fi
-
-    if ! : >"$STAGE3_STATS"; then
-        report_error "    [!] ERROR: Unable to reset Stage 3 stat staging file."
-        return 1
-    fi
-
-    if ! : >"$STAGE4_MERGED"; then
-        report_error "    [!] ERROR: Unable to reset Stage 4 merged staging file."
-        return 1
-    fi
+        if ! : >"$pipeline_artifact"; then
+            report_error "    [!] ERROR: Unable to reset package-pipeline staging file: $pipeline_artifact"
+            return 1
+        fi
+    done
 
     # ========================================================================
     # STAGE 1: NORMALIZE PACKAGE MANAGER OUTPUT
     # ========================================================================
 
-    if ! normalize_package_list "$pipeline_raw_pkg_list"; then
+    if ! normalize_package_list "$pipeline_raw_pkg_list" "$STAGE1_PACKAGES"; then
         return 1
     fi
 
-    if [ -z "${STAGE1_PACKAGES:-}" ]; then
+    if [ ! -s "$STAGE1_PACKAGES" ]; then
         report_error "    [!] ERROR: Stage 1 reported success but produced no normalized package records."
         return 1
     fi
 
-    # Count the accepted Stage 1 records here because realm accounting belongs
-    # to the conductor rather than the normalization stage.
-    pipeline_old_ifs="$IFS"
-    IFS='
-'
-
-    case "$-" in
-    *f*) pipeline_noglob_was_set=1 ;;
-    *) pipeline_noglob_was_set=0 ;;
-    esac
-
-    set -f
-
-    for pipeline_item in $STAGE1_PACKAGES; do
-        [ -n "$pipeline_item" ] &&
-            pipeline_package_count=$((pipeline_package_count + 1))
-    done
-
-    if [ "$pipeline_noglob_was_set" -eq 0 ]; then
-        set +f
-    fi
-
-    IFS="$pipeline_old_ifs"
+    # Realm accounting belongs to the conductor. Read the Stage 1 artifact
+    # directly so no multiline package catalog needs to live in shell memory.
+    while IFS= read -r pipeline_item; do
+        [ -n "$pipeline_item" ] && pipeline_package_count=$((pipeline_package_count + 1))
+    done <"$STAGE1_PACKAGES"
 
     case "$pipeline_package_count" in
     '' | *[!0-9]* | 0)
@@ -2201,7 +2183,7 @@ process_packages() {
         debug_print "===== DEBUG STAGE 1: NORMALIZED PACKAGES ====="
         debug_print "Total packages parsed for '$pipeline_default_mode': $pipeline_package_count"
         debug_print "--- first 10 records ---"
-        echo "$STAGE1_PACKAGES" | head -n 10 >&2
+        head -n 10 "$STAGE1_PACKAGES" >&2
         debug_print "--- end DEBUG STAGE 1 PACKAGES ---"
     fi
 
@@ -2216,7 +2198,7 @@ process_packages() {
     # STAGE 2: EXTRACT FILESYSTEM PATHS
     # ========================================================================
 
-    if ! extract_package_paths "$STAGE1_PACKAGES"; then
+    if ! extract_package_paths "$STAGE1_PACKAGES" "$STAGE2_PATHS"; then
         return 1
     fi
 
@@ -2229,7 +2211,7 @@ process_packages() {
     # STAGE 3: COLLECT STAT METADATA
     # ========================================================================
 
-    if ! collect_path_stats; then
+    if ! collect_path_stats "$STAGE2_PATHS" "$STAGE3_STATS"; then
         return 1
     fi
 
@@ -2242,7 +2224,7 @@ process_packages() {
     # STAGE 4: MERGE PACKAGE IDENTITY WITH FILESYSTEM METADATA
     # ========================================================================
 
-    if ! merge_package_metadata "$STAGE1_PACKAGES"; then
+    if ! merge_package_metadata "$STAGE1_PACKAGES" "$STAGE3_STATS" "$STAGE4_MERGED"; then
         return 1
     fi
 
@@ -2255,7 +2237,7 @@ process_packages() {
     # STAGE 5: CACHE EVALUATION, ART COMPILATION, AND STATE RECORDING
     # ========================================================================
 
-    if ! process_package_compilations "$pipeline_default_mode" "$pipeline_package_count"; then
+    if ! process_package_compilations "$STAGE4_MERGED" "$pipeline_default_mode" "$pipeline_package_count"; then
         return 1
     fi
 
@@ -2328,8 +2310,8 @@ runtime_setup() {
 
     # Package-pipeline state shared across the five-stage transaction.
     PREV_STATE=""
-    STAGE1_PACKAGES=""
     CURRENT_RUN_STATE=""
+    STAGE1_PACKAGES=""
     STAGE2_PATHS=""
     STAGE3_STATS=""
     STAGE4_MERGED=""
@@ -2367,23 +2349,24 @@ package_pipeline_setup() {
         CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
     fi
 
+    STAGE1_PACKAGES=$(mktemp "${TMPDIR}/opt_packages.$$.XXXXXX")
     STAGE2_PATHS=$(mktemp "${TMPDIR}/opt_paths.$$.XXXXXX")
     STAGE3_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
     STAGE4_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
 
     # Compile-error storage is lazy: without a failure, there is nothing worth writing.
     if [ "$DRY_RUN" -eq 0 ]; then
-        debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stage2_paths=$STAGE2_PATHS, stage3_stats=$STAGE3_STATS, stage4_merged=$STAGE4_MERGED"
+        debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stage1_packages=$STAGE1_PACKAGES, stage2_paths=$STAGE2_PATHS, stage3_stats=$STAGE3_STATS, stage4_merged=$STAGE4_MERGED"
     else
-        debug_print "Created dry-run package-pipeline temp files: stage2_paths=$STAGE2_PATHS, stage3_stats=$STAGE3_STATS, stage4_merged=$STAGE4_MERGED"
+        debug_print "Created dry-run package-pipeline temp files: stage1_packages=$STAGE1_PACKAGES, stage2_paths=$STAGE2_PATHS, stage3_stats=$STAGE3_STATS, stage4_merged=$STAGE4_MERGED"
     fi
 
-    if [ -z "$STAGE2_PATHS" ] || [ -z "$STAGE3_STATS" ] || [ -z "$STAGE4_MERGED" ]; then
+    if [ -z "$STAGE1_PACKAGES" ] || [ -z "$STAGE2_PATHS" ] || [ -z "$STAGE3_STATS" ] || [ -z "$STAGE4_MERGED" ]; then
         report_error "[!] FATAL: One or more package-pipeline temporary file paths are empty."
         return 1
     fi
 
-    if [ ! -f "$STAGE2_PATHS" ] || [ ! -f "$STAGE3_STATS" ] || [ ! -f "$STAGE4_MERGED" ]; then
+    if [ ! -f "$STAGE1_PACKAGES" ] || [ ! -f "$STAGE2_PATHS" ] || [ ! -f "$STAGE3_STATS" ] || [ ! -f "$STAGE4_MERGED" ]; then
         report_error "[!] FATAL: Failed to create one or more package-pipeline temporary files in $TMPDIR."
         return 1
     fi
@@ -2782,10 +2765,6 @@ main() {
     RUN_ERROR_LOG="${SCRIPT_DIR}/maintenance_errors.log"
     readonly RUN_ERROR_LOG
 
-    # Handle SIGINT/SIGTERM with conventional exit codes; EXIT cleanup follows.
-    trap 'report_error "    [!] Interrupted by user (SIGINT). Cleaning up..."; exit 130' INT
-    trap 'report_error "    [!] Terminated by system (SIGTERM). Cleaning up..."; exit 143' TERM
-
     # ============================================================================
     # CONCURRENCY GUARD
     # ============================================================================
@@ -2803,12 +2782,10 @@ main() {
 
         case "$lock_owner" in
         '' | *[!0-9]*)
-            print -r -- \
-                '[!] FATAL: Maintenance lock is already held (owner PID unavailable). Aborting.' >&2
+            print -r -- '[!] FATAL: Maintenance lock is already held (owner PID unavailable). Aborting.' >&2
             ;;
         *)
-            print -r -- \
-                "[!] FATAL: Maintenance lock is already held (recorded owner PID: $lock_owner). Aborting." >&2
+            print -r -- "[!] FATAL: Maintenance lock is already held (recorded owner PID: $lock_owner). Aborting." >&2
             ;;
         esac
 
@@ -2818,8 +2795,10 @@ main() {
     # From this point forward, this process owns the lock directory.
     LOCK_HELD=1
 
-    # Set the EXIT trap immediately after successful lock acquisition.
+    # Arm cleanup and signal handlers only after this process owns the lock.
     trap 'cleanup' EXIT
+    trap 'report_error "    [!] Interrupted by user (SIGINT). Cleaning up..."; exit 130' INT
+    trap 'report_error "    [!] Terminated by system (SIGTERM). Cleaning up..."; exit 143' TERM
 
     # The directory is the lock; this file records diagnostic ownership metadata.
     if ! print -r -- "$$" >"$LOCK_OWNER_FILE" 2>/dev/null; then
@@ -2872,16 +2851,20 @@ main() {
     # from affecting the selected package set.
     STATE_READ_FILE="$STATE_FILE"
 
-    if [ "$NO_USER" -eq 1 ] && [ ! -r "$NO_USER_STATE_FILE" ]; then
-        STATE_READ_FILE="$FULL_STATE_FILE"
-    elif [ "$USER_ONLY" -eq 1 ] && [ ! -r "$USER_ONLY_STATE_FILE" ]; then
-        STATE_READ_FILE="$FULL_STATE_FILE"
+    if [ "$NO_USER" -eq 1 ]; then
+        if [ ! -f "$NO_USER_STATE_FILE" ] || [ ! -r "$NO_USER_STATE_FILE" ]; then
+            STATE_READ_FILE="$FULL_STATE_FILE"
+        fi
+    elif [ "$USER_ONLY" -eq 1 ]; then
+        if [ ! -f "$USER_ONLY_STATE_FILE" ] || [ ! -r "$USER_ONLY_STATE_FILE" ]; then
+            STATE_READ_FILE="$FULL_STATE_FILE"
+        fi
     fi
 
     # Load the selected persistent state natively (zero-fork).
     # The data is intentionally wrapped in leading and trailing newlines so later
     # case matching operates on exact whole fingerprint lines.
-    if [ -r "$STATE_READ_FILE" ]; then
+    if [ -f "$STATE_READ_FILE" ] && [ -r "$STATE_READ_FILE" ]; then
         debug_print "Loading persistent state baseline from $STATE_READ_FILE"
         PREV_STATE="
 $(<"$STATE_READ_FILE")
@@ -2913,7 +2896,7 @@ $(<"$STATE_READ_FILE")
         trim_out=$(pm trim-caches 99999999999 2>&1)
         trim_exit=$?
 
-        if [ $trim_exit -ne 0 ]; then
+        if [ "$trim_exit" -ne 0 ]; then
             report_error "    [!] WARNING: Cache trim failed (Exit Code: $trim_exit)."
             # Only print the output if it actually contains text to avoid blank lines
             if [ -n "$trim_out" ]; then
@@ -2952,7 +2935,7 @@ $(<"$STATE_READ_FILE")
         fi
 
         # List all system packages (-s flag) with full paths (-f flag)
-        debug_print "Querying system packages via pm list packages -f -s..."
+        debug_print "Querying system packages via pm list packages -f -s --show-versioncode..."
         system_package_list=$(pm list packages -f -s --show-versioncode 2>&1)
         sys_exit=$?
 
@@ -3001,7 +2984,7 @@ $(<"$STATE_READ_FILE")
             print -r -- '[+] Step 3: Smart-optimizing user apps...'
         fi
 
-        debug_print "Querying user packages via pm list packages -f -3..."
+        debug_print "Querying user packages via pm list packages -f -3 --show-versioncode..."
         user_package_list=$(pm list packages -f -3 --show-versioncode 2>&1)
         user_exit=$?
 
@@ -3137,9 +3120,7 @@ $(<"$STATE_READ_FILE")
             STATE_STAGE_TMP=$(mktemp "${STATE_FILE}.$$.XXXXXX")
             state_stage_exit=$?
 
-            if [ "$state_stage_exit" -ne 0 ] ||
-                [ -z "$STATE_STAGE_TMP" ] ||
-                [ ! -f "$STATE_STAGE_TMP" ]; then
+            if [ "$state_stage_exit" -ne 0 ] || [ -z "$STATE_STAGE_TMP" ] || [ ! -f "$STATE_STAGE_TMP" ]; then
 
                 report_error "    [!] WARNING: Failed to create same-filesystem state staging file."
                 STATE_COMMIT_SAFE=0
@@ -3190,10 +3171,7 @@ $(<"$STATE_READ_FILE")
     # A successful normal/full run supersedes older scope-specific state caches.
     # Remove them only after the complete run has remained state-safe so the next
     # scope-limited run can fall back to the authoritative complete state.
-    if [ "$DRY_RUN" -eq 0 ] &&
-        [ "$NO_USER" -eq 0 ] &&
-        [ "$USER_ONLY" -eq 0 ] &&
-        [ "$STATE_COMMIT_SAFE" -eq 1 ]; then
+    if [ "$DRY_RUN" -eq 0 ] && [ "$NO_USER" -eq 0 ] && [ "$USER_ONLY" -eq 0 ] && [ "$STATE_COMMIT_SAFE" -eq 1 ]; then
 
         for scope_state_file in "$NO_USER_STATE_FILE" "$USER_ONLY_STATE_FILE"; do
             [ -f "$scope_state_file" ] || continue
@@ -3212,9 +3190,7 @@ $(<"$STATE_READ_FILE")
 
     # Prepare operational/runtime error notice based only on THIS run.
     run_error_notice=""
-    if [ "$DRY_RUN" -eq 0 ] &&
-        [ -n "${RUN_ERROR_TMPFILE:-}" ] &&
-        [ -s "$RUN_ERROR_TMPFILE" ]; then
+    if [ "$DRY_RUN" -eq 0 ] && [ -n "${RUN_ERROR_TMPFILE:-}" ] && [ -s "$RUN_ERROR_TMPFILE" ]; then
 
         run_error_notice="    - [!] Maintenance errors occurred. See $RUN_ERROR_LOG"
     fi
@@ -3320,6 +3296,8 @@ $(<"$STATE_READ_FILE")
 
     if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
         print -r -- '    - [!] Run incomplete: trusted persistent state was not updated.'
+    elif [ "$DRY_RUN" -eq 0 ] && [ "$TOTAL_FAILED" -gt 0 ]; then
+        print -r -- '    - Persistent state:          Trusted partial state current; failed packages omitted.'
     elif [ "$DRY_RUN" -eq 0 ]; then
         if [ "$NO_USER" -eq 1 ]; then
             print -r -- '    - Persistent state:          System-only state current.'
