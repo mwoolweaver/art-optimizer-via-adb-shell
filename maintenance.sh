@@ -1172,8 +1172,6 @@ process_packages() {
     # ========================================================================
     debug_print "Running STAGE 1: Extracting file paths..."
 
-    STAGE_PATHS="${STAGE_STATS}.paths"
-
     # Input:
     #
     #   package|/path/to/base.apk|versionCode
@@ -2061,22 +2059,23 @@ package_pipeline_setup() {
         CURRENT_RUN_STATE=$(mktemp "${TMPDIR}/opt_state.$$.XXXXXX")
     fi
 
+    STAGE_PATHS=$(mktemp "${TMPDIR}/opt_paths.$$.XXXXXX")
     STAGE_STATS=$(mktemp "${TMPDIR}/opt_stats.$$.XXXXXX")
     STAGE_MERGED=$(mktemp "${TMPDIR}/opt_merged.$$.XXXXXX")
 
     # Compile-error storage is lazy: without a failure, there is nothing worth writing.
     if [ "$DRY_RUN" -eq 0 ]; then
-        debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
+        debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, paths=$STAGE_PATHS, stats=$STAGE_STATS, merged=$STAGE_MERGED"
     else
-        debug_print "Created dry-run package-pipeline temp files: stats=$STAGE_STATS, merged=$STAGE_MERGED"
+        debug_print "Created dry-run package-pipeline temp files: paths=$STAGE_PATHS, stats=$STAGE_STATS, merged=$STAGE_MERGED"
     fi
 
-    if [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ]; then
+    if [ -z "$STAGE_PATHS" ] || [ -z "$STAGE_STATS" ] || [ -z "$STAGE_MERGED" ]; then
         report_error "[!] FATAL: One or more package-pipeline temporary file paths are empty."
         return 1
     fi
 
-    if [ ! -f "$STAGE_STATS" ] || [ ! -f "$STAGE_MERGED" ]; then
+    if [ ! -f "$STAGE_PATHS" ] || [ ! -f "$STAGE_STATS" ] || [ ! -f "$STAGE_MERGED" ]; then
         report_error "[!] FATAL: Failed to create one or more package-pipeline temporary files in $TMPDIR."
         return 1
     fi
