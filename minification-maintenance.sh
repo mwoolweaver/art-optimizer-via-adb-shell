@@ -736,7 +736,6 @@ else
 USER_PKGS_COUNT="$total_pkgs"
 fi
 debug_print "Running STAGE 1: Extracting file paths..."
-STAGE_PATHS="$STAGE_STATS.paths"
 print -r -- "$pkg_list"|awk -F '|' '
         {
             if (NF != 3)
@@ -1359,18 +1358,19 @@ fi
 if [ "$DRY_RUN" -eq 0 ];then
 CURRENT_RUN_STATE=$(mktemp "$TMPDIR/opt_state.$$.XXXXXX")
 fi
+STAGE_PATHS=$(mktemp "$TMPDIR/opt_paths.$$.XXXXXX")
 STAGE_STATS=$(mktemp "$TMPDIR/opt_stats.$$.XXXXXX")
 STAGE_MERGED=$(mktemp "$TMPDIR/opt_merged.$$.XXXXXX")
 if [ "$DRY_RUN" -eq 0 ];then
-debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stats=$STAGE_STATS, merged=$STAGE_MERGED"
+debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, paths=$STAGE_PATHS, stats=$STAGE_STATS, merged=$STAGE_MERGED"
 else
-debug_print "Created dry-run package-pipeline temp files: stats=$STAGE_STATS, merged=$STAGE_MERGED"
+debug_print "Created dry-run package-pipeline temp files: paths=$STAGE_PATHS, stats=$STAGE_STATS, merged=$STAGE_MERGED"
 fi
-if [ -z "$STAGE_STATS" ]||[ -z "$STAGE_MERGED" ];then
+if [ -z "$STAGE_PATHS" ]||[ -z "$STAGE_STATS" ]||[ -z "$STAGE_MERGED" ];then
 report_error "[!] FATAL: One or more package-pipeline temporary file paths are empty."
 return 1
 fi
-if [ ! -f "$STAGE_STATS" ]||[ ! -f "$STAGE_MERGED" ];then
+if [ ! -f "$STAGE_PATHS" ]||[ ! -f "$STAGE_STATS" ]||[ ! -f "$STAGE_MERGED" ];then
 report_error "[!] FATAL: Failed to create one or more package-pipeline temporary files in $TMPDIR."
 return 1
 fi
