@@ -605,7 +605,6 @@ cmd() {
 # TEST CASES
 # ============================================================================
 
-
 test_dry_run_speed_profile() {
     typeset package_list failures=0
 
@@ -638,7 +637,6 @@ test_dry_run_speed_profile() {
     return "$failures"
 }
 
-
 test_dry_run_system() {
     typeset package_list failures=0
 
@@ -662,7 +660,6 @@ test_dry_run_system() {
 
     return "$failures"
 }
-
 
 test_malformed_versioncode_fails_closed() {
     typeset malformed_list output rc failures=0
@@ -723,7 +720,6 @@ test_empty_system_list() {
     return "$failures"
 }
 
-
 test_real_run_success() {
     typeset package_list failures=0
 
@@ -766,7 +762,6 @@ test_real_run_success() {
 
     return "$failures"
 }
-
 
 test_real_run_compile_failure() {
     typeset package_list failures=0
@@ -814,8 +809,6 @@ test_real_run_compile_failure() {
 
     return "$failures"
 }
-
-
 
 test_art_result_parser() {
     typeset rc failures=0 transcript
@@ -1067,7 +1060,6 @@ test_force_bypasses_cache() {
     return "$failures"
 }
 
-
 test_quiet_suppresses_routine_progress() {
     typeset package_list quiet_text failures=0
 
@@ -1194,7 +1186,6 @@ test_health_json_and_battery_policies() {
     return "$failures"
 }
 
-
 test_no_trim_json_cli() {
     typeset output errors failures=0
 
@@ -1243,7 +1234,6 @@ test_no_trim_json_cli() {
 
     return "$failures"
 }
-
 
 test_user_only_state_lifecycle() {
     typeset output failures=0
@@ -1320,7 +1310,6 @@ test_user_only_state_lifecycle() {
     return "$failures"
 }
 
-
 test_cached_dry_run_probes_result_mode() {
     typeset output failures=0
 
@@ -1350,7 +1339,6 @@ test_cached_dry_run_probes_result_mode() {
 
     return "$failures"
 }
-
 
 test_cli_modern_result_detection_when_needed() {
     typeset output failures=0
@@ -1384,7 +1372,6 @@ test_cli_modern_result_detection_when_needed() {
 
     return "$failures"
 }
-
 
 test_cli_legacy_result_detection_when_needed() {
     typeset output failures=0
