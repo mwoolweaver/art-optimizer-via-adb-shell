@@ -1008,60 +1008,55 @@ print_system_status() {
 }
 
 # ============================================================================
-# FUNCTION: process_packages()
-# Purpose: Walk packages through normalization, fingerprinting, and selective compilation.
+# FUNCTION: normalize_package_list()
+# Purpose: Normalize raw Package Manager output into trusted internal records.
 # Params:
-#   $1 = Package list (format: "package:/path/to/apk.apk=package.name\n...")
-#   $2 = Default compile mode (system, speed-profile)
+#   $1 = Raw Package Manager package list
+#   $2 = Package realm / default compile mode (system, speed-profile)
+# Outputs:
+#   NORMALIZED_PKG_LIST = package|path|versionCode records
+#   PACKAGE_COUNT       = number of normalized package records
 # ============================================================================
-process_packages() {
-    pkg_list="$1"
-    default_mode="$2"
+normalize_package_list() {
+    normalize_raw_pkg_list="$1"
+    normalize_default_mode="$2"
 
-    # The system package realm is foundational and must not vanish silently.
-    # An empty user-app realm is legitimate when no third-party packages are installed.
-    if [ -z "$pkg_list" ]; then
-        if [ "$default_mode" = "speed-profile" ]; then
-            USER_PKGS_COUNT=0
-            debug_print "No user/third-party packages found; user stage completed with 0 packages."
-            return 0
-        fi
+    NORMALIZED_PKG_LIST=""
+    PACKAGE_COUNT=0
 
-        report_error "    [!] ERROR: Package list for mode '$default_mode' is unexpectedly empty."
+    if [ -z "$normalize_raw_pkg_list" ]; then
+        report_error "    [!] ERROR: Package normalization received an empty package list."
         return 1
     fi
 
     # ========================================================================
     # NORMALIZE PM OUTPUT
     # ========================================================================
-    # process_packages() receives the output of:
-    #
-    #   pm list packages -f (-s||-3) --show-versioncode
     #
     # Input:
+    #
     #   package:/path/to/base.apk=com.example.app versionCode:12345
     #
-    # Convert once to our internal format:
+    # Output:
+    #
     #   com.example.app|/path/to/base.apk|12345
     #
     # Prof. Tolkien's warning: one does not simply split on the first "=".
     # Android /data/app paths may contain "=" padding themselves, so the
-    # package separator is the LAST "="; for example:
+    # package separator is the LAST "=".
     #
-    #   /data/app/~~NFUaidAwYhRskD6PhHgvHA==/...
-    #
-    # The versionCode suffix is then parsed from the right-hand side.
+    # The versionCode suffix is parsed from the right-hand side.
     # From this point forward, "|" separates package|path|versionCode.
     # ========================================================================
 
     debug_print "Normalizing package list to package|path|versionCode format..."
 
-    # Strip "package:" prefix and carriage returns purely in RAM (Zero-Fork)
-    pkg_list="${pkg_list//package:/}"
-    pkg_list="${pkg_list//$CR/}"
+    # Strip "package:" prefix and carriage returns purely in RAM (Zero-Fork).
+    normalize_work_list="${normalize_raw_pkg_list//package:/}"
+    normalize_work_list="${normalize_work_list//$CR/}"
 
-    normalized_pkg_list=$(
-        print -r -- "$pkg_list" |
+    NORMALIZED_PKG_LIST=$(
+        print -r -- "$normalize_work_list" |
             awk '
             {
                 line = $0
@@ -1096,8 +1091,6 @@ process_packages() {
                 version = substr(rhs, RSTART + 13)
 
                 # Admit only a valid internal package record.
-                # The versionCode regex above has already guaranteed that
-                # version contains one or more decimal digits.
                 if (pkg == "" ||
                     path !~ /^\// ||
                     index(path, "|") != 0 ||
@@ -1121,26 +1114,27 @@ process_packages() {
             }
 
             END {
-                # A requested versionCode is part of the trusted fingerprint.
-                # If any PM record lacks a valid one, fail the entire
-                # normalization step rather than silently dropping a package.
+                # versionCode is part of the trusted fingerprint.
+                # Any malformed PM record fails normalization closed.
                 if (invalid_records > 0)
                     exit 2
             }
-        '
+            '
     )
 
     normalize_exit=$?
 
     if [ "$normalize_exit" -ne 0 ]; then
+        NORMALIZED_PKG_LIST=""
+        PACKAGE_COUNT=0
         report_error "    [!] ERROR: Package normalization failed (Exit Code: $normalize_exit)."
         return 1
     fi
 
-    pkg_list="$normalized_pkg_list"
-
-    # A non-empty package-manager result becoming empty means normalization failed.
-    if [ -z "$pkg_list" ]; then
+    # A non-empty Package Manager result becoming empty means normalization
+    # failed even if awk itself happened to return success.
+    if [ -z "$NORMALIZED_PKG_LIST" ]; then
+        PACKAGE_COUNT=0
         report_error "    [!] ERROR: Package list became empty during normalization."
         return 1
     fi
@@ -1148,49 +1142,80 @@ process_packages() {
     # ========================================================================
     # COUNT TOTAL PACKAGES
     # ========================================================================
-    total_pkgs=0
 
-    OLD_IFS="$IFS"
+    normalize_old_ifs="$IFS"
     IFS='
 '
 
     case "$-" in
-    *f*) package_noglob_was_set=1 ;;
-    *) package_noglob_was_set=0 ;;
+    *f*) normalize_noglob_was_set=1 ;;
+    *) normalize_noglob_was_set=0 ;;
     esac
 
     set -f
-    for item in $pkg_list; do
-        [ -n "$item" ] && total_pkgs=$((total_pkgs + 1))
+
+    for normalize_item in $NORMALIZED_PKG_LIST; do
+        [ -n "$normalize_item" ] &&
+            PACKAGE_COUNT=$((PACKAGE_COUNT + 1))
     done
 
-    if [ "$package_noglob_was_set" -eq 0 ]; then
+    if [ "$normalize_noglob_was_set" -eq 0 ]; then
         set +f
     fi
 
-    IFS="$OLD_IFS"
+    IFS="$normalize_old_ifs"
+
+    if [ "$PACKAGE_COUNT" -le 0 ]; then
+        NORMALIZED_PKG_LIST=""
+        report_error "    [!] ERROR: Package normalization produced no countable package records."
+        return 1
+    fi
 
     # ========================================================================
     # DEBUG NORMALIZED INPUT
     # ========================================================================
+
     if [ "$DEBUG" -eq 1 ]; then
         debug_print "===== DEBUG NORMALIZED PACKAGE LIST ====="
-        debug_print "Total packages parsed for '$default_mode': $total_pkgs"
+        debug_print "Total packages parsed for '$normalize_default_mode': $PACKAGE_COUNT"
         debug_print "--- first 10 records ---"
-        echo "$pkg_list" | head -n 10 >&2
+        echo "$NORMALIZED_PKG_LIST" | head -n 10 >&2
         debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
     fi
 
-    # Preserve the parsed package count even if a later stage fails.
-    if [ "$default_mode" = "system" ]; then
-        SYSTEM_PKGS_COUNT="$total_pkgs"
-    else
-        USER_PKGS_COUNT="$total_pkgs"
+    return 0
+}
+
+# ============================================================================
+# FUNCTION: collect_package_stats()
+# Purpose: Extract unique filesystem paths and collect stat metadata.
+# Params:
+#   $1 = Normalized package list (package|path|versionCode)
+# Writes:
+#   STAGE_PATHS = unique APK and parent-directory paths
+#   STAGE_STATS = path=mtime:size:inode records
+# ============================================================================
+collect_package_stats() {
+    stats_pkg_list="$1"
+
+    if [ -z "$stats_pkg_list" ]; then
+        report_error "    [!] ERROR: Filesystem metadata stage received no normalized package records."
+        return 1
+    fi
+
+    if [ -z "${STAGE_PATHS:-}" ] ||
+        [ -z "${STAGE_STATS:-}" ] ||
+        [ ! -f "$STAGE_PATHS" ] ||
+        [ ! -f "$STAGE_STATS" ]; then
+
+        report_error "    [!] ERROR: Filesystem metadata staging files are unavailable."
+        return 1
     fi
 
     # ========================================================================
     # STAGE 1: Extract file paths
     # ========================================================================
+
     debug_print "Running STAGE 1: Extracting file paths..."
 
     # Input:
@@ -1202,10 +1227,10 @@ process_packages() {
     #   /path/to/base.apk
     #   /path/to/parent/directory
     #
-    # Prof. TEM+P's rule: only filesystem paths reach stat; keep the specimen tray clean.
+    # Prof. TEM+P's rule: only filesystem paths reach stat.
     # ========================================================================
 
-    print -r -- "$pkg_list" |
+    print -r -- "$stats_pkg_list" |
         awk -F '|' '
         {
             if (NF != 3)
@@ -1213,16 +1238,16 @@ process_packages() {
 
             path = $2
 
-            # Basic sanity checks
+            # Basic sanity checks.
             if (path == "" || length(path) > 1024)
                 next
 
-            # Deduplicate APK/file paths
+            # Deduplicate APK/file paths.
             if (!seen[path]++) {
                 print path
             }
 
-            # Extract parent directory
+            # Extract parent directory.
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
 
@@ -1233,7 +1258,7 @@ process_packages() {
                 }
             }
         }
-    ' >"$STAGE_PATHS"
+        ' >"$STAGE_PATHS"
 
     stage1_exit=$?
 
@@ -1242,9 +1267,15 @@ process_packages() {
         return 1
     fi
 
+    if [ ! -s "$STAGE_PATHS" ]; then
+        report_error "    [!] ERROR: Stage 1 path extraction produced no filesystem paths."
+        return 1
+    fi
+
     # ========================================================================
     # DEBUG STAGE 1: PATHS
     # ========================================================================
+
     if [ "$DEBUG" -eq 1 ]; then
         STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
         debug_print "===== DEBUG STAGE 1 PATHS ====="
@@ -1258,7 +1289,8 @@ process_packages() {
     # STAGE 1b: STATS
     # ========================================================================
     #
-    # STAGE_PATHS is path-only; keep stat failures visible in debug rather than hiding evidence.
+    # STAGE_PATHS is path-only; keep stat failures visible in debug rather
+    # than hiding evidence.
     # ========================================================================
 
     debug_print "Running stat on unique paths..."
@@ -1273,7 +1305,6 @@ process_packages() {
         debug_print "Stage 1b stat completed with missing/unreadable paths (Exit Code: $stage1b_exit)."
     fi
 
-    # Validate stat produced output.
     if [ ! -s "$STAGE_STATS" ]; then
         report_error "    [!] ERROR: stat produced no output. Persistent state will not be updated."
         return 1
@@ -1281,6 +1312,7 @@ process_packages() {
 
     if [ "$DEBUG" -eq 1 ]; then
         STAGE_STAT_COUNT=$(wc -l <"$STAGE_STATS")
+
         debug_print "===== DEBUG STAGE 1b: STAT ACCOUNTING ====="
         debug_print "Unique paths submitted to stat: $STAGE_PATH_COUNT"
         debug_print "Stat records produced:          $STAGE_STAT_COUNT"
@@ -1295,9 +1327,41 @@ process_packages() {
         debug_print "--- end DEBUG STAGE 1b ACCOUNTING ---"
     fi
 
+    return 0
+}
+
+# ============================================================================
+# FUNCTION: merge_package_metadata()
+# Purpose: Resolve each normalized package against collected filesystem metadata.
+# Params:
+#   $1 = Normalized package list (package|path|versionCode)
+# Reads:
+#   STAGE_STATS
+# Writes:
+#   STAGE_MERGED = package|path|versionCode|metadata
+# ============================================================================
+merge_package_metadata() {
+    merge_pkg_list="$1"
+
+    if [ -z "$merge_pkg_list" ]; then
+        report_error "    [!] ERROR: Metadata merge received no normalized package records."
+        return 1
+    fi
+
+    if [ -z "${STAGE_STATS:-}" ] || [ ! -s "$STAGE_STATS" ]; then
+        report_error "    [!] ERROR: Metadata merge received no stat catalog."
+        return 1
+    fi
+
+    if [ -z "${STAGE_MERGED:-}" ] || [ ! -f "$STAGE_MERGED" ]; then
+        report_error "    [!] ERROR: Merged-package staging file is unavailable."
+        return 1
+    fi
+
     # ========================================================================
-    # STAGE 2: Match packages to stat metadata (STAGE_MERGED)
+    # STAGE 2: Match packages to stat metadata
     # ========================================================================
+
     debug_print "Running STAGE 2: Matching packages to stat metadata..."
 
     # Input:
@@ -1313,7 +1377,7 @@ process_packages() {
     #   package|path|versionCode|mtime:size:inode
     # ========================================================================
 
-    print -r -- "$pkg_list" |
+    print -r -- "$merge_pkg_list" |
         awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DEBUG" '
         BEGIN {
             # Load stat cache into memory.
@@ -1382,6 +1446,7 @@ process_packages() {
             if (pkg == "" ||
                 path == "" ||
                 version !~ /^[0-9]+$/) {
+
                 invalid_package_records++
                 next
             }
@@ -1396,8 +1461,8 @@ process_packages() {
             } else {
                 # APK metadata unavailable.
                 #
-                # Prof. JWST fallback: if the APK itself is absent from the catalog, consult
-                # its parent directory so split/partial installation changes remain detectable.
+                # Prof. JWST fallback: consult the APK parent directory so
+                # split/partial installation changes remain detectable.
 
                 dir = path
                 sub("/[^/]+/?$", "", dir)
@@ -1413,8 +1478,8 @@ process_packages() {
                         dir_meta[3] ~ /^[0-9]+$/) {
 
                         # Preserve directory mtime and inode.
-                        # Use zero for size because this is directory
-                        # fallback metadata.
+                        # Use zero for size because this is directory fallback
+                        # metadata.
                         meta = dir_meta[1] ":0:" dir_meta[3]
                         directory_fallbacks++
                     } else {
@@ -1459,6 +1524,7 @@ process_packages() {
                 # ------------------------------------------------------------
                 # Verify stat accounting
                 # ------------------------------------------------------------
+
                 if (stat_records == valid_stat_records + invalid_stat_records) {
                     print "[+] Stat accounting verified." > "/dev/stderr"
                 } else {
@@ -1471,6 +1537,7 @@ process_packages() {
                 # ------------------------------------------------------------
                 # Verify package-input accounting
                 # ------------------------------------------------------------
+
                 if (input_records == accepted_packages + invalid_package_records) {
                     print "[+] Package-input accounting verified." > "/dev/stderr"
                 } else {
@@ -1483,7 +1550,9 @@ process_packages() {
                 # ------------------------------------------------------------
                 # Verify metadata-resolution accounting
                 # ------------------------------------------------------------
-                resolved_packages = direct_matches + directory_fallbacks + unavailable
+
+                resolved_packages =
+                    direct_matches + directory_fallbacks + unavailable
 
                 if (accepted_packages == resolved_packages) {
                     print "[+] Metadata-resolution accounting verified." > "/dev/stderr"
@@ -1496,6 +1565,7 @@ process_packages() {
                 # ------------------------------------------------------------
                 # Verify merge accounting
                 # ------------------------------------------------------------
+
                 if (accepted_packages == merged_records) {
                     print "[+] Merge accounting verified." > "/dev/stderr"
                 } else {
@@ -1508,7 +1578,7 @@ process_packages() {
                 print "" > "/dev/stderr"
             }
         }
-    ' >"$STAGE_MERGED"
+        ' >"$STAGE_MERGED"
 
     stage2_exit=$?
 
@@ -1517,8 +1587,6 @@ process_packages() {
         return 1
     fi
 
-    # A successful merge of a non-empty normalized package list should not
-    # result in an empty Stage 2 output.
     if [ ! -s "$STAGE_MERGED" ]; then
         report_error "    [!] ERROR: Stage 2 produced no merged package records."
         return 1
@@ -1527,6 +1595,7 @@ process_packages() {
     # ========================================================================
     # DEBUG STAGE 2: STAGE_MERGED
     # ========================================================================
+
     if [ "$DEBUG" -eq 1 ]; then
         MERGED_LINE_COUNT=$(wc -l <"$STAGE_MERGED")
         debug_print "===== DEBUG STAGE 2: STAGE_MERGED ====="
@@ -1537,9 +1606,55 @@ process_packages() {
         debug_print "--- end DEBUG STAGE_MERGED ---"
     fi
 
+    return 0
+}
+
+# ============================================================================
+# FUNCTION: process_package_compilations()
+# Purpose: Evaluate fingerprints, selectively invoke ART, and record state.
+# Params:
+#   $1 = Default compile mode (system, speed-profile)
+#   $2 = Total package count for this realm
+# Reads:
+#   STAGE_MERGED
+# Updates:
+#   CURRENT_RUN_STATE
+#   TOTAL_COMPILED
+#   TOTAL_ART_SKIPPED
+#   TOTAL_WOULD_COMPILE
+#   TOTAL_SKIPPED
+#   TOTAL_FAILED
+#   TOTAL_INVALID
+# ============================================================================
+process_package_compilations() {
+    default_mode="$1"
+    total_pkgs="$2"
+
+    case "$default_mode" in
+    system | speed-profile)
+        ;;
+    *)
+        report_error "    [!] ERROR: Invalid compilation mode: $default_mode"
+        return 1
+        ;;
+    esac
+
+    case "$total_pkgs" in
+    '' | *[!0-9]* | 0)
+        report_error "    [!] ERROR: Compilation stage received an invalid package count."
+        return 1
+        ;;
+    esac
+
+    if [ -z "${STAGE_MERGED:-}" ] || [ ! -s "$STAGE_MERGED" ]; then
+        report_error "    [!] ERROR: Compilation stage received no merged package records."
+        return 1
+    fi
+
     # ========================================================================
     # STAGE 3: Process each package
     # ========================================================================
+
     debug_print "Running STAGE 3: Processing package compilation sequence..."
 
     current=0
@@ -1563,8 +1678,8 @@ process_packages() {
     #
     #   package|path|versionCode|metadata
     #
-    while IFS='|' read -r pkg_name apk_path version_code file_meta; do
 
+    while IFS='|' read -r pkg_name apk_path version_code file_meta; do
         current=$((current + 1))
 
         if [ -z "$pkg_name" ] || [ -z "$apk_path" ]; then
@@ -1572,7 +1687,8 @@ process_packages() {
             continue
         fi
 
-        # versionCode is an opaque numeric identity: equality matters, ordering does not.
+        # versionCode is an opaque numeric identity:
+        # equality matters, ordering does not.
         case "$version_code" in
         '' | *[!0-9]*)
             echo "    [!] Skipping package with invalid versionCode: $pkg_name" >&2
@@ -1597,9 +1713,9 @@ process_packages() {
         compile_mode="$default_mode"
 
         if [ "$default_mode" = "system" ]; then
-            # Prof. Wilde notes that not every package dresses for the same occasion:
-            # preinstalled system code gets full AOT (-m speed), while updated system
-            # apps under /data/ use profile-guided speed-profile compilation.
+            # Prof. Wilde notes that not every package dresses for the same
+            # occasion: preinstalled system code gets full AOT (-m speed),
+            # while updated system apps under /data/ use speed-profile.
 
             if [ "$apk_path" != "${apk_path#/data/}" ]; then
                 compile_mode="speed-profile"
@@ -1612,7 +1728,10 @@ process_packages() {
         # Build fingerprint
         # ====================================================================
 
-        # Prof. Tolkien's lineage is package|path|versionCode|metadata.
+        # Prof. Tolkien's lineage is:
+        #
+        #   package|path|versionCode|metadata
+        #
         # Exact lineage matches skip recompilation; changed lineage proceeds.
 
         state_writable=1
@@ -1620,9 +1739,7 @@ process_packages() {
         fingerprint="${pkg_name}|${apk_path}|${version_code}|${file_meta}"
 
         case "${file_meta}" in
-
         UNAVAILABLE)
-
             echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name" >&2
             echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name" >&2
 
@@ -1633,9 +1750,9 @@ process_packages() {
             # Never write an UNAVAILABLE fingerprint to persistent state.
             #
             # If a previous trustworthy fingerprint exists for this exact
-            # package/path/versionCode, carry it forward so a temporary metadata
-            # failure does not erase known-good state. A different versionCode
-            # must never inherit an older package version's fingerprint.
+            # package/path/versionCode, carry it forward only after successful
+            # compilation. A different versionCode must never inherit an older
+            # package version's fingerprint.
 
             state_key="${pkg_name}|${apk_path}|${version_code}|"
 
@@ -1647,7 +1764,9 @@ process_packages() {
             *f*) state_noglob_was_set=1 ;;
             *) state_noglob_was_set=0 ;;
             esac
+
             set -f
+
             for prev_fingerprint in $PREV_STATE; do
                 case "$prev_fingerprint" in
                 "$state_key"*)
@@ -1659,6 +1778,7 @@ process_packages() {
                         debug_print "Found previous trustworthy fingerprint for [$pkg_name]; preserving only after successful compilation."
                         ;;
                     esac
+
                     break
                     ;;
                 esac
@@ -1671,21 +1791,18 @@ process_packages() {
             IFS="$state_old_ifs"
 
             # Fall through to compilation.
-
             ;;
 
         *)
-
             debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
 
-            # --force deliberately ignores unchanged lineage while preserving PREV_STATE
-            # for trustworthy UNAVAILABLE-metadata fallback handling.
+            # --force deliberately ignores unchanged lineage while preserving
+            # PREV_STATE for trustworthy UNAVAILABLE-metadata fallback handling.
             if [ "$FORCE" -eq 0 ]; then
                 case "$PREV_STATE" in
                 *"
 $fingerprint
 "*)
-
                     stage3_skipped=$((stage3_skipped + 1))
 
                     if [ "$DRY_RUN" -eq 0 ]; then
@@ -1706,7 +1823,6 @@ $fingerprint
             else
                 debug_print "Force mode bypassing cached fingerprint for [$pkg_name]."
             fi
-
             ;;
         esac
 
@@ -1715,7 +1831,6 @@ $fingerprint
         # ====================================================================
 
         if [ "$DRY_RUN" -eq 1 ]; then
-
             if [ "$QUIET" -eq 0 ]; then
                 print -r -- "    [DRY-RUN] ($current/$total_pkgs) Would compile (-m $compile_mode): $pkg_name"
             fi
@@ -1723,7 +1838,6 @@ $fingerprint
             stage3_would_compile=$((stage3_would_compile + 1))
 
         else
-
             # Report routine per-package progress unless --quiet is active.
             if [ "$QUIET" -eq 0 ]; then
                 if [ "$compile_mode" = "speed" ]; then
@@ -1734,13 +1848,16 @@ $fingerprint
 
                 else
                     print -r -- "    [+] ($current/$total_pkgs) User app compile (-m speed-profile): $pkg_name"
-
                 fi
             fi
 
             # A real run earns the right to know ART's result interface only
-            # when a package actually survives fingerprint filtering and reaches ART.
-            # Prof. TEM+P's rule: no ART work means no ART interrogation.
+            # when a package survives fingerprint filtering and reaches ART.
+            #
+            # Prof. TEM+P's rule:
+            #
+            #   No ART work means no ART interrogation.
+
             if [ "$ART_RESULT_MODE" = "not-determined" ]; then
                 debug_print "First package requires ART; determining result-reporting capability now."
                 detect_art_result_reporting
@@ -1766,14 +1883,18 @@ $fingerprint
             if [ "$ART_VERBOSE_RESULTS" -eq 1 ]; then
                 parse_art_compile_result "$err_output"
                 art_parse_exit=$?
+
                 debug_print "ART result for [$pkg_name]: exit=$compile_exit final=$ART_FINAL_STATUS count=$ART_FINAL_STATUS_COUNT storage_low=$ART_SKIPPED_STORAGE_LOW"
             fi
 
             # Prof. JWST's verdict hierarchy:
+            #
             #   1. A nonzero command exit is always failure.
             #   2. Where verbose ART results exist, Final Status is authoritative.
             #   3. Missing, duplicated, or unknown status fails closed.
-            #   4. Legacy Android keeps the historic zero-exit fallback because -v is absent.
+            #   4. Legacy Android keeps the historic zero-exit fallback because
+            #      -v is absent.
+
             if [ "$compile_exit" -ne 0 ]; then
                 compile_failure_reason="command exit $compile_exit"
 
@@ -1783,10 +1904,13 @@ $fingerprint
             elif [ "$art_parse_exit" -ne 0 ]; then
                 if [ "$ART_FINAL_STATUS_COUNT" -eq 0 ]; then
                     compile_failure_reason="missing ART Final Status"
+
                 elif [ "$ART_FINAL_STATUS_COUNT" -gt 1 ]; then
                     compile_failure_reason="multiple ART Final Status records ($ART_FINAL_STATUS_COUNT)"
+
                 elif [ -n "$ART_FINAL_STATUS_RAW" ]; then
                     compile_failure_reason="unknown ART Final Status: $ART_FINAL_STATUS_RAW"
+
                 else
                     compile_failure_reason="invalid ART Final Status"
                 fi
@@ -1799,8 +1923,9 @@ $fingerprint
 
                 SKIPPED)
                     if [ "$ART_SKIPPED_STORAGE_LOW" -eq 1 ]; then
-                        # A storage-low skip is not a satisfied maintenance request.
-                        # Do not cache it; omission from state deliberately forces retry.
+                        # A storage-low skip is not a satisfied maintenance
+                        # request. Do not cache it; omission deliberately
+                        # forces retry.
                         compile_failure_reason="ART Final Status: SKIPPED (storage low; retry required)"
                     else
                         compile_outcome="SKIPPED"
@@ -1812,8 +1937,9 @@ $fingerprint
                     ;;
 
                 *)
-                    # Should be unreachable after parse_art_compile_result(), but
-                    # Prof. Twain declines to let impossible states become success.
+                    # Should be unreachable after parse_art_compile_result(),
+                    # but Prof. Twain declines to let impossible states become
+                    # success.
                     compile_failure_reason="unexpected ART Final Status: $ART_FINAL_STATUS"
                     ;;
                 esac
@@ -1824,6 +1950,7 @@ $fingerprint
                 if [ "$QUIET" -eq 0 ]; then
                     print -r -- "    [+] ($current/$total_pkgs) ART performed compilation: $pkg_name"
                 fi
+
                 stage3_compiled=$((stage3_compiled + 1))
                 ;;
 
@@ -1831,6 +1958,7 @@ $fingerprint
                 if [ "$QUIET" -eq 0 ]; then
                     print -r -- "    [~] ($current/$total_pkgs) ART skipped compilation (already satisfied/no work): $pkg_name"
                 fi
+
                 stage3_art_skipped=$((stage3_art_skipped + 1))
                 ;;
 
@@ -1838,8 +1966,9 @@ $fingerprint
                 if [ "$QUIET" -eq 0 ]; then
                     print -r -- "    [+] ($current/$total_pkgs) Compile command succeeded (legacy result mode): $pkg_name"
                 fi
+
                 # Legacy Package Manager exposes no Final Status; preserve the
-                # script's historical zero-exit behavior on those Android releases.
+                # script's historical zero-exit behavior.
                 stage3_compiled=$((stage3_compiled + 1))
                 ;;
 
@@ -1873,15 +2002,19 @@ $fingerprint
                 if [ -n "$ERROR_TMPFILE" ]; then
                     if ! print -r -- "FAIL (exit=$compile_exit; result=${ART_FINAL_STATUS:-N/A}; reason=$compile_failure_reason): $pkg_name
 $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
+
                         report_error "    [!] CRITICAL: Failed to write to compile error log! Storage may be full."
                     fi
                 fi
                 ;;
             esac
 
-            # Only a trustworthy successful outcome earns state. On modern ART
-            # that means PERFORMED or non-storage-low SKIPPED; legacy devices use
-            # the historical zero-exit fallback because no Final Status exists.
+            # Only a trustworthy successful outcome earns state.
+            #
+            # On modern ART that means PERFORMED or non-storage-low SKIPPED.
+            # Legacy devices use the historical zero-exit fallback because
+            # no Final Status exists.
+
             if [ "$compile_outcome" != "FAILED" ]; then
                 if [ "$state_writable" -eq 1 ]; then
                     if ! print -r -- "$fingerprint" >&3; then
@@ -1901,7 +2034,6 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
                 fi
             fi
         fi
-
     done <"$STAGE_MERGED"
 
     # ========================================================================
@@ -1934,6 +2066,7 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
             else
                 debug_print "[!] WARNING: Stage 3 accounting mismatch."
             fi
+
         else
             stage3_accounted=$((stage3_skipped + stage3_art_skipped + stage3_compiled + stage3_failed + stage3_invalid))
 
@@ -1972,6 +2105,157 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
     TOTAL_INVALID=$((TOTAL_INVALID + stage3_invalid))
 
     if [ "$stage3_state_error" -ne 0 ]; then
+        return 1
+    fi
+
+    return 0
+}
+
+# ============================================================================
+# FUNCTION: process_packages()
+# Purpose: Conduct one package realm through the complete package pipeline.
+# Params:
+#   $1 = Raw Package Manager package list
+#   $2 = Default compile mode (system, speed-profile)
+# ============================================================================
+process_packages() {
+    raw_pkg_list="$1"
+    default_mode="$2"
+
+    # Each invocation owns fresh normalization results.
+    NORMALIZED_PKG_LIST=""
+    PACKAGE_COUNT=0
+
+    # ========================================================================
+    # VALIDATE PACKAGE REALM
+    # ========================================================================
+
+    case "$default_mode" in
+    system | speed-profile)
+        ;;
+    *)
+        report_error "    [!] ERROR: Invalid package processing mode: $default_mode"
+        return 1
+        ;;
+    esac
+
+    # The system package realm is foundational and must not vanish silently.
+    # An empty user-app realm is legitimate when no third-party packages exist.
+    if [ -z "$raw_pkg_list" ]; then
+        if [ "$default_mode" = "speed-profile" ]; then
+            USER_PKGS_COUNT=0
+            debug_print "No user/third-party packages found; user stage completed with 0 packages."
+            return 0
+        fi
+
+        report_error "    [!] ERROR: Package list for mode '$default_mode' is unexpectedly empty."
+        return 1
+    fi
+
+    # ========================================================================
+    # STAGE 0: NORMALIZE PACKAGE MANAGER OUTPUT
+    # ========================================================================
+
+    if ! normalize_package_list "$raw_pkg_list" "$default_mode"; then
+        return 1
+    fi
+
+    # The helper returned success; now verify the promised handoff actually
+    # exists before another stage is allowed to consume it.
+
+    if [ -z "${NORMALIZED_PKG_LIST:-}" ]; then
+        report_error "    [!] ERROR: Package normalization succeeded but produced no package records."
+        return 1
+    fi
+
+    case "${PACKAGE_COUNT:-}" in
+    '' | *[!0-9]* | 0)
+        report_error "    [!] ERROR: Package normalization produced an invalid package count."
+        return 1
+        ;;
+    esac
+
+    # Preserve the parsed package count even if a later stage fails.
+    if [ "$default_mode" = "system" ]; then
+        SYSTEM_PKGS_COUNT="$PACKAGE_COUNT"
+    else
+        USER_PKGS_COUNT="$PACKAGE_COUNT"
+    fi
+
+    # ========================================================================
+    # STAGE 1: COLLECT FILESYSTEM METADATA
+    # ========================================================================
+
+    # STAGE_PATHS and STAGE_STATS were independently reserved by mktemp.
+    # Refuse to recreate a missing staging object under an unreserved pathname.
+    if [ -z "${STAGE_PATHS:-}" ] ||
+        [ -z "${STAGE_STATS:-}" ] ||
+        [ ! -f "$STAGE_PATHS" ] ||
+        [ ! -f "$STAGE_STATS" ]; then
+
+        report_error "    [!] ERROR: Package filesystem staging files are unavailable."
+        return 1
+    fi
+
+    # The files are reused between system and user realms. Clear the previous
+    # realm before asking the next producer to populate them.
+    if ! : >"$STAGE_PATHS"; then
+        report_error "    [!] ERROR: Unable to reset package-path staging file."
+        return 1
+    fi
+
+    if ! : >"$STAGE_STATS"; then
+        report_error "    [!] ERROR: Unable to reset stat staging file."
+        return 1
+    fi
+
+    if ! collect_package_stats "$NORMALIZED_PKG_LIST"; then
+        return 1
+    fi
+
+    # Prof. TEM+P's handoff rule: returning zero is not sufficient.
+    # A successful producer must leave the specimen it promised.
+
+    if [ ! -s "$STAGE_PATHS" ]; then
+        report_error "    [!] ERROR: Path collection succeeded but produced no filesystem paths."
+        return 1
+    fi
+
+    if [ ! -s "$STAGE_STATS" ]; then
+        report_error "    [!] ERROR: Stat collection succeeded but produced no metadata records."
+        return 1
+    fi
+
+    # ========================================================================
+    # STAGE 2: MERGE PACKAGE IDENTITY WITH FILESYSTEM METADATA
+    # ========================================================================
+
+    if [ -z "${STAGE_MERGED:-}" ] || [ ! -f "$STAGE_MERGED" ]; then
+        report_error "    [!] ERROR: Merged-package staging file is unavailable."
+        return 1
+    fi
+
+    # Do not permit the previous realm's merged records to impersonate the
+    # output of the current realm.
+    if ! : >"$STAGE_MERGED"; then
+        report_error "    [!] ERROR: Unable to reset merged-package staging file."
+        return 1
+    fi
+
+    if ! merge_package_metadata "$NORMALIZED_PKG_LIST"; then
+        return 1
+    fi
+
+    if [ ! -s "$STAGE_MERGED" ]; then
+        report_error "    [!] ERROR: Metadata merge succeeded but produced no package records."
+        return 1
+    fi
+
+    # ========================================================================
+    # STAGE 3: CACHE EVALUATION AND ART COMPILATION
+    # ========================================================================
+
+    if ! process_package_compilations "$default_mode" "$PACKAGE_COUNT"; then
         return 1
     fi
 
