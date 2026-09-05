@@ -25,7 +25,7 @@ permissions: {}
 
 jobs:
   maintenance-laboratory:
-    name: Canonical Maintenance Laboratory
+    name: Canonical ART Result Laboratory
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
@@ -67,13 +67,13 @@ jobs:
 
           mksh test/make_test_fixtures.sh
 
-      - name: Run canonical maintenance laboratory
+      - name: Run canonical ART result laboratory
         shell: bash
         run: |
           set -euo pipefail
 
           echo "============================================================"
-          echo " CANONICAL MAINTENANCE SCRIPT"
+          echo " CANONICAL MAINTENANCE + ART RESULT VERIFICATION"
           echo "============================================================"
 
           mksh test/laboratory.sh
