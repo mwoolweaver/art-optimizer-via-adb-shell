@@ -4,8 +4,8 @@
 # ============================================================================
 # ART MAINTENANCE LABORATORY
 # Purpose: Exercise maintenance.sh's package pipeline, ART Final Status parsing,
-#          option behavior, JSON output, policy gates, legacy fallback, and
-#          scope-specific state using deterministic mocks.
+#          lazy ART capability discovery, dry-run probing, JSON output, policy gates,
+#          legacy fallback, and scope-specific state using deterministic mocks.
 # ============================================================================
 
 TEST_DIR="${0%/*}"
@@ -1122,6 +1122,8 @@ test_health_json_and_battery_policies() {
         "Health-only JSON reports charging state" || failures=1
     assert_file_empty "$CLI_PM_LOG" \
         "Health-only mode performs no Package Manager operations" || failures=1
+    assert_file_empty "$CLI_CMD_LOG" \
+        "Health-only mode never interrogates ART capability" || failures=1
     assert_text_not_contains "$output" "HEALTH CHECK" \
         "JSON stdout contains no human health report" || failures=1
     assert_text_not_contains "$errors" "HEALTH CHECK" \
@@ -1217,8 +1219,8 @@ test_no_trim_json_cli() {
         "No-trim cached run compatibility skipped count" || failures=1
     assert_text_contains "$output" '"cached_skipped":4' \
         "No-trim cached run explicit cached-skip count" || failures=1
-    assert_text_contains "$output" '"art_result_mode":"final-status"' \
-        "No-trim run detects modern ART Final Status support" || failures=1
+    assert_text_contains "$output" '"art_result_mode":"not-determined"' \
+        "Fully cached real run leaves ART result mode undetermined" || failures=1
     assert_text_contains "$output" '"scanned":4' \
         "No-trim cached run scanned count" || failures=1
     assert_text_not_contains "$output" "[+]" \
@@ -1233,10 +1235,8 @@ test_no_trim_json_cli() {
     assert_file_not_contains "$CLI_PM_LOG" "trim-caches" \
         "No-trim run never calls pm trim-caches" || failures=1
 
-    assert_file_contains_line "$CLI_CMD_LOG" "package help" \
-        "Modern result capability is probed once" || failures=1
-    assert_file_not_contains "$CLI_CMD_LOG" "package compile" \
-        "Fully cached no-trim run invokes no compiler" || failures=1
+    assert_file_empty "$CLI_CMD_LOG" \
+        "Fully cached real run performs no ART capability probe or compile" || failures=1
 
     assert_file_eq "${CLI_RUN_DIR}/.last_optimized" "$CLI_FULL_STATE_FILE" \
         "No-trim run preserves authoritative full state" || failures=1
@@ -1266,8 +1266,8 @@ test_user_only_state_lifecycle() {
         "Initial user-only ART-skipped count" || failures=1
     assert_text_contains "$output" '"cached_skipped":2' \
         "Initial user-only reuses complete-state baseline" || failures=1
-    assert_text_contains "$output" '"art_result_mode":"final-status"' \
-        "Initial user-only detects Final Status support" || failures=1
+    assert_text_contains "$output" '"art_result_mode":"not-determined"' \
+        "Initial cached user-only run leaves ART mode undetermined" || failures=1
     assert_text_contains "$output" '"scanned":2' \
         "Initial user-only scans only user packages" || failures=1
     assert_file_contains_line "$CLI_PM_LOG" "list packages -f -3 --show-versioncode" \
@@ -1280,6 +1280,8 @@ test_user_only_state_lifecycle() {
         "Dedicated user-only state contains only user fingerprints" || failures=1
     assert_file_eq "${CLI_RUN_DIR}/.last_optimized" "$CLI_FULL_STATE_FILE" \
         "User-only run leaves authoritative full state untouched" || failures=1
+    assert_file_empty "$CLI_CMD_LOG" \
+        "Initial cached user-only run does not interrogate ART" || failures=1
 
     # The next identical user-only run must use its dedicated cache directly.
     run_cli --user-only --no-trim --json
@@ -1290,6 +1292,10 @@ test_user_only_state_lifecycle() {
         "Repeated user-only PERFORMED count" || failures=1
     assert_text_contains "$output" '"cached_skipped":2' \
         "Repeated user-only uses dedicated cache" || failures=1
+    assert_text_contains "$output" '"art_result_mode":"not-determined"' \
+        "Repeated cached user-only run still leaves ART mode undetermined" || failures=1
+    assert_file_empty "$CLI_CMD_LOG" \
+        "Repeated cached user-only run performs no ART probe or compile" || failures=1
     assert_file_eq "${CLI_RUN_DIR}/.last_optimized_user" "$CLI_USER_STATE_FILE" \
         "Repeated user-only state remains stable" || failures=1
 
@@ -1302,6 +1308,10 @@ test_user_only_state_lifecycle() {
         "Full run restores full JSON scope" || failures=1
     assert_text_contains "$output" '"cached_skipped":4' \
         "Full run reuses authoritative full state" || failures=1
+    assert_text_contains "$output" '"art_result_mode":"not-determined"' \
+        "Fully cached complete run leaves ART mode undetermined" || failures=1
+    assert_file_empty "$CLI_CMD_LOG" \
+        "Fully cached complete run performs no ART probe or compile" || failures=1
     assert_file_missing "${CLI_RUN_DIR}/.last_optimized_user" \
         "Successful full run removes superseded user-only state" || failures=1
     assert_file_eq "${CLI_RUN_DIR}/.last_optimized" "$CLI_FULL_STATE_FILE" \
@@ -1311,25 +1321,98 @@ test_user_only_state_lifecycle() {
 }
 
 
-test_cli_legacy_result_detection() {
+test_cached_dry_run_probes_result_mode() {
     typeset output failures=0
 
     prepare_cli_case || return 1
     cp "$CLI_FULL_STATE_FILE" "${CLI_RUN_DIR}/.last_optimized" || return 1
 
+    # Dry-run is the deliberate exception: it rehearses which ART result path a
+    # real compile would use even though every package is already cached.
+    run_cli --dry-run --no-trim --json
+    output=$(<"$CLI_STDOUT")
+
+    assert_eq "$CLI_RC" 0 "Cached dry-run return code" || failures=1
+    assert_text_contains "$output" '"dry_run":true' \
+        "Cached dry-run JSON mode" || failures=1
+    assert_text_contains "$output" '"art_result_mode":"final-status"' \
+        "Cached dry-run proactively learns modern ART result mode" || failures=1
+    assert_text_contains "$output" '"would_compile":0' \
+        "Cached dry-run has no packages needing ART" || failures=1
+    assert_text_contains "$output" '"cached_skipped":4' \
+        "Cached dry-run preserves cache accounting" || failures=1
+    assert_file_contains_line "$CLI_CMD_LOG" "package help" \
+        "Cached dry-run probes ART capability for rehearsal" || failures=1
+    assert_file_not_contains "$CLI_CMD_LOG" "package compile" \
+        "Cached dry-run never performs compilation" || failures=1
+    assert_file_eq "${CLI_RUN_DIR}/.last_optimized" "$CLI_FULL_STATE_FILE" \
+        "Cached dry-run leaves persistent state untouched" || failures=1
+
+    return "$failures"
+}
+
+
+test_cli_modern_result_detection_when_needed() {
+    typeset output failures=0
+
+    prepare_cli_case || return 1
+
+    # No prior state means packages must reach ART. Capability discovery should
+    # therefore happen lazily at the first real compile, then be reused.
+    run_cli --no-trim --json
+    output=$(<"$CLI_STDOUT")
+
+    assert_eq "$CLI_RC" 0 "Modern lazy capability-detection return code" || failures=1
+    assert_text_contains "$output" '"art_result_mode":"final-status"' \
+        "First ART-bound package selects Final Status verification" || failures=1
+    assert_text_contains "$output" '"compiled":4' \
+        "Modern lazy-detection run performs all uncached packages" || failures=1
+    assert_text_contains "$output" '"cached_skipped":0' \
+        "Modern lazy-detection run has no cached skips" || failures=1
+    assert_file_contains_line "$CLI_CMD_LOG" "package help" \
+        "Modern capability is discovered when ART is first needed" || failures=1
+    assert_file_lines "$CLI_CMD_LOG" 5 \
+        "Modern lazy detection probes once plus four compile calls" || failures=1
+    assert_file_contains_line "$CLI_CMD_LOG" \
+        "package compile -v -m speed -f com.test.exact" \
+        "Modern system compile uses verbose Final Status mode" || failures=1
+    assert_file_contains_line "$CLI_CMD_LOG" \
+        "package compile -v -m speed-profile -f com.test.equals" \
+        "Modern user compile reuses verbose Final Status mode" || failures=1
+    assert_file_eq "${CLI_RUN_DIR}/.last_optimized" "$CLI_FULL_STATE_FILE" \
+        "Modern lazy-detection run commits complete state" || failures=1
+
+    return "$failures"
+}
+
+
+test_cli_legacy_result_detection_when_needed() {
+    typeset output failures=0
+
+    prepare_cli_case || return 1
+
     CLI_MOCK_ART_HELP_VERBOSE=0
     run_cli --no-trim --json
     output=$(<"$CLI_STDOUT")
 
-    assert_eq "$CLI_RC" 0 "Legacy capability-detection return code" || failures=1
+    assert_eq "$CLI_RC" 0 "Legacy lazy capability-detection return code" || failures=1
     assert_text_contains "$output" '"art_result_mode":"legacy-exit-code"' \
-        "Legacy help output selects exit-code fallback" || failures=1
-    assert_text_contains "$output" '"cached_skipped":4' \
-        "Legacy cached run preserves cached accounting" || failures=1
+        "First ART-bound package selects legacy exit-code fallback" || failures=1
+    assert_text_contains "$output" '"compiled":4' \
+        "Legacy lazy-detection run accepts four zero-exit successes" || failures=1
+    assert_text_contains "$output" '"cached_skipped":0' \
+        "Legacy lazy-detection run has no cached skips" || failures=1
     assert_file_contains_line "$CLI_CMD_LOG" "package help" \
-        "Legacy capability is still probed" || failures=1
-    assert_file_not_contains "$CLI_CMD_LOG" "package compile" \
-        "Legacy cached run performs no compile" || failures=1
+        "Legacy capability is discovered only when ART is needed" || failures=1
+    assert_file_lines "$CLI_CMD_LOG" 5 \
+        "Legacy lazy detection probes once plus four compile calls" || failures=1
+    assert_file_not_contains "$CLI_CMD_LOG" "package compile -v" \
+        "Legacy compile path never sends unsupported -v" || failures=1
+    assert_file_contains_line "$CLI_CMD_LOG" \
+        "package compile -m speed -f com.test.exact" \
+        "Legacy system compile uses exit-code mode" || failures=1
+    assert_file_eq "${CLI_RUN_DIR}/.last_optimized" "$CLI_FULL_STATE_FILE" \
+        "Legacy lazy-detection run commits complete state" || failures=1
 
     return "$failures"
 }
@@ -1440,9 +1523,11 @@ run_case 'Legacy exit-code fallback remains compatible' test_legacy_exit_code_fa
 run_case 'Force bypasses fingerprint cache' test_force_bypasses_cache
 run_case 'Quiet suppresses routine package progress' test_quiet_suppresses_routine_progress
 run_case 'Health-only JSON and battery policy gates' test_health_json_and_battery_policies
-run_case 'No-trim JSON CLI and modern capability detection' test_no_trim_json_cli
+run_case 'Fully cached real run leaves ART capability unknown' test_no_trim_json_cli
 run_case 'User-only state lifecycle' test_user_only_state_lifecycle
-run_case 'CLI legacy result capability detection' test_cli_legacy_result_detection
+run_case 'Cached dry-run probes would-use ART result mode' test_cached_dry_run_probes_result_mode
+run_case 'CLI lazily detects modern ART mode when needed' test_cli_modern_result_detection_when_needed
+run_case 'CLI lazily detects legacy ART mode when needed' test_cli_legacy_result_detection_when_needed
 run_case 'CLI option validation' test_cli_option_validation
 
 print -r -- ''
