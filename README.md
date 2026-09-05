@@ -487,9 +487,28 @@ cleanup() {
             print -r -- "    [!] Warning: Failed to clean up $RUN_ERROR_TMPFILE" >&2
         fi
     fi
+    if [ "${LOCK_HELD:-0}" -eq 1 ] &&
+        [ -n "${LOCK_DIR:-}" ] &&
+        [ -d "$LOCK_DIR" ]; then
 
-    if [ -n "${LOCK_DIR:-}" ] && [ -d "$LOCK_DIR" ]; then
-        debug_print "Releasing concurrency lock at $LOCK_DIR"
+        debug_print "Releasing concurrency lock at $LOCK_DIR (PID $$)"
+
+        if [ -n "${LOCK_OWNER_FILE:-}" ] &&
+            [ -e "$LOCK_OWNER_FILE" ]; then
+
+            if ! rm -f "$LOCK_OWNER_FILE" 2>/dev/null; then
+                lock_error="    [!] CRITICAL: Failed to remove lock owner file at $LOCK_OWNER_FILE."
+                print -r -- "$lock_error" >&2
+
+                if [ "${DRY_RUN:-0}" -eq 0 ]; then
+                    print -r -- "$lock_error" >>"$RUN_ERROR_LOG" 2>/dev/null || true
+                fi
+
+                if [ "$cleanup_exit" -eq 0 ]; then
+                    cleanup_exit=1
+                fi
+            fi
+        fi
 
         if ! rmdir "$LOCK_DIR" 2>/dev/null; then
             lock_error="    [!] CRITICAL: Failed to release lock at $LOCK_DIR. Manual deletion required."
@@ -502,6 +521,8 @@ cleanup() {
             if [ "$cleanup_exit" -eq 0 ]; then
                 cleanup_exit=1
             fi
+        else
+            LOCK_HELD=0
         fi
     fi
 
@@ -2140,6 +2161,8 @@ runtime_setup() {
     RUN_ERROR_TMPFILE=""
     STATE_STAGE_TMP=""
     LOCK_DIR=""
+    LOCK_OWNER_FILE=""
+    LOCK_HELD=0
 
     # Literal carriage return for PM output normalization.
     CR=$'\r'
@@ -2589,15 +2612,44 @@ main() {
     # CONCURRENCY GUARD
     # ============================================================================
     LOCK_DIR="${TMPDIR}/art_maintenance.lock"
-    debug_print "Acquiring lock directory at $LOCK_DIR"
+    LOCK_OWNER_FILE="${LOCK_DIR}/owner.pid"
+
+    debug_print "Acquiring concurrency lock at $LOCK_DIR (PID $$)"
 
     if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-        print -r -- '[!] FATAL: Another instance is already running (Lock exists). Aborting.' >&2
+        lock_owner=""
+
+        if [ -r "$LOCK_OWNER_FILE" ]; then
+            read -r lock_owner <"$LOCK_OWNER_FILE"
+        fi
+
+        case "$lock_owner" in
+        '' | *[!0-9]*)
+            print -r -- \
+                '[!] FATAL: Maintenance lock is already held (owner PID unavailable). Aborting.' >&2
+            ;;
+        *)
+            print -r -- \
+                "[!] FATAL: Maintenance lock is already held (recorded owner PID: $lock_owner). Aborting." >&2
+            ;;
+        esac
+
         exit 1
     fi
 
-    # Set the EXIT trap to run the unified cleanup function
+    # From this point forward, this process owns the lock directory.
+    LOCK_HELD=1
+
+    # Set the EXIT trap immediately after successful lock acquisition.
     trap 'cleanup' EXIT
+
+    # The directory is the lock; this file records diagnostic ownership metadata.
+    if ! print -r -- "$$" >"$LOCK_OWNER_FILE" 2>/dev/null; then
+        report_error "    [!] FATAL: Acquired concurrency lock but could not record owner PID."
+        exit 1
+    fi
+
+    debug_print "Concurrency lock acquired at $LOCK_DIR (PID $$)"
 
     # MAIN EXECUTION !!!!!!!!!! MAIN EXECUTION !!!!!!!!! MAIN EXECUTION !!!!!!!!!!
     # ============================================================================
