@@ -130,7 +130,8 @@ cat << '__ART_MAINTENANCE_SCRIPT_EOF__' > /sdcard/monthly/maintenance.sh
 #   9. Optional charging and minimum-battery policy gates for unattended runs.
 #  10. Machine-readable JSON summaries and a standalone health-check mode.
 #  11. Dedicated user-only optimization with an independent state cache.
-#  12. ART-reported dexopt result verification (Final Status) when supported.
+#  12. ART-reported dexopt result verification (Final Status) when supported,
+#      detected lazily for real work and proactively for dry-run rehearsal.
 # ============================================================================
 
 # ============================================================================
@@ -241,8 +242,26 @@ check_deps() {
 # Purpose: Discover whether this Android build exposes ART's verbose dexopt result.
 #          New ART Service builds print "Final Status: ..." under compile -v;
 #          legacy Package Manager builds do not understand that option.
+#
+# Timing contract:
+#   - Real runs call this lazily, immediately before the first package that
+#     actually reaches ART. A fully cached real run therefore remains ignorant.
+#   - Dry runs call this proactively because capability discovery is part of
+#     rehearsing the execution path they would use.
+#   - Health-only mode never calls this function.
 # ============================================================================
 detect_art_result_reporting() {
+    # Capability discovery is run-scoped and idempotent. Once this invocation
+    # has learned the answer, do not interrogate Package Manager again.
+    case "${ART_RESULT_MODE:-not-determined}" in
+    not-determined)
+        ;;
+    *)
+        debug_print "ART result reporting already determined: $ART_RESULT_MODE"
+        return 0
+        ;;
+    esac
+
     ART_VERBOSE_RESULTS=0
     ART_RESULT_MODE="legacy-exit-code"
 
@@ -966,7 +985,7 @@ emit_json_summary() {
     esac
 
     print -r -- \
-        "{\"success\":$json_success,\"mode\":\"$json_mode\",\"scope\":\"$json_scope\",\"dry_run\":$json_dry_run,\"force\":$json_force,\"cache_trim\":$json_cache_trim,\"require_charging\":$json_require_charging,\"min_battery_percent\":$json_min_battery,\"thermal\":\"${LAST_THERMAL:-N/A}\",\"memory_percent\":$json_memory,\"battery_percent\":$json_battery,\"charging\":$json_charging,\"data_free_kb\":$json_storage,\"compiled\":${TOTAL_COMPILED:-0},\"art_skipped\":${TOTAL_ART_SKIPPED:-0},\"would_compile\":${TOTAL_WOULD_COMPILE:-0},\"skipped\":${TOTAL_SKIPPED:-0},\"cached_skipped\":${TOTAL_SKIPPED:-0},\"failed\":${TOTAL_FAILED:-0},\"invalid\":${TOTAL_INVALID:-0},\"scanned\":${TOTAL_SCANNED:-0},\"art_result_mode\":\"${ART_RESULT_MODE:-legacy-exit-code}\",\"duration_seconds\":${TOTAL_DURATION:-0},\"state\":\"$json_state\"}" >&4
+        "{\"success\":$json_success,\"mode\":\"$json_mode\",\"scope\":\"$json_scope\",\"dry_run\":$json_dry_run,\"force\":$json_force,\"cache_trim\":$json_cache_trim,\"require_charging\":$json_require_charging,\"min_battery_percent\":$json_min_battery,\"thermal\":\"${LAST_THERMAL:-N/A}\",\"memory_percent\":$json_memory,\"battery_percent\":$json_battery,\"charging\":$json_charging,\"data_free_kb\":$json_storage,\"compiled\":${TOTAL_COMPILED:-0},\"art_skipped\":${TOTAL_ART_SKIPPED:-0},\"would_compile\":${TOTAL_WOULD_COMPILE:-0},\"skipped\":${TOTAL_SKIPPED:-0},\"cached_skipped\":${TOTAL_SKIPPED:-0},\"failed\":${TOTAL_FAILED:-0},\"invalid\":${TOTAL_INVALID:-0},\"scanned\":${TOTAL_SCANNED:-0},\"art_result_mode\":\"${ART_RESULT_MODE:-not-determined}\",\"duration_seconds\":${TOTAL_DURATION:-0},\"state\":\"$json_state\"}" >&4
 
     return 0
 }
@@ -1807,6 +1826,14 @@ $fingerprint
                 fi
             fi
 
+            # A real run earns the right to know ART's result interface only
+            # when a package actually survives fingerprint filtering and reaches ART.
+            # Prof. TEM+P's rule: no ART work means no ART interrogation.
+            if [ "$ART_RESULT_MODE" = "not-determined" ]; then
+                debug_print "First package requires ART; determining result-reporting capability now."
+                detect_art_result_reporting
+            fi
+
             if [ "$ART_VERBOSE_RESULTS" -eq 1 ]; then
                 debug_print "Executing command: cmd package compile -v -m $compile_mode -f $pkg_name"
                 err_output=$(cmd package compile -v -m "$compile_mode" -f "$pkg_name" 2>&1 3>&-)
@@ -2094,9 +2121,10 @@ runtime_setup() {
     STORAGE_STATUS="unknown"
     BATTERY_POLICY_ERROR=""
 
-    # ART compile-result capability and parser state.
+    # ART compile-result capability and parser state. "not-determined" is
+    # intentional epistemic state: a cached real run has no reason to know.
     ART_VERBOSE_RESULTS=0
-    ART_RESULT_MODE="legacy-exit-code"
+    ART_RESULT_MODE="not-determined"
     ART_FINAL_STATUS="N/A"
     ART_FINAL_STATUS_RAW=""
     ART_FINAL_STATUS_COUNT=0
@@ -2394,9 +2422,10 @@ main() {
         exit 1
     fi
 
-    # Probe capability rather than assuming SDK implies a particular Package Manager
-    # implementation; OEM builds and backports deserve evidence, not optimism.
-    if [ "$HEALTH_ONLY" -eq 0 ]; then
+    # Dry-run is the deliberate exception to lazy capability discovery: rehearsal
+    # should know which ART result path a real compile would use. Real runs defer this
+    # probe until the first package actually reaches ART; health-only never probes.
+    if [ "$DRY_RUN" -eq 1 ] && [ "$HEALTH_ONLY" -eq 0 ]; then
         detect_art_result_reporting
     fi
 
@@ -2982,12 +3011,23 @@ $(<"$STATE_READ_FILE")
         print -r -- "    - Packages Would Compile:    $TOTAL_WOULD_COMPILE"
         print -r -- "    - Packages Would Skip:       $TOTAL_SKIPPED"
     else
-        if [ "$ART_VERBOSE_RESULTS" -eq 1 ]; then
+        case "$ART_RESULT_MODE" in
+        final-status)
             print -r -- "    - Packages Performed (ART):  $TOTAL_COMPILED"
             print -r -- "    - Packages Skipped (ART):    $TOTAL_ART_SKIPPED"
-        else
+            ;;
+        legacy-exit-code)
             print -r -- "    - Packages Compile Success:  $TOTAL_COMPILED"
-        fi
+            ;;
+        not-determined)
+            # Any real package reaching ART would have forced capability discovery.
+            # Therefore an undetermined mode proves that ART was never invoked.
+            print -r -- '    - Packages Reaching ART:     0'
+            ;;
+        *)
+            print -r -- "    - Packages Compile Success:  $TOTAL_COMPILED"
+            ;;
+        esac
         print -r -- "    - Packages Skipped (Cached): $TOTAL_SKIPPED"
         print -r -- "    - Packages Failed:           $TOTAL_FAILED"
     fi
@@ -2995,10 +3035,24 @@ $(<"$STATE_READ_FILE")
     if [ "$HEALTH_ONLY" -eq 0 ]; then
         case "$ART_RESULT_MODE" in
         final-status)
-            print -r -- '    - ART result verification:   Final Status (-v)'
+            if [ "$DRY_RUN" -eq 1 ]; then
+                print -r -- '    - ART result verification:   Final Status (-v) [would use]'
+            else
+                print -r -- '    - ART result verification:   Final Status (-v)'
+            fi
+            ;;
+        legacy-exit-code)
+            if [ "$DRY_RUN" -eq 1 ]; then
+                print -r -- '    - ART result verification:   Legacy exit-code fallback [would use]'
+            else
+                print -r -- '    - ART result verification:   Legacy exit-code fallback'
+            fi
+            ;;
+        not-determined)
+            print -r -- '    - ART result verification:   Not determined (ART not invoked)'
             ;;
         *)
-            print -r -- '    - ART result verification:   Legacy exit-code fallback'
+            print -r -- "    - ART result verification:   Unknown mode ($ART_RESULT_MODE)"
             ;;
         esac
     fi
