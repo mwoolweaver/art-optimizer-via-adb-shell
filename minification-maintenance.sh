@@ -74,6 +74,75 @@ echo "[!] FATAL: Required commands missing: $missing" >&2
 exit 1
 fi
 }
+detect_art_result_reporting(){
+case "${ART_RESULT_MODE:-not-determined}" in
+not-determined)
+;;
+*)debug_print "ART result reporting already determined: $ART_RESULT_MODE"
+return 0
+esac
+ART_VERBOSE_RESULTS=0
+ART_RESULT_MODE="legacy-exit-code"
+ART_HELP_OUTPUT=$(cmd package help 2>&1)
+ART_HELP_EXIT=$?
+if [ "$ART_HELP_EXIT" -eq 0 ];then
+case "$ART_HELP_OUTPUT" in
+*"-v Verbose mode. This mode prints detailed results."*)ART_VERBOSE_RESULTS=1
+ART_RESULT_MODE="final-status"
+debug_print "ART verbose result reporting detected; Final Status will be authoritative."
+;;
+*)debug_print "ART verbose result reporting not advertised; using legacy compile exit-code semantics."
+esac
+else
+debug_print "Unable to inspect package help (Exit: $ART_HELP_EXIT); using legacy compile exit-code semantics."
+fi
+ART_HELP_OUTPUT=""
+return 0
+}
+parse_art_compile_result(){
+ART_FINAL_STATUS="UNKNOWN"
+ART_FINAL_STATUS_RAW=""
+ART_FINAL_STATUS_COUNT=0
+ART_SKIPPED_STORAGE_LOW=0
+ART_RESULT_TEXT="$1"
+art_parse_old_ifs="$IFS"
+IFS='
+'
+case "$-" in
+*f*)art_parse_noglob_was_set=1;;
+*)art_parse_noglob_was_set=0
+esac
+set -f
+for art_result_line in $ART_RESULT_TEXT;do
+art_result_line="${art_result_line%$CR}"
+case "$art_result_line" in
+"Final Status: "*)ART_FINAL_STATUS_COUNT=$((ART_FINAL_STATUS_COUNT+1))
+ART_FINAL_STATUS_RAW="${art_result_line#Final Status: }"
+case "$ART_FINAL_STATUS_RAW" in
+PERFORMED|SKIPPED|FAILED|CANCELLED)ART_FINAL_STATUS="$ART_FINAL_STATUS_RAW"
+;;
+*)ART_FINAL_STATUS="UNKNOWN"
+esac
+esac
+case "$art_result_line" in
+*EXTRA_SKIPPED_STORAGE_LOW*|*EXTENDED_SKIPPED_STORAGE_LOW*)ART_SKIPPED_STORAGE_LOW=1
+esac
+done
+if [ "$art_parse_noglob_was_set" -eq 0 ];then
+set +f
+fi
+IFS="$art_parse_old_ifs"
+ART_RESULT_TEXT=""
+if [ "$ART_FINAL_STATUS_COUNT" -ne 1 ];then
+ART_FINAL_STATUS="UNKNOWN"
+return 1
+fi
+case "$ART_FINAL_STATUS" in
+PERFORMED|SKIPPED|FAILED|CANCELLED)return 0
+;;
+*)return 1
+esac
+}
 cleanup(){
 cleanup_exit=$?
 trap - EXIT
@@ -484,7 +553,7 @@ case "${LAST_CHARGING:-N/A}" in
 *)json_charging=null
 esac
 print -r -- \
-"{\"success\":$json_success,\"mode\":\"$json_mode\",\"scope\":\"$json_scope\",\"dry_run\":$json_dry_run,\"force\":$json_force,\"cache_trim\":$json_cache_trim,\"require_charging\":$json_require_charging,\"min_battery_percent\":$json_min_battery,\"thermal\":\"${LAST_THERMAL:-N/A}\",\"memory_percent\":$json_memory,\"battery_percent\":$json_battery,\"charging\":$json_charging,\"data_free_kb\":$json_storage,\"compiled\":${TOTAL_COMPILED:-0},\"would_compile\":${TOTAL_WOULD_COMPILE:-0},\"skipped\":${TOTAL_SKIPPED:-0},\"failed\":${TOTAL_FAILED:-0},\"invalid\":${TOTAL_INVALID:-0},\"scanned\":${TOTAL_SCANNED:-0},\"duration_seconds\":${TOTAL_DURATION:-0},\"state\":\"$json_state\"}" >&4
+"{\"success\":$json_success,\"mode\":\"$json_mode\",\"scope\":\"$json_scope\",\"dry_run\":$json_dry_run,\"force\":$json_force,\"cache_trim\":$json_cache_trim,\"require_charging\":$json_require_charging,\"min_battery_percent\":$json_min_battery,\"thermal\":\"${LAST_THERMAL:-N/A}\",\"memory_percent\":$json_memory,\"battery_percent\":$json_battery,\"charging\":$json_charging,\"data_free_kb\":$json_storage,\"compiled\":${TOTAL_COMPILED:-0},\"art_skipped\":${TOTAL_ART_SKIPPED:-0},\"would_compile\":${TOTAL_WOULD_COMPILE:-0},\"skipped\":${TOTAL_SKIPPED:-0},\"cached_skipped\":${TOTAL_SKIPPED:-0},\"failed\":${TOTAL_FAILED:-0},\"invalid\":${TOTAL_INVALID:-0},\"scanned\":${TOTAL_SCANNED:-0},\"art_result_mode\":\"${ART_RESULT_MODE:-not-determined}\",\"duration_seconds\":${TOTAL_DURATION:-0},\"state\":\"$json_state\"}" >&4
 return 0
 }
 print_system_status(){
@@ -559,7 +628,7 @@ fi
 report_error "    [!] ERROR: Package list for mode '$default_mode' is unexpectedly empty."
 return 1
 fi
-debug_print "Normalizing package list to package|path format..."
+debug_print "Normalizing package list to package|path|versionCode format..."
 pkg_list="${pkg_list//package:/}"
 pkg_list="${pkg_list//$CR/}"
 normalized_pkg_list=$(print -r -- "$pkg_list"|awk '
@@ -574,27 +643,58 @@ normalized_pkg_list=$(print -r -- "$pkg_list"|awk '
                         idx = i
                 }
 
-                if (idx > 0) {
-                    path = substr(line, 1, idx - 1)
-                    pkg  = substr(line, idx + 1)
-
-                    if (path == "" || pkg == "")
-                        next
-
-                    # PM package paths should be absolute.
-                    if (path !~ /^\//)
-                        next
-
-                    # "|" is reserved as the internal package|path delimiter.
-                    if (index(path, "|") != 0 ||
-                        index(pkg, "|") != 0)
-                        next
-
-                    record = pkg "|" path
-
-                    if (!seen[record]++)
-                        print record
+                if (idx <= 0) {
+                    invalid_records++
+                    next
                 }
+
+                path = substr(line, 1, idx - 1)
+                rhs  = substr(line, idx + 1)
+
+                # --show-versioncode appends exactly:
+                #
+                #   " versionCode:<digits>"
+                #
+                # Parse it from the end so package-name handling stays simple.
+                if (!match(rhs, / versionCode:[0-9]+$/)) {
+                    invalid_records++
+                    next
+                }
+
+                pkg = substr(rhs, 1, RSTART - 1)
+                version = substr(rhs, RSTART + 13)
+
+                # Admit only a valid internal package record.
+                # The versionCode regex above has already guaranteed that
+                # version contains one or more decimal digits.
+                if (pkg == "" ||
+                    path !~ /^\// ||
+                    index(path, "|") != 0 ||
+                    index(pkg, "|") != 0 ||
+                    pkg ~ /[[:space:]]/) {
+
+                    invalid_records++
+                    next
+                }
+
+                identity = pkg "|" path
+
+                if (identity in seen_version) {
+                    if (seen_version[identity] != version)
+                        invalid_records++
+                    next
+                }
+
+                seen_version[identity] = version
+                print identity "|" version
+            }
+
+            END {
+                # A requested versionCode is part of the trusted fingerprint.
+                # If any PM record lacks a valid one, fail the entire
+                # normalization step rather than silently dropping a package.
+                if (invalid_records > 0)
+                    exit 2
             }
         ')
 normalize_exit=$?
@@ -639,7 +739,7 @@ debug_print "Running STAGE 1: Extracting file paths..."
 STAGE_PATHS="$STAGE_STATS.paths"
 print -r -- "$pkg_list"|awk -F '|' '
         {
-            if (NF < 2)
+            if (NF != 3)
                 next
 
             path = $2
@@ -759,15 +859,18 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
         {
             input_records++
 
-            if (NF < 2) {
+            if (NF != 3) {
                 invalid_package_records++
                 next
             }
 
-            pkg  = $1
-            path = $2
+            pkg     = $1
+            path    = $2
+            version = $3
 
-            if (pkg == "" || path == "") {
+            if (pkg == "" ||
+                path == "" ||
+                version !~ /^[0-9]+$/) {
                 invalid_package_records++
                 next
             }
@@ -813,7 +916,7 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
                 }
             }
 
-            print pkg, path, meta
+            print pkg, path, version, meta
             merged_records++
         }
 
@@ -916,6 +1019,7 @@ fi
 debug_print "Running STAGE 3: Processing package compilation sequence..."
 current=0
 stage3_skipped=0
+stage3_art_skipped=0
 stage3_compiled=0
 stage3_failed=0
 stage3_unverified=0
@@ -928,12 +1032,17 @@ report_error "    [!] ERROR: Unable to open current-run state file for writing."
 return 1
 fi
 fi
-while IFS='|' read -r pkg_name apk_path file_meta;do
+while IFS='|' read -r pkg_name apk_path version_code file_meta;do
 current=$((current+1))
-if [ -z "$pkg_name" ];then
+if [ -z "$pkg_name" ]||[ -z "$apk_path" ];then
 stage3_invalid=$((stage3_invalid+1))
 continue
 fi
+case "$version_code" in
+''|*[!0-9]*)echo "    [!] Skipping package with invalid versionCode: $pkg_name" >&2
+stage3_invalid=$((stage3_invalid+1))
+continue
+esac
 case "$pkg_name" in
 *[[:space:]]*)echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
 stage3_invalid=$((stage3_invalid+1))
@@ -949,13 +1058,13 @@ fi
 fi
 state_writable=1
 preserved_fingerprint=""
-fingerprint="$pkg_name|$apk_path|$file_meta"
+fingerprint="$pkg_name|$apk_path|$version_code|$file_meta"
 case "$file_meta" in
 UNAVAILABLE)echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name" >&2
 echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name" >&2
 stage3_unverified=$((stage3_unverified+1))
 state_writable=0
-state_key="$pkg_name|$apk_path|"
+state_key="$pkg_name|$apk_path|$version_code|"
 state_old_ifs="$IFS"
 IFS='
 '
@@ -1017,30 +1126,84 @@ else
 print -r -- "    [+] ($current/$total_pkgs) User app compile (-m speed-profile): $pkg_name"
 fi
 fi
-debug_print "Executing command: cmd package compile -m $compile_mode -f $pkg_name"
+if [ "$ART_RESULT_MODE" = "not-determined" ];then
+debug_print "First package requires ART; determining result-reporting capability now."
+detect_art_result_reporting
+fi
+if [ "$ART_VERBOSE_RESULTS" -eq 1 ];then
+debug_print "Executing command: cmd package compile -v -m $compile_mode -f $pkg_name"
+err_output=$(cmd package compile -v -m "$compile_mode" -f "$pkg_name" 2>&1 3>&-)
+else
+debug_print "Executing command: cmd package compile -m $compile_mode -f $pkg_name (legacy result mode)"
 err_output=$(cmd package compile -m "$compile_mode" -f "$pkg_name" 2>&1 3>&-)
+fi
 compile_exit=$?
-if [ "$compile_exit" -eq 0 ];then
-if [ "$QUIET" -eq 0 ];then
-print -r -- "    [+] ($current/$total_pkgs) Compiled: $pkg_name"
+compile_outcome="FAILED"
+compile_failure_reason=""
+art_parse_exit=0
+ART_FINAL_STATUS="N/A"
+ART_FINAL_STATUS_RAW=""
+ART_FINAL_STATUS_COUNT=0
+ART_SKIPPED_STORAGE_LOW=0
+if [ "$ART_VERBOSE_RESULTS" -eq 1 ];then
+parse_art_compile_result "$err_output"
+art_parse_exit=$?
+debug_print "ART result for [$pkg_name]: exit=$compile_exit final=$ART_FINAL_STATUS count=$ART_FINAL_STATUS_COUNT storage_low=$ART_SKIPPED_STORAGE_LOW"
 fi
-stage3_compiled=$((stage3_compiled+1))
-if [ "$state_writable" -eq 1 ];then
-if ! print -r -- "$fingerprint" >&3;then
-report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
-stage3_state_error=1
-break
-fi
-elif [ -n "$preserved_fingerprint" ];then
-if ! print -r -- "$preserved_fingerprint" >&3;then
-report_error "    [!] ERROR: Failed to preserve current-run state for $pkg_name."
-stage3_state_error=1
-break
-fi
-debug_print "Preserved previous trustworthy fingerprint for [$pkg_name] after successful compilation."
+if [ "$compile_exit" -ne 0 ];then
+compile_failure_reason="command exit $compile_exit"
+elif [ "$ART_VERBOSE_RESULTS" -eq 0 ];then
+compile_outcome="LEGACY_SUCCESS"
+elif [ "$art_parse_exit" -ne 0 ];then
+if [ "$ART_FINAL_STATUS_COUNT" -eq 0 ];then
+compile_failure_reason="missing ART Final Status"
+elif [ "$ART_FINAL_STATUS_COUNT" -gt 1 ];then
+compile_failure_reason="multiple ART Final Status records ($ART_FINAL_STATUS_COUNT)"
+elif [ -n "$ART_FINAL_STATUS_RAW" ];then
+compile_failure_reason="unknown ART Final Status: $ART_FINAL_STATUS_RAW"
+else
+compile_failure_reason="invalid ART Final Status"
 fi
 else
-print -r -- "    [!] ($current/$total_pkgs) Failed: $pkg_name (Exit: $compile_exit)" >&2
+case "$ART_FINAL_STATUS" in
+PERFORMED)compile_outcome="PERFORMED"
+;;
+SKIPPED)if
+[ "$ART_SKIPPED_STORAGE_LOW" -eq 1 ]
+then
+compile_failure_reason="ART Final Status: SKIPPED (storage low; retry required)"
+else
+compile_outcome="SKIPPED"
+fi
+;;
+FAILED|CANCELLED)compile_failure_reason="ART Final Status: $ART_FINAL_STATUS"
+;;
+*)compile_failure_reason="unexpected ART Final Status: $ART_FINAL_STATUS"
+esac
+fi
+case "$compile_outcome" in
+PERFORMED)if
+[ "$QUIET" -eq 0 ]
+then
+print -r -- "    [+] ($current/$total_pkgs) ART performed compilation: $pkg_name"
+fi
+stage3_compiled=$((stage3_compiled+1))
+;;
+SKIPPED)if
+[ "$QUIET" -eq 0 ]
+then
+print -r -- "    [~] ($current/$total_pkgs) ART skipped compilation (already satisfied/no work): $pkg_name"
+fi
+stage3_art_skipped=$((stage3_art_skipped+1))
+;;
+LEGACY_SUCCESS)if
+[ "$QUIET" -eq 0 ]
+then
+print -r -- "    [+] ($current/$total_pkgs) Compile command succeeded (legacy result mode): $pkg_name"
+fi
+stage3_compiled=$((stage3_compiled+1))
+;;
+*)print -r -- "    [!] ($current/$total_pkgs) Failed: $pkg_name ($compile_failure_reason)" >&2
 stage3_failed=$((stage3_failed+1))
 if [ -z "$ERROR_TMPFILE" ];then
 ERROR_TMPFILE=$(mktemp "$TMPDIR/errors.$$.XXXXXX")
@@ -1056,10 +1219,26 @@ debug_print "Created compile error tempfile: $ERROR_TMPFILE"
 fi
 fi
 if [ -n "$ERROR_TMPFILE" ];then
-if ! print -r -- "FAIL ($compile_exit): $pkg_name
+if ! print -r -- "FAIL (exit=$compile_exit; result=${ART_FINAL_STATUS:-N/A}; reason=$compile_failure_reason): $pkg_name
 $err_output" >>"$ERROR_TMPFILE" 2>/dev/null;then
 report_error "    [!] CRITICAL: Failed to write to compile error log! Storage may be full."
 fi
+fi
+esac
+if [ "$compile_outcome" != "FAILED" ];then
+if [ "$state_writable" -eq 1 ];then
+if ! print -r -- "$fingerprint" >&3;then
+report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
+stage3_state_error=1
+break
+fi
+elif [ -n "$preserved_fingerprint" ];then
+if ! print -r -- "$preserved_fingerprint" >&3;then
+report_error "    [!] ERROR: Failed to preserve current-run state for $pkg_name."
+stage3_state_error=1
+break
+fi
+debug_print "Preserved previous trustworthy fingerprint for [$pkg_name] after trustworthy ART outcome."
 fi
 fi
 fi
@@ -1071,8 +1250,9 @@ debug_print "Skipped unchanged:     $stage3_skipped"
 if [ "$DRY_RUN" -eq 1 ];then
 debug_print "Would compile:          $stage3_would_compile"
 else
-debug_print "Compiled successfully: $stage3_compiled"
-debug_print "Compilation failures:  $stage3_failed"
+debug_print "ART performed/legacy success: $stage3_compiled"
+debug_print "ART skipped:                  $stage3_art_skipped"
+debug_print "Compilation failures:         $stage3_failed"
 fi
 debug_print "Metadata unavailable:  $stage3_unverified"
 debug_print "Invalid records:        $stage3_invalid"
@@ -1085,8 +1265,8 @@ else
 debug_print "[!] WARNING: Stage 3 accounting mismatch."
 fi
 else
-stage3_accounted=$((stage3_skipped+stage3_compiled+stage3_failed+stage3_invalid))
-debug_print "Accounting check:      $stage3_skipped + $stage3_compiled + $stage3_failed + $stage3_invalid = $stage3_accounted"
+stage3_accounted=$((stage3_skipped+stage3_art_skipped+stage3_compiled+stage3_failed+stage3_invalid))
+debug_print "Accounting check:      $stage3_skipped + $stage3_art_skipped + $stage3_compiled + $stage3_failed + $stage3_invalid = $stage3_accounted"
 if [ "$current" -eq "$stage3_accounted" ];then
 debug_print "[+] Stage 3 accounting verified."
 else
@@ -1102,6 +1282,7 @@ stage3_state_error=1
 fi
 fi
 TOTAL_COMPILED=$((TOTAL_COMPILED+stage3_compiled))
+TOTAL_ART_SKIPPED=$((TOTAL_ART_SKIPPED+stage3_art_skipped))
 TOTAL_WOULD_COMPILE=$((TOTAL_WOULD_COMPILE+stage3_would_compile))
 TOTAL_SKIPPED=$((TOTAL_SKIPPED+stage3_skipped))
 TOTAL_FAILED=$((TOTAL_FAILED+stage3_failed))
@@ -1135,6 +1316,7 @@ STATE_COMMIT_SAFE=1
 SYSTEM_PKGS_COUNT=0
 USER_PKGS_COUNT=0
 TOTAL_COMPILED=0
+TOTAL_ART_SKIPPED=0
 TOTAL_SKIPPED=0
 TOTAL_FAILED=0
 TOTAL_INVALID=0
@@ -1147,6 +1329,12 @@ LAST_CHARGING="N/A"
 FREE_KB=""
 STORAGE_STATUS="unknown"
 BATTERY_POLICY_ERROR=""
+ART_VERBOSE_RESULTS=0
+ART_RESULT_MODE="not-determined"
+ART_FINAL_STATUS="N/A"
+ART_FINAL_STATUS_RAW=""
+ART_FINAL_STATUS_COUNT=0
+ART_SKIPPED_STORAGE_LOW=0
 PREV_STATE=""
 CURRENT_RUN_STATE=""
 STAGE_PATHS=""
@@ -1340,6 +1528,9 @@ if [ "$sdk_version" -lt "$MIN_SDK" ];then
 echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version" >&2
 exit 1
 fi
+if [ "$DRY_RUN" -eq 1 ]&&[ "$HEALTH_ONLY" -eq 0 ];then
+detect_art_result_reporting
+fi
 if [ "$HEALTH_ONLY" -eq 1 ];then
 echo "[+] Starting ART Smart Maintenance health check on Android $android_version (SDK $sdk_version)..."
 elif [ "$DRY_RUN" -eq 1 ];then
@@ -1518,7 +1709,7 @@ else
 print -r -- '[+] Step 2: Smart-optimizing system packages...'
 fi
 debug_print "Querying system packages via pm list packages -f -s..."
-system_package_list=$(pm list packages -f -s 2>&1)
+system_package_list=$(pm list packages -f -s --show-versioncode 2>&1)
 sys_exit=$?
 if [ "$sys_exit" -ne 0 ];then
 report_error "    [!] WARNING: Failed to query system packages (Exit Code: $sys_exit)."
@@ -1553,7 +1744,7 @@ else
 print -r -- '[+] Step 3: Smart-optimizing user apps...'
 fi
 debug_print "Querying user packages via pm list packages -f -3..."
-user_package_list=$(pm list packages -f -3 2>&1)
+user_package_list=$(pm list packages -f -3 --show-versioncode 2>&1)
 user_exit=$?
 if [ "$user_exit" -ne 0 ];then
 report_error "    [!] WARNING: Failed to query user packages (Exit Code: $user_exit)."
@@ -1596,14 +1787,15 @@ else
 debug_print "[!] WARNING: Final dry-run accounting mismatch."
 fi
 else
-debug_total=$((TOTAL_COMPILED+TOTAL_SKIPPED+TOTAL_FAILED+TOTAL_INVALID))
+debug_total=$((TOTAL_COMPILED+TOTAL_ART_SKIPPED+TOTAL_SKIPPED+TOTAL_FAILED+TOTAL_INVALID))
 debug_print "Final accounting:"
-debug_print "    Scanned:   $TOTAL_SCANNED"
-debug_print "    Compiled:  $TOTAL_COMPILED"
-debug_print "    Skipped:   $TOTAL_SKIPPED"
-debug_print "    Failed:    $TOTAL_FAILED"
-debug_print "    Invalid:   $TOTAL_INVALID"
-debug_print "    Accounted: $debug_total"
+debug_print "    Scanned:        $TOTAL_SCANNED"
+debug_print "    Performed:      $TOTAL_COMPILED"
+debug_print "    ART skipped:    $TOTAL_ART_SKIPPED"
+debug_print "    Cached skipped: $TOTAL_SKIPPED"
+debug_print "    Failed:         $TOTAL_FAILED"
+debug_print "    Invalid:        $TOTAL_INVALID"
+debug_print "    Accounted:      $debug_total"
 if [ "$TOTAL_SCANNED" -eq "$debug_total" ];then
 debug_print "[+] Final accounting verified."
 else
@@ -1700,9 +1892,41 @@ if [ "$DRY_RUN" -eq 1 ];then
 print -r -- "    - Packages Would Compile:    $TOTAL_WOULD_COMPILE"
 print -r -- "    - Packages Would Skip:       $TOTAL_SKIPPED"
 else
-print -r -- "    - Packages Compiled:         $TOTAL_COMPILED"
+case "$ART_RESULT_MODE" in
+final-status)print -r -- "    - Packages Performed (ART):  $TOTAL_COMPILED"
+print -r -- "    - Packages Skipped (ART):    $TOTAL_ART_SKIPPED"
+;;
+legacy-exit-code)print -r -- "    - Packages Compile Success:  $TOTAL_COMPILED"
+;;
+not-determined)print -r -- '    - Packages Reaching ART:     0'
+;;
+*)print -r -- "    - Packages Compile Success:  $TOTAL_COMPILED"
+esac
 print -r -- "    - Packages Skipped (Cached): $TOTAL_SKIPPED"
 print -r -- "    - Packages Failed:           $TOTAL_FAILED"
+fi
+if [ "$HEALTH_ONLY" -eq 0 ];then
+case "$ART_RESULT_MODE" in
+final-status)if
+[ "$DRY_RUN" -eq 1 ]
+then
+print -r -- '    - ART result verification:   Final Status (-v) [would use]'
+else
+print -r -- '    - ART result verification:   Final Status (-v)'
+fi
+;;
+legacy-exit-code)if
+[ "$DRY_RUN" -eq 1 ]
+then
+print -r -- '    - ART result verification:   Legacy exit-code fallback [would use]'
+else
+print -r -- '    - ART result verification:   Legacy exit-code fallback'
+fi
+;;
+not-determined)print -r -- '    - ART result verification:   Not determined (ART not invoked)'
+;;
+*)print -r -- "    - ART result verification:   Unknown mode ($ART_RESULT_MODE)"
+esac
 fi
 print -r -- "    - Packages Invalid:          $TOTAL_INVALID"
 print -r -- "    - Total Scanned:             $TOTAL_SCANNED"
@@ -1714,6 +1938,9 @@ print -r -- '    - Cache trim:                Skipped (--no-trim)'
 fi
 [ -n "$error_notice" ]&&print -r -- "$error_notice"
 [ -n "$run_error_notice" ]&&print -r -- "$run_error_notice"
+if [ "$DRY_RUN" -eq 0 ]&&[ "$TOTAL_FAILED" -gt 0 ];then
+print -r -- '    - [!] Final verdict: package failures remain; failed packages will retry next run.'
+fi
 if [ "$NO_USER" -eq 1 ];then
 print -r -- '    - User app stage:            Skipped (--no-user)'
 elif [ "$USER_ONLY" -eq 1 ];then
@@ -1738,6 +1965,11 @@ fi
 fi
 print -r -- '=========================================='
 if [ "$STATE_COMMIT_SAFE" -ne 1 ];then
+emit_json_summary 0
+exit 1
+fi
+if [ "$DRY_RUN" -eq 0 ]&&[ "$TOTAL_FAILED" -gt 0 ];then
+emit_json_summary 0
 exit 1
 fi
 SUCCESSFUL_RUN=1
