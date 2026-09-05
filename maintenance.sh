@@ -23,6 +23,7 @@
 #   9. Optional charging and minimum-battery policy gates for unattended runs.
 #  10. Machine-readable JSON summaries and a standalone health-check mode.
 #  11. Dedicated user-only optimization with an independent state cache.
+#  12. ART-reported dexopt result verification (Final Status) when supported.
 # ============================================================================
 
 # ============================================================================
@@ -126,6 +127,118 @@ check_deps() {
         echo "[!] FATAL: Required commands missing: $missing" >&2
         exit 1
     fi
+}
+
+# ============================================================================
+# FUNCTION: detect_art_result_reporting()
+# Purpose: Discover whether this Android build exposes ART's verbose dexopt result.
+#          New ART Service builds print "Final Status: ..." under compile -v;
+#          legacy Package Manager builds do not understand that option.
+# ============================================================================
+detect_art_result_reporting() {
+    ART_VERBOSE_RESULTS=0
+    ART_RESULT_MODE="legacy-exit-code"
+
+    ART_HELP_OUTPUT=$(cmd package help 2>&1)
+    ART_HELP_EXIT=$?
+
+    if [ "$ART_HELP_EXIT" -eq 0 ]; then
+        case "$ART_HELP_OUTPUT" in
+        *"-v Verbose mode. This mode prints detailed results."*)
+            ART_VERBOSE_RESULTS=1
+            ART_RESULT_MODE="final-status"
+            debug_print "ART verbose result reporting detected; Final Status will be authoritative."
+            ;;
+        *)
+            debug_print "ART verbose result reporting not advertised; using legacy compile exit-code semantics."
+            ;;
+        esac
+    else
+        debug_print "Unable to inspect package help (Exit: $ART_HELP_EXIT); using legacy compile exit-code semantics."
+    fi
+
+    # Do not retain the Package Manager help text for the lifetime of the run.
+    ART_HELP_OUTPUT=""
+    return 0
+}
+
+# ============================================================================
+# FUNCTION: parse_art_compile_result()
+# Purpose: Parse one verbose ART compile transcript without trusting exit code alone.
+# Side effects:
+#   ART_FINAL_STATUS          = PERFORMED, SKIPPED, FAILED, CANCELLED, or UNKNOWN
+#   ART_FINAL_STATUS_RAW      = raw token printed after "Final Status:"
+#   ART_FINAL_STATUS_COUNT    = number of Final Status records observed
+#   ART_SKIPPED_STORAGE_LOW   = 1 when ART reports a storage-low skip reason
+# Returns: 0 only when exactly one recognized Final Status record exists.
+# ============================================================================
+parse_art_compile_result() {
+    ART_FINAL_STATUS="UNKNOWN"
+    ART_FINAL_STATUS_RAW=""
+    ART_FINAL_STATUS_COUNT=0
+    ART_SKIPPED_STORAGE_LOW=0
+    ART_RESULT_TEXT="$1"
+
+    art_parse_old_ifs="$IFS"
+    IFS='
+'
+
+    case "$-" in
+    *f*) art_parse_noglob_was_set=1 ;;
+    *) art_parse_noglob_was_set=0 ;;
+    esac
+
+    set -f
+    for art_result_line in $ART_RESULT_TEXT; do
+        # Defensive normalization for transports that preserve carriage returns.
+        art_result_line="${art_result_line%$CR}"
+
+        case "$art_result_line" in
+        "Final Status: "*)
+            ART_FINAL_STATUS_COUNT=$((ART_FINAL_STATUS_COUNT + 1))
+            ART_FINAL_STATUS_RAW="${art_result_line#Final Status: }"
+
+            case "$ART_FINAL_STATUS_RAW" in
+            PERFORMED | SKIPPED | FAILED | CANCELLED)
+                ART_FINAL_STATUS="$ART_FINAL_STATUS_RAW"
+                ;;
+            *)
+                ART_FINAL_STATUS="UNKNOWN"
+                ;;
+            esac
+            ;;
+        esac
+
+        # A generic SKIPPED result may hide an explicit low-storage deferral.
+        # Both names are accepted because ART renamed Extra Status to Extended Status.
+        case "$art_result_line" in
+        *EXTRA_SKIPPED_STORAGE_LOW* | *EXTENDED_SKIPPED_STORAGE_LOW*)
+            ART_SKIPPED_STORAGE_LOW=1
+            ;;
+        esac
+    done
+
+    if [ "$art_parse_noglob_was_set" -eq 0 ]; then
+        set +f
+    fi
+
+    IFS="$art_parse_old_ifs"
+    ART_RESULT_TEXT=""
+
+    # One package invocation must produce exactly one authoritative final verdict.
+    if [ "$ART_FINAL_STATUS_COUNT" -ne 1 ]; then
+        ART_FINAL_STATUS="UNKNOWN"
+        return 1
+    fi
+
+    case "$ART_FINAL_STATUS" in
+    PERFORMED | SKIPPED | FAILED | CANCELLED)
+        return 0
+        ;;
+    *)
+        return 1
+        ;;
+    esac
 }
 
 # ============================================================================
@@ -746,7 +859,7 @@ emit_json_summary() {
     esac
 
     print -r -- \
-        "{\"success\":$json_success,\"mode\":\"$json_mode\",\"scope\":\"$json_scope\",\"dry_run\":$json_dry_run,\"force\":$json_force,\"cache_trim\":$json_cache_trim,\"require_charging\":$json_require_charging,\"min_battery_percent\":$json_min_battery,\"thermal\":\"${LAST_THERMAL:-N/A}\",\"memory_percent\":$json_memory,\"battery_percent\":$json_battery,\"charging\":$json_charging,\"data_free_kb\":$json_storage,\"compiled\":${TOTAL_COMPILED:-0},\"would_compile\":${TOTAL_WOULD_COMPILE:-0},\"skipped\":${TOTAL_SKIPPED:-0},\"failed\":${TOTAL_FAILED:-0},\"invalid\":${TOTAL_INVALID:-0},\"scanned\":${TOTAL_SCANNED:-0},\"duration_seconds\":${TOTAL_DURATION:-0},\"state\":\"$json_state\"}" >&4
+        "{\"success\":$json_success,\"mode\":\"$json_mode\",\"scope\":\"$json_scope\",\"dry_run\":$json_dry_run,\"force\":$json_force,\"cache_trim\":$json_cache_trim,\"require_charging\":$json_require_charging,\"min_battery_percent\":$json_min_battery,\"thermal\":\"${LAST_THERMAL:-N/A}\",\"memory_percent\":$json_memory,\"battery_percent\":$json_battery,\"charging\":$json_charging,\"data_free_kb\":$json_storage,\"compiled\":${TOTAL_COMPILED:-0},\"art_skipped\":${TOTAL_ART_SKIPPED:-0},\"would_compile\":${TOTAL_WOULD_COMPILE:-0},\"skipped\":${TOTAL_SKIPPED:-0},\"cached_skipped\":${TOTAL_SKIPPED:-0},\"failed\":${TOTAL_FAILED:-0},\"invalid\":${TOTAL_INVALID:-0},\"scanned\":${TOTAL_SCANNED:-0},\"art_result_mode\":\"${ART_RESULT_MODE:-legacy-exit-code}\",\"duration_seconds\":${TOTAL_DURATION:-0},\"state\":\"$json_state\"}" >&4
 
     return 0
 }
@@ -1393,6 +1506,7 @@ process_packages() {
 
     current=0
     stage3_skipped=0
+    stage3_art_skipped=0
     stage3_compiled=0
     stage3_failed=0
     stage3_unverified=0
@@ -1586,47 +1700,109 @@ $fingerprint
                 fi
             fi
 
-            debug_print "Executing command: cmd package compile -m $compile_mode -f $pkg_name"
+            if [ "$ART_VERBOSE_RESULTS" -eq 1 ]; then
+                debug_print "Executing command: cmd package compile -v -m $compile_mode -f $pkg_name"
+                err_output=$(cmd package compile -v -m "$compile_mode" -f "$pkg_name" 2>&1 3>&-)
+            else
+                debug_print "Executing command: cmd package compile -m $compile_mode -f $pkg_name (legacy result mode)"
+                err_output=$(cmd package compile -m "$compile_mode" -f "$pkg_name" 2>&1 3>&-)
+            fi
 
-            err_output=$(cmd package compile -m "$compile_mode" -f "$pkg_name" 2>&1 3>&-)
             compile_exit=$?
+            compile_outcome="FAILED"
+            compile_failure_reason=""
+            art_parse_exit=0
+            ART_FINAL_STATUS="N/A"
+            ART_FINAL_STATUS_RAW=""
+            ART_FINAL_STATUS_COUNT=0
+            ART_SKIPPED_STORAGE_LOW=0
 
-            if [ "$compile_exit" -eq 0 ]; then
+            if [ "$ART_VERBOSE_RESULTS" -eq 1 ]; then
+                parse_art_compile_result "$err_output"
+                art_parse_exit=$?
+                debug_print "ART result for [$pkg_name]: exit=$compile_exit final=$ART_FINAL_STATUS count=$ART_FINAL_STATUS_COUNT storage_low=$ART_SKIPPED_STORAGE_LOW"
+            fi
 
-                if [ "$QUIET" -eq 0 ]; then
-                    print -r -- "    [+] ($current/$total_pkgs) Compiled: $pkg_name"
-                fi
+            # Prof. JWST's verdict hierarchy:
+            #   1. A nonzero command exit is always failure.
+            #   2. Where verbose ART results exist, Final Status is authoritative.
+            #   3. Missing, duplicated, or unknown status fails closed.
+            #   4. Legacy Android keeps the historic zero-exit fallback because -v is absent.
+            if [ "$compile_exit" -ne 0 ]; then
+                compile_failure_reason="command exit $compile_exit"
 
-                # The compilation itself succeeded even if recording its state fails.
-                stage3_compiled=$((stage3_compiled + 1))
+            elif [ "$ART_VERBOSE_RESULTS" -eq 0 ]; then
+                compile_outcome="LEGACY_SUCCESS"
 
-                # Write state only after successful compilation.
-                # Use current metadata when trustworthy; otherwise preserve a previous
-                # trustworthy fingerprint. A state-write failure makes the run unsafe.
-                if [ "$state_writable" -eq 1 ]; then
-                    if ! print -r -- "$fingerprint" >&3; then
-                        report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
-                        stage3_state_error=1
-                        break
-                    fi
-
-                elif [ -n "$preserved_fingerprint" ]; then
-                    if ! print -r -- "$preserved_fingerprint" >&3; then
-                        report_error "    [!] ERROR: Failed to preserve current-run state for $pkg_name."
-                        stage3_state_error=1
-                        break
-                    fi
-
-                    debug_print "Preserved previous trustworthy fingerprint for [$pkg_name] after successful compilation."
+            elif [ "$art_parse_exit" -ne 0 ]; then
+                if [ "$ART_FINAL_STATUS_COUNT" -eq 0 ]; then
+                    compile_failure_reason="missing ART Final Status"
+                elif [ "$ART_FINAL_STATUS_COUNT" -gt 1 ]; then
+                    compile_failure_reason="multiple ART Final Status records ($ART_FINAL_STATUS_COUNT)"
+                elif [ -n "$ART_FINAL_STATUS_RAW" ]; then
+                    compile_failure_reason="unknown ART Final Status: $ART_FINAL_STATUS_RAW"
+                else
+                    compile_failure_reason="invalid ART Final Status"
                 fi
 
             else
+                case "$ART_FINAL_STATUS" in
+                PERFORMED)
+                    compile_outcome="PERFORMED"
+                    ;;
 
-                print -r -- "    [!] ($current/$total_pkgs) Failed: $pkg_name (Exit: $compile_exit)" >&2
+                SKIPPED)
+                    if [ "$ART_SKIPPED_STORAGE_LOW" -eq 1 ]; then
+                        # A storage-low skip is not a satisfied maintenance request.
+                        # Do not cache it; omission from state deliberately forces retry.
+                        compile_failure_reason="ART Final Status: SKIPPED (storage low; retry required)"
+                    else
+                        compile_outcome="SKIPPED"
+                    fi
+                    ;;
 
-                # Prof. Twain's ledger: failed compilations are not written into history.
-                # Omitting them from state is deliberate; the next run will retry them.
-                # Success alone earns a persistent fingerprint.
+                FAILED | CANCELLED)
+                    compile_failure_reason="ART Final Status: $ART_FINAL_STATUS"
+                    ;;
+
+                *)
+                    # Should be unreachable after parse_art_compile_result(), but
+                    # Prof. Twain declines to let impossible states become success.
+                    compile_failure_reason="unexpected ART Final Status: $ART_FINAL_STATUS"
+                    ;;
+                esac
+            fi
+
+            case "$compile_outcome" in
+            PERFORMED)
+                if [ "$QUIET" -eq 0 ]; then
+                    print -r -- "    [+] ($current/$total_pkgs) ART performed compilation: $pkg_name"
+                fi
+                stage3_compiled=$((stage3_compiled + 1))
+                ;;
+
+            SKIPPED)
+                if [ "$QUIET" -eq 0 ]; then
+                    print -r -- "    [~] ($current/$total_pkgs) ART skipped compilation (already satisfied/no work): $pkg_name"
+                fi
+                stage3_art_skipped=$((stage3_art_skipped + 1))
+                ;;
+
+            LEGACY_SUCCESS)
+                if [ "$QUIET" -eq 0 ]; then
+                    print -r -- "    [+] ($current/$total_pkgs) Compile command succeeded (legacy result mode): $pkg_name"
+                fi
+                # Legacy Package Manager exposes no Final Status; preserve the
+                # script's historical zero-exit behavior on those Android releases.
+                stage3_compiled=$((stage3_compiled + 1))
+                ;;
+
+            *)
+                print -r -- "    [!] ($current/$total_pkgs) Failed: $pkg_name ($compile_failure_reason)" >&2
+
+                # Prof. Twain's ledger: failed, cancelled, unverifiable, and
+                # storage-deferred compilations are not written into history.
+                # Omission is deliberate so the next run retries the package.
                 stage3_failed=$((stage3_failed + 1))
 
                 if [ -z "$ERROR_TMPFILE" ]; then
@@ -1649,10 +1825,33 @@ $fingerprint
                 fi
 
                 if [ -n "$ERROR_TMPFILE" ]; then
-                    if ! print -r -- "FAIL ($compile_exit): $pkg_name
+                    if ! print -r -- "FAIL (exit=$compile_exit; result=${ART_FINAL_STATUS:-N/A}; reason=$compile_failure_reason): $pkg_name
 $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
                         report_error "    [!] CRITICAL: Failed to write to compile error log! Storage may be full."
                     fi
+                fi
+                ;;
+            esac
+
+            # Only a trustworthy successful outcome earns state. On modern ART
+            # that means PERFORMED or non-storage-low SKIPPED; legacy devices use
+            # the historical zero-exit fallback because no Final Status exists.
+            if [ "$compile_outcome" != "FAILED" ]; then
+                if [ "$state_writable" -eq 1 ]; then
+                    if ! print -r -- "$fingerprint" >&3; then
+                        report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
+                        stage3_state_error=1
+                        break
+                    fi
+
+                elif [ -n "$preserved_fingerprint" ]; then
+                    if ! print -r -- "$preserved_fingerprint" >&3; then
+                        report_error "    [!] ERROR: Failed to preserve current-run state for $pkg_name."
+                        stage3_state_error=1
+                        break
+                    fi
+
+                    debug_print "Preserved previous trustworthy fingerprint for [$pkg_name] after trustworthy ART outcome."
                 fi
             fi
         fi
@@ -1671,8 +1870,9 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
         if [ "$DRY_RUN" -eq 1 ]; then
             debug_print "Would compile:          $stage3_would_compile"
         else
-            debug_print "Compiled successfully: $stage3_compiled"
-            debug_print "Compilation failures:  $stage3_failed"
+            debug_print "ART performed/legacy success: $stage3_compiled"
+            debug_print "ART skipped:                  $stage3_art_skipped"
+            debug_print "Compilation failures:         $stage3_failed"
         fi
 
         debug_print "Metadata unavailable:  $stage3_unverified"
@@ -1689,9 +1889,9 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
                 debug_print "[!] WARNING: Stage 3 accounting mismatch."
             fi
         else
-            stage3_accounted=$((stage3_skipped + stage3_compiled + stage3_failed + stage3_invalid))
+            stage3_accounted=$((stage3_skipped + stage3_art_skipped + stage3_compiled + stage3_failed + stage3_invalid))
 
-            debug_print "Accounting check:      $stage3_skipped + $stage3_compiled + $stage3_failed + $stage3_invalid = $stage3_accounted"
+            debug_print "Accounting check:      $stage3_skipped + $stage3_art_skipped + $stage3_compiled + $stage3_failed + $stage3_invalid = $stage3_accounted"
 
             if [ "$current" -eq "$stage3_accounted" ]; then
                 debug_print "[+] Stage 3 accounting verified."
@@ -1719,6 +1919,7 @@ $err_output" >>"$ERROR_TMPFILE" 2>/dev/null; then
     # ========================================================================
 
     TOTAL_COMPILED=$((TOTAL_COMPILED + stage3_compiled))
+    TOTAL_ART_SKIPPED=$((TOTAL_ART_SKIPPED + stage3_art_skipped))
     TOTAL_WOULD_COMPILE=$((TOTAL_WOULD_COMPILE + stage3_would_compile))
     TOTAL_SKIPPED=$((TOTAL_SKIPPED + stage3_skipped))
     TOTAL_FAILED=$((TOTAL_FAILED + stage3_failed))
@@ -1770,6 +1971,7 @@ runtime_setup() {
     SYSTEM_PKGS_COUNT=0
     USER_PKGS_COUNT=0
     TOTAL_COMPILED=0
+    TOTAL_ART_SKIPPED=0
     TOTAL_SKIPPED=0
     TOTAL_FAILED=0
     TOTAL_INVALID=0
@@ -1784,6 +1986,14 @@ runtime_setup() {
     FREE_KB=""
     STORAGE_STATUS="unknown"
     BATTERY_POLICY_ERROR=""
+
+    # ART compile-result capability and parser state.
+    ART_VERBOSE_RESULTS=0
+    ART_RESULT_MODE="legacy-exit-code"
+    ART_FINAL_STATUS="N/A"
+    ART_FINAL_STATUS_RAW=""
+    ART_FINAL_STATUS_COUNT=0
+    ART_SKIPPED_STORAGE_LOW=0
 
     # Package-pipeline state shared by process_packages().
     PREV_STATE=""
@@ -2075,6 +2285,12 @@ main() {
     if [ "$sdk_version" -lt "$MIN_SDK" ]; then
         echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version" >&2
         exit 1
+    fi
+
+    # Probe capability rather than assuming SDK implies a particular Package Manager
+    # implementation; OEM builds and backports deserve evidence, not optimism.
+    if [ "$HEALTH_ONLY" -eq 0 ]; then
+        detect_art_result_reporting
     fi
 
     if [ "$HEALTH_ONLY" -eq 1 ]; then
@@ -2487,15 +2703,16 @@ $(<"$STATE_READ_FILE")
                 debug_print "[!] WARNING: Final dry-run accounting mismatch."
             fi
         else
-            debug_total=$((TOTAL_COMPILED + TOTAL_SKIPPED + TOTAL_FAILED + TOTAL_INVALID))
+            debug_total=$((TOTAL_COMPILED + TOTAL_ART_SKIPPED + TOTAL_SKIPPED + TOTAL_FAILED + TOTAL_INVALID))
 
             debug_print "Final accounting:"
-            debug_print "    Scanned:   $TOTAL_SCANNED"
-            debug_print "    Compiled:  $TOTAL_COMPILED"
-            debug_print "    Skipped:   $TOTAL_SKIPPED"
-            debug_print "    Failed:    $TOTAL_FAILED"
-            debug_print "    Invalid:   $TOTAL_INVALID"
-            debug_print "    Accounted: $debug_total"
+            debug_print "    Scanned:        $TOTAL_SCANNED"
+            debug_print "    Performed:      $TOTAL_COMPILED"
+            debug_print "    ART skipped:    $TOTAL_ART_SKIPPED"
+            debug_print "    Cached skipped: $TOTAL_SKIPPED"
+            debug_print "    Failed:         $TOTAL_FAILED"
+            debug_print "    Invalid:        $TOTAL_INVALID"
+            debug_print "    Accounted:      $debug_total"
 
             if [ "$TOTAL_SCANNED" -eq "$debug_total" ]; then
                 debug_print "[+] Final accounting verified."
@@ -2658,9 +2875,25 @@ $(<"$STATE_READ_FILE")
         print -r -- "    - Packages Would Compile:    $TOTAL_WOULD_COMPILE"
         print -r -- "    - Packages Would Skip:       $TOTAL_SKIPPED"
     else
-        print -r -- "    - Packages Compiled:         $TOTAL_COMPILED"
+        if [ "$ART_VERBOSE_RESULTS" -eq 1 ]; then
+            print -r -- "    - Packages Performed (ART):  $TOTAL_COMPILED"
+            print -r -- "    - Packages Skipped (ART):    $TOTAL_ART_SKIPPED"
+        else
+            print -r -- "    - Packages Compile Success:  $TOTAL_COMPILED"
+        fi
         print -r -- "    - Packages Skipped (Cached): $TOTAL_SKIPPED"
         print -r -- "    - Packages Failed:           $TOTAL_FAILED"
+    fi
+
+    if [ "$HEALTH_ONLY" -eq 0 ]; then
+        case "$ART_RESULT_MODE" in
+        final-status)
+            print -r -- '    - ART result verification:   Final Status (-v)'
+            ;;
+        *)
+            print -r -- '    - ART result verification:   Legacy exit-code fallback'
+            ;;
+        esac
     fi
 
     print -r -- "    - Packages Invalid:          $TOTAL_INVALID"
@@ -2676,6 +2909,10 @@ $(<"$STATE_READ_FILE")
 
     [ -n "$error_notice" ] && print -r -- "$error_notice"
     [ -n "$run_error_notice" ] && print -r -- "$run_error_notice"
+
+    if [ "$DRY_RUN" -eq 0 ] && [ "$TOTAL_FAILED" -gt 0 ]; then
+        print -r -- '    - [!] Final verdict: package failures remain; failed packages will retry next run.'
+    fi
 
     if [ "$NO_USER" -eq 1 ]; then
         print -r -- '    - User app stage:            Skipped (--no-user)'
@@ -2711,6 +2948,15 @@ $(<"$STATE_READ_FILE")
 
     # An incomplete run or failed state commit cannot receive the final "success" title.
     if [ "$STATE_COMMIT_SAFE" -ne 1 ]; then
+        emit_json_summary 0
+        exit 1
+    fi
+
+    # A valid partial state cache may still be committed after package failures so
+    # successful packages are not needlessly repeated. The run itself, however,
+    # is not successful until every requested package has a trustworthy outcome.
+    if [ "$DRY_RUN" -eq 0 ] && [ "$TOTAL_FAILED" -gt 0 ]; then
+        emit_json_summary 0
         exit 1
     fi
 
