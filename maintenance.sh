@@ -881,13 +881,15 @@ process_packages() {
     # ========================================================================
     # NORMALIZE PM OUTPUT
     # ========================================================================
-    # process_packages() receives the output of pm list packages -f (-s||-3)
+    # process_packages() receives the output of:
+    #
+    #   pm list packages -f (-s||-3) --show-versioncode
     #
     # Input:
-    #   package:/path/to/base.apk=com.example.app
+    #   package:/path/to/base.apk=com.example.app versionCode:12345
     #
     # Convert once to our internal format:
-    #   com.example.app|/path/to/base.apk
+    #   com.example.app|/path/to/base.apk|12345
     #
     # Prof. Tolkien's warning: one does not simply split on the first "=".
     # Android /data/app paths may contain "=" padding themselves, so the
@@ -895,10 +897,11 @@ process_packages() {
     #
     #   /data/app/~~NFUaidAwYhRskD6PhHgvHA==/...
     #
-    # From this point forward, "|" is the package|path delimiter.
+    # The versionCode suffix is then parsed from the right-hand side.
+    # From this point forward, "|" separates package|path|versionCode.
     # ========================================================================
 
-    debug_print "Normalizing package list to package|path format..."
+    debug_print "Normalizing package list to package|path|versionCode format..."
 
     # Strip "package:" prefix and carriage returns purely in RAM (Zero-Fork)
     pkg_list="${pkg_list//package:/}"
@@ -918,27 +921,58 @@ process_packages() {
                         idx = i
                 }
 
-                if (idx > 0) {
-                    path = substr(line, 1, idx - 1)
-                    pkg  = substr(line, idx + 1)
-
-                    if (path == "" || pkg == "")
-                        next
-
-                    # PM package paths should be absolute.
-                    if (path !~ /^\//)
-                        next
-
-                    # "|" is reserved as the internal package|path delimiter.
-                    if (index(path, "|") != 0 ||
-                        index(pkg, "|") != 0)
-                        next
-
-                    record = pkg "|" path
-
-                    if (!seen[record]++)
-                        print record
+                if (idx <= 0) {
+                    invalid_records++
+                    next
                 }
+
+                path = substr(line, 1, idx - 1)
+                rhs  = substr(line, idx + 1)
+
+                # --show-versioncode appends exactly:
+                #
+                #   " versionCode:<digits>"
+                #
+                # Parse it from the end so package-name handling stays simple.
+                if (!match(rhs, / versionCode:[0-9]+$/)) {
+                    invalid_records++
+                    next
+                }
+
+                pkg = substr(rhs, 1, RSTART - 1)
+                version = substr(rhs, RSTART + 13)
+
+                # Admit only a valid internal package record.
+                # The versionCode regex above has already guaranteed that
+                # version contains one or more decimal digits.
+                if (pkg == "" ||
+                    path !~ /^\// ||
+                    index(path, "|") != 0 ||
+                    index(pkg, "|") != 0 ||
+                    pkg ~ /[[:space:]]/) {
+
+                    invalid_records++
+                    next
+                }
+
+                identity = pkg "|" path
+
+                if (identity in seen_version) {
+                    if (seen_version[identity] != version)
+                        invalid_records++
+                    next
+                }
+
+                seen_version[identity] = version
+                print identity "|" version
+            }
+
+            END {
+                # A requested versionCode is part of the trusted fingerprint.
+                # If any PM record lacks a valid one, fail the entire
+                # normalization step rather than silently dropping a package.
+                if (invalid_records > 0)
+                    exit 2
             }
         '
     )
@@ -1010,7 +1044,7 @@ process_packages() {
 
     # Input:
     #
-    #   package|/path/to/base.apk
+    #   package|/path/to/base.apk|versionCode
     #
     # Output:
     #
@@ -1023,7 +1057,7 @@ process_packages() {
     print -r -- "$pkg_list" |
         awk -F '|' '
         {
-            if (NF < 2)
+            if (NF != 3)
                 next
 
             path = $2
@@ -1117,7 +1151,7 @@ process_packages() {
 
     # Input:
     #
-    #   package|path
+    #   package|path|versionCode
     #
     # Stat cache:
     #
@@ -1125,7 +1159,7 @@ process_packages() {
     #
     # Output:
     #
-    #   package|path|mtime:size:inode
+    #   package|path|versionCode|mtime:size:inode
     # ========================================================================
 
     print -r -- "$pkg_list" |
@@ -1185,15 +1219,18 @@ process_packages() {
         {
             input_records++
 
-            if (NF < 2) {
+            if (NF != 3) {
                 invalid_package_records++
                 next
             }
 
-            pkg  = $1
-            path = $2
+            pkg     = $1
+            path    = $2
+            version = $3
 
-            if (pkg == "" || path == "") {
+            if (pkg == "" ||
+                path == "" ||
+                version !~ /^[0-9]+$/) {
                 invalid_package_records++
                 next
             }
@@ -1239,7 +1276,7 @@ process_packages() {
                 }
             }
 
-            print pkg, path, meta
+            print pkg, path, version, meta
             merged_records++
         }
 
@@ -1372,16 +1409,25 @@ process_packages() {
 
     # STAGE_MERGED format:
     #
-    #   package|path|metadata
+    #   package|path|versionCode|metadata
     #
-    while IFS='|' read -r pkg_name apk_path file_meta; do
+    while IFS='|' read -r pkg_name apk_path version_code file_meta; do
 
         current=$((current + 1))
 
-        if [ -z "$pkg_name" ]; then
+        if [ -z "$pkg_name" ] || [ -z "$apk_path" ]; then
             stage3_invalid=$((stage3_invalid + 1))
             continue
         fi
+
+        # versionCode is an opaque numeric identity: equality matters, ordering does not.
+        case "$version_code" in
+        '' | *[!0-9]*)
+            echo "    [!] Skipping package with invalid versionCode: $pkg_name" >&2
+            stage3_invalid=$((stage3_invalid + 1))
+            continue
+            ;;
+        esac
 
         # Sanity check: package names should contain no whitespace.
         case "$pkg_name" in
@@ -1414,12 +1460,12 @@ process_packages() {
         # Build fingerprint
         # ====================================================================
 
-        # Prof. Tolkien's lineage is package|path|metadata.
+        # Prof. Tolkien's lineage is package|path|versionCode|metadata.
         # Exact lineage matches skip recompilation; changed lineage proceeds.
 
         state_writable=1
         preserved_fingerprint=""
-        fingerprint="${pkg_name}|${apk_path}|${file_meta}"
+        fingerprint="${pkg_name}|${apk_path}|${version_code}|${file_meta}"
 
         case "${file_meta}" in
 
@@ -1435,10 +1481,11 @@ process_packages() {
             # Never write an UNAVAILABLE fingerprint to persistent state.
             #
             # If a previous trustworthy fingerprint exists for this exact
-            # package/path, carry it forward so a temporary metadata failure
-            # does not erase known-good state.
+            # package/path/versionCode, carry it forward so a temporary metadata
+            # failure does not erase known-good state. A different versionCode
+            # must never inherit an older package version's fingerprint.
 
-            state_key="${pkg_name}|${apk_path}|"
+            state_key="${pkg_name}|${apk_path}|${version_code}|"
 
             state_old_ifs="$IFS"
             IFS='
@@ -2325,7 +2372,7 @@ $(<"$STATE_READ_FILE")
 
         # List all system packages (-s flag) with full paths (-f flag)
         debug_print "Querying system packages via pm list packages -f -s..."
-        system_package_list=$(pm list packages -f -s 2>&1)
+        system_package_list=$(pm list packages -f -s --show-versioncode 2>&1)
         sys_exit=$?
 
         if [ "$sys_exit" -ne 0 ]; then
@@ -2374,7 +2421,7 @@ $(<"$STATE_READ_FILE")
         fi
 
         debug_print "Querying user packages via pm list packages -f -3..."
-        user_package_list=$(pm list packages -f -3 2>&1)
+        user_package_list=$(pm list packages -f -3 --show-versioncode 2>&1)
         user_exit=$?
 
         if [ "$user_exit" -ne 0 ]; then
