@@ -3,8 +3,9 @@
 
 # ============================================================================
 # ART MAINTENANCE LABORATORY
-# Purpose: Exercise maintenance.sh's package pipeline, option behavior, JSON
-#          output, policy gates, and scope-specific state using deterministic mocks.
+# Purpose: Exercise maintenance.sh's package pipeline, ART Final Status parsing,
+#          option behavior, JSON output, policy gates, legacy fallback, and
+#          scope-specific state using deterministic mocks.
 # ============================================================================
 
 TEST_DIR="${0%/*}"
@@ -17,6 +18,7 @@ PACKAGE_FILE="${1-${TEST_DIR}/test_packages_list.txt}"
 STATE_FILE="${2-${TEST_DIR}/test_last_optimized}"
 EXPECTED_STATE_FILE="${3-${TEST_DIR}/test_expected_state.txt}"
 EXPECTED_FAILURE_STATE_FILE="${4-${TEST_DIR}/test_expected_state_failed.txt}"
+MALFORMED_PACKAGE_FILE="${TEST_DIR}/test_packages_malformed.txt"
 CLI_SYSTEM_PACKAGE_FILE="${TEST_DIR}/test_cli_system_packages.txt"
 CLI_USER_PACKAGE_FILE="${TEST_DIR}/test_cli_user_packages.txt"
 CLI_FULL_STATE_FILE="${TEST_DIR}/test_cli_full_state.txt"
@@ -38,6 +40,20 @@ assert_eq() {
 
     if [ "$actual" -ne "$expected" ]; then
         print -r -- "[!] TEST ASSERTION FAILED: $label: expected $expected, got $actual" >&2
+        return 1
+    fi
+
+    print -r -- "[+] Assertion passed: $label = $actual"
+    return 0
+}
+
+assert_str_eq() {
+    typeset actual="$1"
+    typeset expected="$2"
+    typeset label="$3"
+
+    if [ "$actual" != "$expected" ]; then
+        print -r -- "[!] TEST ASSERTION FAILED: $label: expected '$expected', got '$actual'" >&2
         return 1
     fi
 
@@ -246,6 +262,19 @@ setup_case() {
 
     trap 'case_cleanup' EXIT
     runtime_setup
+
+    # Direct pipeline tests default to the modern ART Service contract. Individual
+    # legacy tests deliberately turn this off after setup.
+    ART_VERBOSE_RESULTS=1
+    ART_RESULT_MODE="final-status"
+
+    MOCK_ART_DEFAULT_STATUS="PERFORMED"
+    MOCK_ART_SPECIAL_PACKAGE=""
+    MOCK_ART_SPECIAL_STATUS=""
+    MOCK_ART_SPECIAL_EXTRA=""
+    MOCK_ART_SPECIAL_EXIT=0
+    MOCK_ART_SPECIAL_OMIT_STATUS=0
+    MOCK_ART_SPECIAL_DUPLICATE_STATUS=0
 }
 
 load_previous_state() {
@@ -372,10 +401,10 @@ case "$*" in
 'trim-caches 99999999999')
     exit 0
     ;;
-'list packages -f -s')
+'list packages -f -s --show-versioncode')
     cat "$MOCK_SYSTEM_PACKAGE_FILE"
     ;;
-'list packages -f -3')
+'list packages -f -3 --show-versioncode')
     cat "$MOCK_USER_PACKAGE_FILE"
     ;;
 *)
@@ -388,7 +417,72 @@ EOF_PM
     cat >"${CLI_MOCK_BIN}/cmd" <<'EOF_CMD'
 #!/bin/sh
 printf '%s\n' "$*" >>"$MOCK_CMD_LOG"
-exit 0
+
+case "$*" in
+'package help')
+    if [ "${MOCK_ART_HELP_VERBOSE:-1}" -eq 1 ]; then
+        printf '%s\n' '-v Verbose mode. This mode prints detailed results.'
+    else
+        printf '%s\n' 'Package compile help (legacy mock; no verbose result mode).'
+    fi
+    exit 0
+    ;;
+package\ compile\ *)
+    mock_pkg=""
+    mock_verbose=0
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        -v)
+            mock_verbose=1
+            ;;
+        -f)
+            if [ "$#" -ge 2 ]; then
+                mock_pkg="$2"
+                shift
+            fi
+            ;;
+        esac
+        shift
+    done
+
+    mock_status="${MOCK_ART_DEFAULT_STATUS:-PERFORMED}"
+    mock_extra=""
+    mock_exit=0
+    mock_omit=0
+    mock_duplicate=0
+
+    if [ -n "${MOCK_ART_SPECIAL_PACKAGE:-}" ] &&
+        [ "$mock_pkg" = "$MOCK_ART_SPECIAL_PACKAGE" ]; then
+
+        [ -n "${MOCK_ART_SPECIAL_STATUS:-}" ] &&
+            mock_status="$MOCK_ART_SPECIAL_STATUS"
+        mock_extra="${MOCK_ART_SPECIAL_EXTRA:-}"
+        mock_exit="${MOCK_ART_SPECIAL_EXIT:-0}"
+        mock_omit="${MOCK_ART_SPECIAL_OMIT_STATUS:-0}"
+        mock_duplicate="${MOCK_ART_SPECIAL_DUPLICATE_STATUS:-0}"
+    fi
+
+    if [ "$mock_verbose" -eq 1 ]; then
+        if [ "$mock_omit" -eq 0 ]; then
+            printf 'Final Status: %s\n' "$mock_status"
+            if [ "$mock_duplicate" -eq 1 ]; then
+                printf 'Final Status: %s\n' "$mock_status"
+            fi
+        fi
+
+        if [ -n "$mock_extra" ]; then
+            printf 'Extended Status: [%s]\n' "$mock_extra"
+        fi
+    fi
+
+    exit "$mock_exit"
+    ;;
+*)
+    printf 'unexpected mocked cmd invocation: %s\n' "$*" >&2
+    exit 1
+    ;;
+esac
 EOF_CMD
 
     chmod +x "${CLI_MOCK_BIN}"/* || return 1
@@ -396,6 +490,14 @@ EOF_CMD
     CLI_MOCK_BATTERY_LEVEL=80
     CLI_MOCK_CHARGING=1
     CLI_MOCK_FREE_KB=5000000
+    CLI_MOCK_ART_HELP_VERBOSE=1
+    CLI_MOCK_ART_DEFAULT_STATUS="PERFORMED"
+    CLI_MOCK_ART_SPECIAL_PACKAGE=""
+    CLI_MOCK_ART_SPECIAL_STATUS=""
+    CLI_MOCK_ART_SPECIAL_EXTRA=""
+    CLI_MOCK_ART_SPECIAL_EXIT=0
+    CLI_MOCK_ART_SPECIAL_OMIT_STATUS=0
+    CLI_MOCK_ART_SPECIAL_DUPLICATE_STATUS=0
     CLI_RC=0
     return 0
 }
@@ -417,6 +519,14 @@ run_cli() {
         MOCK_BATTERY_LEVEL="$CLI_MOCK_BATTERY_LEVEL" \
         MOCK_CHARGING="$CLI_MOCK_CHARGING" \
         MOCK_FREE_KB="$CLI_MOCK_FREE_KB" \
+        MOCK_ART_HELP_VERBOSE="$CLI_MOCK_ART_HELP_VERBOSE" \
+        MOCK_ART_DEFAULT_STATUS="$CLI_MOCK_ART_DEFAULT_STATUS" \
+        MOCK_ART_SPECIAL_PACKAGE="$CLI_MOCK_ART_SPECIAL_PACKAGE" \
+        MOCK_ART_SPECIAL_STATUS="$CLI_MOCK_ART_SPECIAL_STATUS" \
+        MOCK_ART_SPECIAL_EXTRA="$CLI_MOCK_ART_SPECIAL_EXTRA" \
+        MOCK_ART_SPECIAL_EXIT="$CLI_MOCK_ART_SPECIAL_EXIT" \
+        MOCK_ART_SPECIAL_OMIT_STATUS="$CLI_MOCK_ART_SPECIAL_OMIT_STATUS" \
+        MOCK_ART_SPECIAL_DUPLICATE_STATUS="$CLI_MOCK_ART_SPECIAL_DUPLICATE_STATUS" \
         "$CLI_SHELL" "${CLI_RUN_DIR}/maintenance.sh" "$@" \
         >"$CLI_STDOUT" 2>"$CLI_STDERR"
     CLI_RC=$?
@@ -424,39 +534,77 @@ run_cli() {
     return 0
 }
 
-# Mock Android's cmd package compile for real-run laboratory cases. The mock is
-# intentionally a shell function so process_packages() exercises its normal
-# command path without invoking Android package-manager services.
+# Mock Android's cmd package compile for direct pipeline laboratory cases.
+# Modern tests emit an ART Final Status transcript; legacy tests deliberately
+# disable ART_VERBOSE_RESULTS and exercise exit-code compatibility.
 cmd() {
-    typeset mock_pkg=""
+    typeset mock_pkg="" mock_verbose=0 mock_status mock_extra mock_exit mock_omit mock_duplicate
 
     print -r -- "$*" >>"$MOCK_CMD_LOG"
 
+    case "$*" in
+    "package help")
+        if [ "${MOCK_ART_HELP_VERBOSE:-1}" -eq 1 ]; then
+            print -r -- '-v Verbose mode. This mode prints detailed results.'
+        else
+            print -r -- 'Package compile help (legacy mock).'
+        fi
+        return 0
+        ;;
+    esac
+
     while [ "$#" -gt 0 ]; do
         case "$1" in
+        -v)
+            mock_verbose=1
+            ;;
         -f)
             if [ "$#" -ge 2 ]; then
                 mock_pkg="$2"
-                shift 2
-                continue
+                shift
             fi
             ;;
         esac
-
         shift
     done
 
-    if [ -n "${MOCK_FAIL_PACKAGE:-}" ] && [ "$mock_pkg" = "$MOCK_FAIL_PACKAGE" ]; then
-        print -r -- "mock compile failure for $mock_pkg" >&2
-        return 1
+    mock_status="${MOCK_ART_DEFAULT_STATUS:-PERFORMED}"
+    mock_extra=""
+    mock_exit=0
+    mock_omit=0
+    mock_duplicate=0
+
+    if [ -n "${MOCK_ART_SPECIAL_PACKAGE:-}" ] &&
+        [ "$mock_pkg" = "$MOCK_ART_SPECIAL_PACKAGE" ]; then
+
+        [ -n "${MOCK_ART_SPECIAL_STATUS:-}" ] &&
+            mock_status="$MOCK_ART_SPECIAL_STATUS"
+        mock_extra="${MOCK_ART_SPECIAL_EXTRA:-}"
+        mock_exit="${MOCK_ART_SPECIAL_EXIT:-0}"
+        mock_omit="${MOCK_ART_SPECIAL_OMIT_STATUS:-0}"
+        mock_duplicate="${MOCK_ART_SPECIAL_DUPLICATE_STATUS:-0}"
     fi
 
-    return 0
+    if [ "$mock_verbose" -eq 1 ]; then
+        if [ "$mock_omit" -eq 0 ]; then
+            print -r -- "Final Status: $mock_status"
+            if [ "$mock_duplicate" -eq 1 ]; then
+                print -r -- "Final Status: $mock_status"
+            fi
+        fi
+
+        if [ -n "$mock_extra" ]; then
+            print -r -- "Extended Status: [$mock_extra]"
+        fi
+    fi
+
+    return "$mock_exit"
 }
 
 # ============================================================================
 # TEST CASES
 # ============================================================================
+
 
 test_dry_run_speed_profile() {
     typeset package_list failures=0
@@ -472,26 +620,24 @@ test_dry_run_speed_profile() {
     fi
 
     assert_eq "$SYSTEM_PKGS_COUNT" 0 "Dry-run parsed system packages" || failures=1
-    assert_eq "$USER_PKGS_COUNT" 8 "Dry-run parsed user packages" || failures=1
-    assert_eq "$TOTAL_COMPILED" 0 "Dry-run compiled packages" || failures=1
-    assert_eq "$TOTAL_SKIPPED" 4 "Dry-run skipped unchanged" || failures=1
+    assert_eq "$USER_PKGS_COUNT" 7 "Dry-run parsed user packages" || failures=1
+    assert_eq "$TOTAL_COMPILED" 0 "Dry-run performed packages" || failures=1
+    assert_eq "$TOTAL_ART_SKIPPED" 0 "Dry-run ART-skipped packages" || failures=1
+    assert_eq "$TOTAL_SKIPPED" 4 "Dry-run cached skips" || failures=1
     assert_eq "$TOTAL_WOULD_COMPILE" 3 "Dry-run would compile" || failures=1
     assert_eq "$TOTAL_FAILED" 0 "Dry-run compilation failures" || failures=1
-    assert_eq "$TOTAL_INVALID" 1 "Dry-run invalid records" || failures=1
+    assert_eq "$TOTAL_INVALID" 0 "Dry-run invalid records" || failures=1
 
     assert_empty "$CURRENT_RUN_STATE" "Dry-run current-run state path" || failures=1
     assert_empty "$ERROR_TMPFILE" "Dry-run compile-error tempfile path" || failures=1
     assert_empty "$RUN_ERROR_TMPFILE" "Dry-run maintenance-error tempfile path" || failures=1
 
-    assert_file_not_contains "$STAGE_MERGED" "com.test.relative" \
-        "Relative package path rejected during normalization" || failures=1
-    assert_file_not_contains "$STAGE_MERGED" "com.test.pipepath" \
-        "Pipe-containing package path rejected during normalization" || failures=1
-    assert_file_not_contains "$STAGE_MERGED" "pipepkg" \
-        "Pipe-containing package name rejected during normalization" || failures=1
+    assert_text_contains "$(<"$STAGE_MERGED")" "com.test.equals|" \
+        "Equals-containing APK path survives last-separator parsing" || failures=1
 
     return "$failures"
 }
+
 
 test_dry_run_system() {
     typeset package_list failures=0
@@ -506,13 +652,36 @@ test_dry_run_system() {
         return 1
     fi
 
-    assert_eq "$SYSTEM_PKGS_COUNT" 8 "System-mode parsed system packages" || failures=1
+    assert_eq "$SYSTEM_PKGS_COUNT" 7 "System-mode parsed system packages" || failures=1
     assert_eq "$USER_PKGS_COUNT" 0 "System-mode parsed user packages" || failures=1
-    assert_eq "$TOTAL_SKIPPED" 4 "System-mode skipped unchanged" || failures=1
+    assert_eq "$TOTAL_SKIPPED" 4 "System-mode cached skips" || failures=1
     assert_eq "$TOTAL_WOULD_COMPILE" 3 "System-mode would compile" || failures=1
     assert_eq "$TOTAL_FAILED" 0 "System-mode compilation failures" || failures=1
-    assert_eq "$TOTAL_INVALID" 1 "System-mode invalid records" || failures=1
+    assert_eq "$TOTAL_INVALID" 0 "System-mode invalid records" || failures=1
     assert_empty "$CURRENT_RUN_STATE" "System dry-run current-run state path" || failures=1
+
+    return "$failures"
+}
+
+
+test_malformed_versioncode_fails_closed() {
+    typeset malformed_list output rc failures=0
+
+    setup_case 1
+    prepare_pipeline || return 1
+
+    malformed_list=$(<"$MALFORMED_PACKAGE_FILE")
+    output=$(process_packages "$malformed_list" "speed-profile" 2>&1)
+    rc=$?
+
+    assert_eq "$rc" 1 "Malformed versionCode batch return code" || failures=1
+    assert_text_contains "$output" "Package normalization failed" \
+        "Missing versionCode fails normalization closed" || failures=1
+    assert_eq "$TOTAL_COMPILED" 0 "Malformed batch performed count" || failures=1
+    assert_eq "$TOTAL_ART_SKIPPED" 0 "Malformed batch ART-skipped count" || failures=1
+    assert_eq "$TOTAL_SKIPPED" 0 "Malformed batch cached-skip count" || failures=1
+    assert_eq "$TOTAL_FAILED" 0 "Malformed batch compile-failure count" || failures=1
+    assert_empty "$CURRENT_RUN_STATE" "Malformed batch writes no current-run state" || failures=1
 
     return "$failures"
 }
@@ -554,6 +723,7 @@ test_empty_system_list() {
     return "$failures"
 }
 
+
 test_real_run_success() {
     typeset package_list failures=0
 
@@ -561,41 +731,42 @@ test_real_run_success() {
     prepare_pipeline || return 1
 
     MOCK_CMD_LOG=$(mktemp "${TMPDIR}/mock_cmd.$$.XXXXXX") || return 1
-    MOCK_FAIL_PACKAGE=""
     package_list=$(<"$PACKAGE_FILE")
 
     if ! process_packages "$package_list" "speed-profile"; then
-        print -r -- '[!] TEST ERROR: mocked real-run pipeline failed.' >&2
+        print -r -- '[!] TEST ERROR: mocked modern ART real-run pipeline failed.' >&2
         return 1
     fi
 
-    assert_eq "$USER_PKGS_COUNT" 8 "Real-run parsed user packages" || failures=1
-    assert_eq "$TOTAL_COMPILED" 3 "Real-run compiled successfully" || failures=1
-    assert_eq "$TOTAL_SKIPPED" 4 "Real-run skipped unchanged" || failures=1
+    assert_eq "$USER_PKGS_COUNT" 7 "Real-run parsed user packages" || failures=1
+    assert_eq "$TOTAL_COMPILED" 3 "Real-run ART PERFORMED count" || failures=1
+    assert_eq "$TOTAL_ART_SKIPPED" 0 "Real-run ART SKIPPED count" || failures=1
+    assert_eq "$TOTAL_SKIPPED" 4 "Real-run cached skips" || failures=1
     assert_eq "$TOTAL_FAILED" 0 "Real-run compilation failures" || failures=1
-    assert_eq "$TOTAL_INVALID" 1 "Real-run invalid records" || failures=1
+    assert_eq "$TOTAL_INVALID" 0 "Real-run invalid records" || failures=1
     assert_eq "$TOTAL_WOULD_COMPILE" 0 "Real-run would-compile count" || failures=1
 
     assert_file_lines "$CURRENT_RUN_STATE" 7 "Real-run state fingerprint count" || failures=1
     assert_file_eq "$CURRENT_RUN_STATE" "$EXPECTED_STATE_FILE" \
-        "Real-run state exactly matches expected fingerprints" || failures=1
+        "PERFORMED outcomes earn the expected fingerprints" || failures=1
 
     assert_file_lines "$MOCK_CMD_LOG" 3 "Real-run mocked compile command count" || failures=1
     assert_file_contains_line "$MOCK_CMD_LOG" \
-        "package compile -m speed-profile -f com.test.changed" \
-        "Changed package compiled with speed-profile" || failures=1
+        "package compile -v -m speed-profile -f com.test.changed" \
+        "Changed package uses verbose ART result mode" || failures=1
     assert_file_contains_line "$MOCK_CMD_LOG" \
-        "package compile -m speed-profile -f com.test.parentfallback" \
-        "Parent-fallback package compiled with speed-profile" || failures=1
+        "package compile -v -m speed-profile -f com.test.parentfallback" \
+        "Parent-fallback package uses verbose ART result mode" || failures=1
     assert_file_contains_line "$MOCK_CMD_LOG" \
-        "package compile -m speed-profile -f com.test.unavailable" \
-        "Unavailable-metadata package compiled with speed-profile" || failures=1
+        "package compile -v -m speed-profile -f com.test.unavailable" \
+        "Unavailable-metadata package uses verbose ART result mode" || failures=1
 
     assert_empty "$ERROR_TMPFILE" "Successful real-run compile-error tempfile path" || failures=1
     assert_empty "$RUN_ERROR_TMPFILE" "Successful real-run maintenance-error tempfile path" || failures=1
 
     return "$failures"
 }
+
 
 test_real_run_compile_failure() {
     typeset package_list failures=0
@@ -604,40 +775,270 @@ test_real_run_compile_failure() {
     prepare_pipeline || return 1
 
     MOCK_CMD_LOG=$(mktemp "${TMPDIR}/mock_cmd.$$.XXXXXX") || return 1
-    MOCK_FAIL_PACKAGE="com.test.changed"
+    MOCK_ART_SPECIAL_PACKAGE="com.test.changed"
+    MOCK_ART_SPECIAL_STATUS="FAILED"
     package_list=$(<"$PACKAGE_FILE")
 
     if ! process_packages "$package_list" "speed-profile"; then
-        print -r -- '[!] TEST ERROR: compile-failure laboratory pipeline returned fatal failure.' >&2
+        print -r -- '[!] TEST ERROR: ART-FAILED laboratory pipeline returned fatal failure.' >&2
         return 1
     fi
 
-    assert_eq "$USER_PKGS_COUNT" 8 "Failure-run parsed user packages" || failures=1
-    assert_eq "$TOTAL_COMPILED" 2 "Failure-run successful compilations" || failures=1
-    assert_eq "$TOTAL_SKIPPED" 4 "Failure-run skipped unchanged" || failures=1
-    assert_eq "$TOTAL_FAILED" 1 "Failure-run compilation failures" || failures=1
-    assert_eq "$TOTAL_INVALID" 1 "Failure-run invalid records" || failures=1
+    assert_eq "$USER_PKGS_COUNT" 7 "Failure-run parsed user packages" || failures=1
+    assert_eq "$TOTAL_COMPILED" 2 "Failure-run ART PERFORMED count" || failures=1
+    assert_eq "$TOTAL_ART_SKIPPED" 0 "Failure-run ART SKIPPED count" || failures=1
+    assert_eq "$TOTAL_SKIPPED" 4 "Failure-run cached skips" || failures=1
+    assert_eq "$TOTAL_FAILED" 1 "ART Final Status FAILED count" || failures=1
+    assert_eq "$TOTAL_INVALID" 0 "Failure-run invalid records" || failures=1
 
     assert_file_lines "$CURRENT_RUN_STATE" 6 "Failure-run state fingerprint count" || failures=1
     assert_file_eq "$CURRENT_RUN_STATE" "$EXPECTED_FAILURE_STATE_FILE" \
-        "Failed package omitted from current-run state" || failures=1
+        "ART-FAILED package omitted from current-run state" || failures=1
 
     assert_nonempty_file "$ERROR_TMPFILE" \
-        "Compile-error tempfile created lazily after failure" || failures=1
+        "Compile-error tempfile created lazily after ART failure" || failures=1
     assert_file_contains_line "$MOCK_CMD_LOG" \
-        "package compile -m speed-profile -f com.test.changed" \
-        "Failed package reached mocked compiler" || failures=1
+        "package compile -v -m speed-profile -f com.test.changed" \
+        "ART-failed package reached verbose compiler" || failures=1
 
     if [ -n "$ERROR_TMPFILE" ] && [ -f "$ERROR_TMPFILE" ]; then
-        if ! grep -Fq "FAIL (1): com.test.changed" "$ERROR_TMPFILE"; then
-            print -r -- '[!] TEST ASSERTION FAILED: compile-error tempfile missing failure record' >&2
+        if ! grep -Fq "result=FAILED; reason=ART Final Status: FAILED): com.test.changed" "$ERROR_TMPFILE"; then
+            print -r -- '[!] TEST ASSERTION FAILED: compile-error tempfile missing ART failure verdict' >&2
             failures=1
         else
-            print -r -- '[+] Assertion passed: compile-error tempfile contains failure record'
+            print -r -- '[+] Assertion passed: compile-error tempfile contains ART failure verdict'
         fi
     fi
 
     assert_empty "$RUN_ERROR_TMPFILE" "Failure-run maintenance-error tempfile path" || failures=1
+
+    return "$failures"
+}
+
+
+
+test_art_result_parser() {
+    typeset rc failures=0 transcript
+
+    setup_case 1
+
+    transcript='DexoptResult:
+Final Status: PERFORMED'
+    parse_art_compile_result "$transcript"
+    rc=$?
+    assert_eq "$rc" 0 "PERFORMED parser return code" || failures=1
+    assert_str_eq "$ART_FINAL_STATUS" "PERFORMED" "PERFORMED parser status" || failures=1
+    assert_eq "$ART_FINAL_STATUS_COUNT" 1 "PERFORMED status count" || failures=1
+
+    transcript='DexoptResult:
+Final Status: SKIPPED'
+    parse_art_compile_result "$transcript"
+    rc=$?
+    assert_eq "$rc" 0 "SKIPPED parser return code" || failures=1
+    assert_str_eq "$ART_FINAL_STATUS" "SKIPPED" "SKIPPED parser status" || failures=1
+    assert_eq "$ART_SKIPPED_STORAGE_LOW" 0 "Ordinary SKIPPED storage-low flag" || failures=1
+
+    transcript='DexoptResult:
+Extended Status: [EXTENDED_SKIPPED_STORAGE_LOW]
+Final Status: SKIPPED'
+    parse_art_compile_result "$transcript"
+    rc=$?
+    assert_eq "$rc" 0 "Storage-low SKIPPED parser return code" || failures=1
+    assert_str_eq "$ART_FINAL_STATUS" "SKIPPED" "Storage-low parser status" || failures=1
+    assert_eq "$ART_SKIPPED_STORAGE_LOW" 1 "Storage-low skip flag" || failures=1
+
+    transcript='DexoptResult:
+Final Status: FAILED'
+    parse_art_compile_result "$transcript"
+    rc=$?
+    assert_eq "$rc" 0 "FAILED parser return code" || failures=1
+    assert_str_eq "$ART_FINAL_STATUS" "FAILED" "FAILED parser status" || failures=1
+
+    transcript='DexoptResult:
+Final Status: CANCELLED'
+    parse_art_compile_result "$transcript"
+    rc=$?
+    assert_eq "$rc" 0 "CANCELLED parser return code" || failures=1
+    assert_str_eq "$ART_FINAL_STATUS" "CANCELLED" "CANCELLED parser status" || failures=1
+
+    transcript='DexoptResult:
+Final Status: SOMETHING_NEW'
+    parse_art_compile_result "$transcript"
+    rc=$?
+    assert_eq "$rc" 1 "Unknown-status parser fails closed" || failures=1
+    assert_str_eq "$ART_FINAL_STATUS" "UNKNOWN" "Unknown-status normalized verdict" || failures=1
+    assert_str_eq "$ART_FINAL_STATUS_RAW" "SOMETHING_NEW" "Unknown-status raw token preserved" || failures=1
+
+    transcript='DexoptResult:
+No final verdict here'
+    parse_art_compile_result "$transcript"
+    rc=$?
+    assert_eq "$rc" 1 "Missing-status parser fails closed" || failures=1
+    assert_eq "$ART_FINAL_STATUS_COUNT" 0 "Missing-status count" || failures=1
+
+    transcript='Final Status: PERFORMED
+Final Status: PERFORMED'
+    parse_art_compile_result "$transcript"
+    rc=$?
+    assert_eq "$rc" 1 "Duplicate Final Status fails closed" || failures=1
+    assert_eq "$ART_FINAL_STATUS_COUNT" 2 "Duplicate Final Status count" || failures=1
+    assert_str_eq "$ART_FINAL_STATUS" "UNKNOWN" "Duplicate Final Status normalized verdict" || failures=1
+
+    return "$failures"
+}
+
+test_real_run_art_skipped_earns_state() {
+    typeset package_list failures=0
+
+    setup_case 0
+    prepare_pipeline || return 1
+
+    MOCK_CMD_LOG=$(mktemp "${TMPDIR}/mock_cmd.$$.XXXXXX") || return 1
+    MOCK_ART_SPECIAL_PACKAGE="com.test.changed"
+    MOCK_ART_SPECIAL_STATUS="SKIPPED"
+    package_list=$(<"$PACKAGE_FILE")
+
+    if ! process_packages "$package_list" "speed-profile"; then
+        print -r -- '[!] TEST ERROR: ART-SKIPPED laboratory pipeline returned fatal failure.' >&2
+        return 1
+    fi
+
+    assert_eq "$TOTAL_COMPILED" 2 "ART-SKIPPED run PERFORMED count" || failures=1
+    assert_eq "$TOTAL_ART_SKIPPED" 1 "ART-SKIPPED run ART skip count" || failures=1
+    assert_eq "$TOTAL_SKIPPED" 4 "ART-SKIPPED run cached-skip count" || failures=1
+    assert_eq "$TOTAL_FAILED" 0 "ART-SKIPPED run failure count" || failures=1
+    assert_file_eq "$CURRENT_RUN_STATE" "$EXPECTED_STATE_FILE" \
+        "Ordinary ART SKIPPED earns persistent lineage" || failures=1
+    assert_empty "$ERROR_TMPFILE" "ART-SKIPPED run compile-error tempfile" || failures=1
+
+    return "$failures"
+}
+
+test_storage_low_skip_retries() {
+    typeset package_list failures=0
+
+    setup_case 0
+    prepare_pipeline || return 1
+
+    MOCK_CMD_LOG=$(mktemp "${TMPDIR}/mock_cmd.$$.XXXXXX") || return 1
+    MOCK_ART_SPECIAL_PACKAGE="com.test.changed"
+    MOCK_ART_SPECIAL_STATUS="SKIPPED"
+    MOCK_ART_SPECIAL_EXTRA="EXTENDED_SKIPPED_STORAGE_LOW"
+    package_list=$(<"$PACKAGE_FILE")
+
+    if ! process_packages "$package_list" "speed-profile"; then
+        print -r -- '[!] TEST ERROR: storage-low SKIPPED pipeline returned fatal failure.' >&2
+        return 1
+    fi
+
+    assert_eq "$TOTAL_COMPILED" 2 "Storage-low run PERFORMED count" || failures=1
+    assert_eq "$TOTAL_ART_SKIPPED" 0 "Storage-low SKIPPED is not counted as satisfied ART skip" || failures=1
+    assert_eq "$TOTAL_FAILED" 1 "Storage-low SKIPPED becomes retryable failure" || failures=1
+    assert_file_eq "$CURRENT_RUN_STATE" "$EXPECTED_FAILURE_STATE_FILE" \
+        "Storage-low SKIPPED earns no fingerprint" || failures=1
+    assert_nonempty_file "$ERROR_TMPFILE" "Storage-low SKIPPED creates error log" || failures=1
+
+    if [ -n "$ERROR_TMPFILE" ] && [ -f "$ERROR_TMPFILE" ]; then
+        if ! grep -Fq "storage low; retry required" "$ERROR_TMPFILE"; then
+            print -r -- '[!] TEST ASSERTION FAILED: storage-low retry reason missing from error log' >&2
+            failures=1
+        else
+            print -r -- '[+] Assertion passed: storage-low retry reason recorded'
+        fi
+    fi
+
+    return "$failures"
+}
+
+test_missing_final_status_fails_closed() {
+    typeset package_list failures=0
+
+    setup_case 0
+    prepare_pipeline || return 1
+
+    MOCK_CMD_LOG=$(mktemp "${TMPDIR}/mock_cmd.$$.XXXXXX") || return 1
+    MOCK_ART_SPECIAL_PACKAGE="com.test.changed"
+    MOCK_ART_SPECIAL_OMIT_STATUS=1
+    package_list=$(<"$PACKAGE_FILE")
+
+    if ! process_packages "$package_list" "speed-profile"; then
+        print -r -- '[!] TEST ERROR: missing-status pipeline returned fatal failure.' >&2
+        return 1
+    fi
+
+    assert_eq "$TOTAL_COMPILED" 2 "Missing-status run PERFORMED count" || failures=1
+    assert_eq "$TOTAL_ART_SKIPPED" 0 "Missing-status run ART skip count" || failures=1
+    assert_eq "$TOTAL_FAILED" 1 "Missing Final Status fails closed" || failures=1
+    assert_file_eq "$CURRENT_RUN_STATE" "$EXPECTED_FAILURE_STATE_FILE" \
+        "Missing Final Status earns no fingerprint" || failures=1
+
+    if [ -n "$ERROR_TMPFILE" ] && [ -f "$ERROR_TMPFILE" ]; then
+        if ! grep -Fq "missing ART Final Status" "$ERROR_TMPFILE"; then
+            print -r -- '[!] TEST ASSERTION FAILED: missing-status reason absent from error log' >&2
+            failures=1
+        else
+            print -r -- '[+] Assertion passed: missing-status reason recorded'
+        fi
+    else
+        print -r -- '[!] TEST ASSERTION FAILED: missing-status run created no compile-error tempfile' >&2
+        failures=1
+    fi
+
+    return "$failures"
+}
+
+test_nonzero_exit_overrides_performed() {
+    typeset package_list failures=0
+
+    setup_case 0
+    prepare_pipeline || return 1
+
+    MOCK_CMD_LOG=$(mktemp "${TMPDIR}/mock_cmd.$$.XXXXXX") || return 1
+    MOCK_ART_SPECIAL_PACKAGE="com.test.changed"
+    MOCK_ART_SPECIAL_STATUS="PERFORMED"
+    MOCK_ART_SPECIAL_EXIT=7
+    package_list=$(<"$PACKAGE_FILE")
+
+    if ! process_packages "$package_list" "speed-profile"; then
+        print -r -- '[!] TEST ERROR: nonzero-exit pipeline returned fatal failure.' >&2
+        return 1
+    fi
+
+    assert_eq "$TOTAL_COMPILED" 2 "Nonzero-exit run trusted PERFORMED count" || failures=1
+    assert_eq "$TOTAL_FAILED" 1 "Nonzero command exit overrides PERFORMED text" || failures=1
+    assert_file_eq "$CURRENT_RUN_STATE" "$EXPECTED_FAILURE_STATE_FILE" \
+        "Nonzero command exit earns no fingerprint" || failures=1
+
+    return "$failures"
+}
+
+test_legacy_exit_code_fallback() {
+    typeset package_list failures=0
+
+    setup_case 0
+    prepare_pipeline || return 1
+
+    ART_VERBOSE_RESULTS=0
+    ART_RESULT_MODE="legacy-exit-code"
+
+    MOCK_CMD_LOG=$(mktemp "${TMPDIR}/mock_cmd.$$.XXXXXX") || return 1
+    package_list=$(<"$PACKAGE_FILE")
+
+    if ! process_packages "$package_list" "speed-profile"; then
+        print -r -- '[!] TEST ERROR: legacy result-mode pipeline failed.' >&2
+        return 1
+    fi
+
+    assert_eq "$TOTAL_COMPILED" 3 "Legacy zero-exit compile-success count" || failures=1
+    assert_eq "$TOTAL_ART_SKIPPED" 0 "Legacy mode ART skip count" || failures=1
+    assert_eq "$TOTAL_FAILED" 0 "Legacy mode failure count" || failures=1
+    assert_file_eq "$CURRENT_RUN_STATE" "$EXPECTED_STATE_FILE" \
+        "Legacy zero-exit fallback still earns state" || failures=1
+    assert_file_contains_line "$MOCK_CMD_LOG" \
+        "package compile -m speed-profile -f com.test.changed" \
+        "Legacy mode omits unsupported -v flag" || failures=1
+    assert_file_not_contains "$MOCK_CMD_LOG" "package compile -v" \
+        "Legacy mode never sends verbose compile flag" || failures=1
 
     return "$failures"
 }
@@ -658,13 +1059,14 @@ test_force_bypasses_cache() {
         return 1
     fi
 
-    assert_eq "$TOTAL_SKIPPED" 0 "Force-mode skipped unchanged" || failures=1
+    assert_eq "$TOTAL_SKIPPED" 0 "Force-mode cached skips" || failures=1
     assert_eq "$TOTAL_WOULD_COMPILE" 7 "Force-mode would compile" || failures=1
-    assert_eq "$TOTAL_INVALID" 1 "Force-mode invalid records" || failures=1
-    assert_eq "$USER_PKGS_COUNT" 8 "Force-mode parsed user packages" || failures=1
+    assert_eq "$TOTAL_INVALID" 0 "Force-mode invalid records" || failures=1
+    assert_eq "$USER_PKGS_COUNT" 7 "Force-mode parsed user packages" || failures=1
 
     return "$failures"
 }
+
 
 test_quiet_suppresses_routine_progress() {
     typeset package_list quiet_text failures=0
@@ -690,9 +1092,9 @@ test_quiet_suppresses_routine_progress() {
         "Quiet mode suppresses cached-package progress" || failures=1
     assert_text_not_contains "$quiet_text" "Would compile" \
         "Quiet mode suppresses dry-run compile progress" || failures=1
-    assert_eq "$TOTAL_SKIPPED" 4 "Quiet-mode skipped unchanged" || failures=1
+    assert_eq "$TOTAL_SKIPPED" 4 "Quiet-mode cached skips" || failures=1
     assert_eq "$TOTAL_WOULD_COMPILE" 3 "Quiet-mode would compile" || failures=1
-    assert_eq "$TOTAL_INVALID" 1 "Quiet-mode invalid records" || failures=1
+    assert_eq "$TOTAL_INVALID" 0 "Quiet-mode invalid records" || failures=1
 
     return "$failures"
 }
@@ -790,6 +1192,7 @@ test_health_json_and_battery_policies() {
     return "$failures"
 }
 
+
 test_no_trim_json_cli() {
     typeset output errors failures=0
 
@@ -807,9 +1210,15 @@ test_no_trim_json_cli() {
     assert_text_contains "$output" '"cache_trim":false' \
         "No-trim JSON reports cache trim disabled" || failures=1
     assert_text_contains "$output" '"compiled":0' \
-        "No-trim cached run compiled count" || failures=1
+        "No-trim cached run PERFORMED count" || failures=1
+    assert_text_contains "$output" '"art_skipped":0' \
+        "No-trim cached run ART-skipped count" || failures=1
     assert_text_contains "$output" '"skipped":4' \
-        "No-trim cached run skipped count" || failures=1
+        "No-trim cached run compatibility skipped count" || failures=1
+    assert_text_contains "$output" '"cached_skipped":4' \
+        "No-trim cached run explicit cached-skip count" || failures=1
+    assert_text_contains "$output" '"art_result_mode":"final-status"' \
+        "No-trim run detects modern ART Final Status support" || failures=1
     assert_text_contains "$output" '"scanned":4' \
         "No-trim cached run scanned count" || failures=1
     assert_text_not_contains "$output" "[+]" \
@@ -817,19 +1226,24 @@ test_no_trim_json_cli() {
     assert_file_empty "$CLI_STDERR" \
         "Successful non-debug JSON emits no routine stderr output" || failures=1
 
-    assert_file_contains_line "$CLI_PM_LOG" "list packages -f -s" \
-        "No-trim run still queries system packages" || failures=1
-    assert_file_contains_line "$CLI_PM_LOG" "list packages -f -3" \
-        "No-trim run still queries user packages" || failures=1
+    assert_file_contains_line "$CLI_PM_LOG" "list packages -f -s --show-versioncode" \
+        "No-trim run queries system packages with versionCode" || failures=1
+    assert_file_contains_line "$CLI_PM_LOG" "list packages -f -3 --show-versioncode" \
+        "No-trim run queries user packages with versionCode" || failures=1
     assert_file_not_contains "$CLI_PM_LOG" "trim-caches" \
         "No-trim run never calls pm trim-caches" || failures=1
-    assert_file_empty "$CLI_CMD_LOG" \
+
+    assert_file_contains_line "$CLI_CMD_LOG" "package help" \
+        "Modern result capability is probed once" || failures=1
+    assert_file_not_contains "$CLI_CMD_LOG" "package compile" \
         "Fully cached no-trim run invokes no compiler" || failures=1
+
     assert_file_eq "${CLI_RUN_DIR}/.last_optimized" "$CLI_FULL_STATE_FILE" \
         "No-trim run preserves authoritative full state" || failures=1
 
     return "$failures"
 }
+
 
 test_user_only_state_lifecycle() {
     typeset output failures=0
@@ -847,14 +1261,18 @@ test_user_only_state_lifecycle() {
     assert_text_contains "$output" '"scope":"user-only"' \
         "Initial user-only JSON scope" || failures=1
     assert_text_contains "$output" '"compiled":0' \
-        "Initial user-only compiled count" || failures=1
-    assert_text_contains "$output" '"skipped":2' \
+        "Initial user-only PERFORMED count" || failures=1
+    assert_text_contains "$output" '"art_skipped":0' \
+        "Initial user-only ART-skipped count" || failures=1
+    assert_text_contains "$output" '"cached_skipped":2' \
         "Initial user-only reuses complete-state baseline" || failures=1
+    assert_text_contains "$output" '"art_result_mode":"final-status"' \
+        "Initial user-only detects Final Status support" || failures=1
     assert_text_contains "$output" '"scanned":2' \
         "Initial user-only scans only user packages" || failures=1
-    assert_file_contains_line "$CLI_PM_LOG" "list packages -f -3" \
-        "User-only run queries user packages" || failures=1
-    assert_file_not_contains "$CLI_PM_LOG" "list packages -f -s" \
+    assert_file_contains_line "$CLI_PM_LOG" "list packages -f -3 --show-versioncode" \
+        "User-only run queries user packages with versionCode" || failures=1
+    assert_file_not_contains "$CLI_PM_LOG" "list packages -f -s --show-versioncode" \
         "User-only run skips system package query" || failures=1
     assert_file_exists "${CLI_RUN_DIR}/.last_optimized_user" \
         "Initial user-only run creates dedicated state" || failures=1
@@ -869,8 +1287,8 @@ test_user_only_state_lifecycle() {
 
     assert_eq "$CLI_RC" 0 "Repeated user-only return code" || failures=1
     assert_text_contains "$output" '"compiled":0' \
-        "Repeated user-only compiled count" || failures=1
-    assert_text_contains "$output" '"skipped":2' \
+        "Repeated user-only PERFORMED count" || failures=1
+    assert_text_contains "$output" '"cached_skipped":2' \
         "Repeated user-only uses dedicated cache" || failures=1
     assert_file_eq "${CLI_RUN_DIR}/.last_optimized_user" "$CLI_USER_STATE_FILE" \
         "Repeated user-only state remains stable" || failures=1
@@ -882,12 +1300,36 @@ test_user_only_state_lifecycle() {
     assert_eq "$CLI_RC" 0 "Full run after user-only return code" || failures=1
     assert_text_contains "$output" '"scope":"full"' \
         "Full run restores full JSON scope" || failures=1
-    assert_text_contains "$output" '"skipped":4' \
+    assert_text_contains "$output" '"cached_skipped":4' \
         "Full run reuses authoritative full state" || failures=1
     assert_file_missing "${CLI_RUN_DIR}/.last_optimized_user" \
         "Successful full run removes superseded user-only state" || failures=1
     assert_file_eq "${CLI_RUN_DIR}/.last_optimized" "$CLI_FULL_STATE_FILE" \
         "Successful full run leaves authoritative state current" || failures=1
+
+    return "$failures"
+}
+
+
+test_cli_legacy_result_detection() {
+    typeset output failures=0
+
+    prepare_cli_case || return 1
+    cp "$CLI_FULL_STATE_FILE" "${CLI_RUN_DIR}/.last_optimized" || return 1
+
+    CLI_MOCK_ART_HELP_VERBOSE=0
+    run_cli --no-trim --json
+    output=$(<"$CLI_STDOUT")
+
+    assert_eq "$CLI_RC" 0 "Legacy capability-detection return code" || failures=1
+    assert_text_contains "$output" '"art_result_mode":"legacy-exit-code"' \
+        "Legacy help output selects exit-code fallback" || failures=1
+    assert_text_contains "$output" '"cached_skipped":4' \
+        "Legacy cached run preserves cached accounting" || failures=1
+    assert_file_contains_line "$CLI_CMD_LOG" "package help" \
+        "Legacy capability is still probed" || failures=1
+    assert_file_not_contains "$CLI_CMD_LOG" "package compile" \
+        "Legacy cached run performs no compile" || failures=1
 
     return "$failures"
 }
@@ -924,6 +1366,7 @@ test_cli_option_validation() {
 
 for required_file in \
     "$PACKAGE_FILE" \
+    "$MALFORMED_PACKAGE_FILE" \
     "$STATE_FILE" \
     "$EXPECTED_STATE_FILE" \
     "$EXPECTED_FAILURE_STATE_FILE" \
@@ -947,6 +1390,7 @@ print -r -- '============================================================'
 print -r -- ' ART MAINTENANCE LABORATORY'
 print -r -- '============================================================'
 print -r -- " Package input:          $PACKAGE_FILE"
+print -r -- " Malformed PM input:     $MALFORMED_PACKAGE_FILE"
 print -r -- " State baseline:         $STATE_FILE"
 print -r -- " Expected success state: $EXPECTED_STATE_FILE"
 print -r -- " Expected failure state: $EXPECTED_FAILURE_STATE_FILE"
@@ -982,15 +1426,23 @@ run_case() {
 
 run_case 'Dry-run speed-profile pipeline' test_dry_run_speed_profile
 run_case 'Dry-run system pipeline' test_dry_run_system
+run_case 'Missing versionCode normalization fails closed' test_malformed_versioncode_fails_closed
 run_case 'Empty user package list succeeds' test_empty_user_list
 run_case 'Empty system package list fails closed' test_empty_system_list
-run_case 'Mocked real-run state generation' test_real_run_success
-run_case 'Mocked real-run compilation failure' test_real_run_compile_failure
+run_case 'ART Final Status parser matrix' test_art_result_parser
+run_case 'Modern ART PERFORMED earns state' test_real_run_success
+run_case 'Modern ART SKIPPED earns state' test_real_run_art_skipped_earns_state
+run_case 'ART Final Status FAILED earns no state' test_real_run_compile_failure
+run_case 'Storage-low ART SKIPPED retries' test_storage_low_skip_retries
+run_case 'Missing ART Final Status fails closed' test_missing_final_status_fails_closed
+run_case 'Nonzero command exit overrides PERFORMED text' test_nonzero_exit_overrides_performed
+run_case 'Legacy exit-code fallback remains compatible' test_legacy_exit_code_fallback
 run_case 'Force bypasses fingerprint cache' test_force_bypasses_cache
 run_case 'Quiet suppresses routine package progress' test_quiet_suppresses_routine_progress
 run_case 'Health-only JSON and battery policy gates' test_health_json_and_battery_policies
-run_case 'No-trim JSON CLI integration' test_no_trim_json_cli
+run_case 'No-trim JSON CLI and modern capability detection' test_no_trim_json_cli
 run_case 'User-only state lifecycle' test_user_only_state_lifecycle
+run_case 'CLI legacy result capability detection' test_cli_legacy_result_detection
 run_case 'CLI option validation' test_cli_option_validation
 
 print -r -- ''
