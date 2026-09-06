@@ -4,7 +4,7 @@
 # ============================================================================
 # ART MAINTENANCE LABORATORY
 # Purpose: Exercise maintenance.sh's package pipeline, ART Final Status parsing,
-#          lazy ART capability discovery, dry-run probing, JSON output, policy gates,
+#          lazy ART capability discovery, dry-run ART laziness, JSON output, policy gates,
 #          legacy fallback, and scope-specific state using deterministic mocks.
 # ============================================================================
 
@@ -236,9 +236,11 @@ case_cleanup() {
 
     for tmpfile in \
         "${CURRENT_RUN_STATE:-}" \
-        "${STAGE_PATHS:-}" \
-        "${STAGE_STATS:-}" \
-        "${STAGE_MERGED:-}" \
+        "${STATE_STAGE_TMP:-}" \
+        "${STAGE1_PACKAGES:-}" \
+        "${STAGE2_PATHS:-}" \
+        "${STAGE3_STATS:-}" \
+        "${STAGE4_MERGED:-}" \
         "${ERROR_TMPFILE:-}" \
         "${RUN_ERROR_TMPFILE:-}" \
         "${MOCK_CMD_LOG:-}" \
@@ -1310,28 +1312,28 @@ test_user_only_state_lifecycle() {
     return "$failures"
 }
 
-test_cached_dry_run_probes_result_mode() {
+test_cached_dry_run_leaves_art_unknown() {
     typeset output failures=0
 
     prepare_cli_case || return 1
     cp "$CLI_FULL_STATE_FILE" "${CLI_RUN_DIR}/.last_optimized" || return 1
 
-    # Dry-run is the deliberate exception: it rehearses which ART result path a
-    # real compile would use even though every package is already cached.
+    # A fully cached dry-run never reaches the ART boundary, so capability
+    # discovery must remain lazy and ART result mode must stay undetermined.
     run_cli --dry-run --no-trim --json
     output=$(<"$CLI_STDOUT")
 
     assert_eq "$CLI_RC" 0 "Cached dry-run return code" || failures=1
     assert_text_contains "$output" '"dry_run":true' \
         "Cached dry-run JSON mode" || failures=1
-    assert_text_contains "$output" '"art_result_mode":"final-status"' \
-        "Cached dry-run proactively learns modern ART result mode" || failures=1
+    assert_text_contains "$output" '"art_result_mode":"not-determined"' \
+        "Cached dry-run leaves ART result mode undetermined" || failures=1
     assert_text_contains "$output" '"would_compile":0' \
         "Cached dry-run has no packages needing ART" || failures=1
     assert_text_contains "$output" '"cached_skipped":4' \
         "Cached dry-run preserves cache accounting" || failures=1
-    assert_file_contains_line "$CLI_CMD_LOG" "package help" \
-        "Cached dry-run probes ART capability for rehearsal" || failures=1
+    assert_file_not_contains "$CLI_CMD_LOG" "package help" \
+        "Cached dry-run performs no ART capability probe" || failures=1
     assert_file_not_contains "$CLI_CMD_LOG" "package compile" \
         "Cached dry-run never performs compilation" || failures=1
     assert_file_eq "${CLI_RUN_DIR}/.last_optimized" "$CLI_FULL_STATE_FILE" \
@@ -1339,7 +1341,6 @@ test_cached_dry_run_probes_result_mode() {
 
     return "$failures"
 }
-
 test_cli_modern_result_detection_when_needed() {
     typeset output failures=0
 
@@ -1512,7 +1513,7 @@ run_case 'Quiet suppresses routine package progress' test_quiet_suppresses_routi
 run_case 'Health-only JSON and battery policy gates' test_health_json_and_battery_policies
 run_case 'Fully cached real run leaves ART capability unknown' test_no_trim_json_cli
 run_case 'User-only state lifecycle' test_user_only_state_lifecycle
-run_case 'Cached dry-run probes would-use ART result mode' test_cached_dry_run_probes_result_mode
+run_case 'Cached dry-run leaves ART capability unknown' test_cached_dry_run_leaves_art_unknown
 run_case 'CLI lazily detects modern ART mode when needed' test_cli_modern_result_detection_when_needed
 run_case 'CLI lazily detects legacy ART mode when needed' test_cli_legacy_result_detection_when_needed
 run_case 'CLI option validation' test_cli_option_validation
