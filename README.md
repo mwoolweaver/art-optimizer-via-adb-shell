@@ -132,7 +132,7 @@ cat << '__ART_MAINTENANCE_SCRIPT_EOF__' > /sdcard/monthly/maintenance.sh
 #  10. Machine-readable JSON summaries and a standalone health-check mode.
 #  11. Dedicated user-only optimization with an independent state cache.
 #  12. ART-reported dexopt result verification (Final Status) when supported,
-#      detected lazily for real work and proactively for dry-run rehearsal.
+#      detected lazily at the first real or would-be ART-bound package.
 # ============================================================================
 
 # ============================================================================
@@ -217,10 +217,9 @@ report_error() {
 
     return 0
 }
-
 # ============================================================================
 # FUNCTION: check_deps()
-# Purpose: Verify every dependency; confidence is not a substitute for command -v.
+# Purpose: Verify startup dependencies; ART's cmd dependency is checked lazily.
 # ============================================================================
 check_deps() {
     missing=""
@@ -228,7 +227,7 @@ check_deps() {
     if [ "$HEALTH_ONLY" -eq 1 ]; then
         set -- awk df dumpsys getprop sleep
     else
-        set -- awk cmd cmp cp df dumpsys getprop head mkdir mktemp mv pm rm rmdir service sleep stat tr wc xargs
+        set -- awk cmp cp df dumpsys getprop head mkdir mktemp mv pm rm rmdir service sleep stat tr wc xargs
     fi
 
     for req in "$@"; do
@@ -259,8 +258,6 @@ check_deps() {
 #   - Health-only mode never calls this function.
 # ============================================================================
 detect_art_result_reporting() {
-    # Capability discovery is run-scoped and idempotent. Once this invocation
-    # has learned the answer, do not interrogate Package Manager again.
     case "${ART_RESULT_MODE:-not-determined}" in
     not-determined)
         ;;
@@ -269,6 +266,11 @@ detect_art_result_reporting() {
         return 0
         ;;
     esac
+
+    if ! command -v cmd >/dev/null 2>&1; then
+        report_error "[!] FATAL: Required command missing for ART compilation: cmd"
+        return 1
+    fi
 
     ART_VERBOSE_RESULTS=0
     ART_RESULT_MODE="legacy-exit-code"
@@ -1918,7 +1920,10 @@ $stage5_fingerprint
                 debug_print "First package requires ART; determining result-reporting capability now."
             fi
 
-            detect_art_result_reporting
+            if ! detect_art_result_reporting; then
+                stage5_state_error=1
+                break
+            fi
         fi
 
         # ====================================================================
@@ -3345,7 +3350,11 @@ $(<"$STATE_READ_FILE")
             fi
             ;;
         not-determined)
-            print -r -- '    - ART result verification:   Not determined (ART not invoked)'
+            if [ "$DRY_RUN" -eq 1 ]; then
+                print -r -- '    - ART result verification:   Not determined (no package would reach ART)'
+            else
+                print -r -- '    - ART result verification:   Not determined (ART not invoked)'
+            fi
             ;;
         *)
             print -r -- "    - ART result verification:   Unknown mode ($ART_RESULT_MODE)"
