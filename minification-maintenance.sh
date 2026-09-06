@@ -66,7 +66,7 @@ missing=""
 if [ "$HEALTH_ONLY" -eq 1 ];then
 set -- awk df dumpsys getprop sleep
 else
-set -- awk cmd cmp cp df dumpsys getprop head mkdir mktemp mv pm rm rmdir service sleep stat tr wc xargs
+set -- awk cmp cp df dumpsys getprop head mkdir mktemp mv pm rm rmdir service sleep stat tr wc xargs
 fi
 for req in "$@";do
 if ! command -v "$req" >/dev/null 2>&1;then
@@ -86,6 +86,10 @@ not-determined)
 *)debug_print "ART result reporting already determined: $ART_RESULT_MODE"
 return 0
 esac
+if ! command -v cmd >/dev/null 2>&1;then
+report_error "[!] FATAL: Required command missing for ART compilation: cmd"
+return 1
+fi
 ART_VERBOSE_RESULTS=0
 ART_RESULT_MODE="legacy-exit-code"
 ART_HELP_OUTPUT=$(cmd package help 2>&1)
@@ -1193,6 +1197,17 @@ else
 debug_print "Force mode bypassing cached fingerprint for [$stage5_pkg_name]."
 fi
 esac
+if [ "$ART_RESULT_MODE" = "not-determined" ];then
+if [ "$DRY_RUN" -eq 1 ];then
+debug_print "First package would require ART; determining result-reporting capability now."
+else
+debug_print "First package requires ART; determining result-reporting capability now."
+fi
+if ! detect_art_result_reporting;then
+stage5_state_error=1
+break
+fi
+fi
 if [ "$DRY_RUN" -eq 1 ];then
 if [ "$QUIET" -eq 0 ];then
 print -r -- "    [DRY-RUN] ($stage5_current/$stage5_total_pkgs) Would compile (-m $stage5_compile_mode): $stage5_pkg_name"
@@ -1207,10 +1222,6 @@ print -r -- "    [-] ($stage5_current/$stage5_total_pkgs) Updated system app com
 else
 print -r -- "    [+] ($stage5_current/$stage5_total_pkgs) User app compile (-m speed-profile): $stage5_pkg_name"
 fi
-fi
-if [ "$ART_RESULT_MODE" = "not-determined" ];then
-debug_print "First package requires ART; determining result-reporting capability now."
-detect_art_result_reporting
 fi
 if [ "$ART_VERBOSE_RESULTS" -eq 1 ];then
 debug_print "Executing command: cmd package compile -v -m $stage5_compile_mode -f $stage5_pkg_name"
@@ -1697,9 +1708,6 @@ if [ "$sdk_version" -lt "$MIN_SDK" ];then
 echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version" >&2
 exit 1
 fi
-if [ "$DRY_RUN" -eq 1 ]&&[ "$HEALTH_ONLY" -eq 0 ];then
-detect_art_result_reporting
-fi
 if [ "$HEALTH_ONLY" -eq 1 ];then
 echo "[+] Starting ART Smart Maintenance health check on Android $android_version (SDK $sdk_version)..."
 elif [ "$DRY_RUN" -eq 1 ];then
@@ -2111,7 +2119,13 @@ else
 print -r -- '    - ART result verification:   Legacy exit-code fallback'
 fi
 ;;
-not-determined)print -r -- '    - ART result verification:   Not determined (ART not invoked)'
+not-determined)if
+[ "$DRY_RUN" -eq 1 ]
+then
+print -r -- '    - ART result verification:   Not determined (no package would reach ART)'
+else
+print -r -- '    - ART result verification:   Not determined (ART not invoked)'
+fi
 ;;
 *)print -r -- "    - ART result verification:   Unknown mode ($ART_RESULT_MODE)"
 esac
