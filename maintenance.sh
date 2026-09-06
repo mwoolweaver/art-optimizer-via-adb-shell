@@ -152,13 +152,12 @@ check_deps() {
 # ============================================================================
 detect_art_result_reporting() {
     case "${ART_RESULT_MODE:-not-determined}" in
-        not-determined)
-            if [ "$DRY_RUN" -eq 1 ]; then
-                print -r -- '    - ART result verification:   Not determined (no package would reach ART)'
-            else
-                print -r -- '    - ART result verification:   Not determined (ART not invoked)'
-            fi
-            ;;
+    not-determined)
+        ;;
+    *)
+        debug_print "ART result reporting already determined: $ART_RESULT_MODE"
+        return 0
+        ;;
     esac
 
     if ! command -v cmd >/dev/null 2>&1; then
@@ -3244,7 +3243,11 @@ $(<"$STATE_READ_FILE")
             fi
             ;;
         not-determined)
-            print -r -- '    - ART result verification:   Not determined (ART not invoked)'
+            if [ "$DRY_RUN" -eq 1 ]; then
+                print -r -- '    - ART result verification:   Not determined (no package would reach ART)'
+            else
+                print -r -- '    - ART result verification:   Not determined (ART not invoked)'
+            fi
             ;;
         *)
             print -r -- "    - ART result verification:   Unknown mode ($ART_RESULT_MODE)"
