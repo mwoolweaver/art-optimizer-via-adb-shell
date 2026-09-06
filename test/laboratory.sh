@@ -632,7 +632,7 @@ test_dry_run_speed_profile() {
     assert_empty "$RUN_ERROR_TMPFILE" "Dry-run maintenance-error tempfile path" || failures=1
 
     assert_text_contains "$(<"$STAGE4_MERGED")" "com.test.equals|" \
-    "Equals-containing APK path survives last-separator parsing" || failures=1
+        "Equals-containing APK path survives last-separator parsing" || failures=1
 
     return "$failures"
 }
