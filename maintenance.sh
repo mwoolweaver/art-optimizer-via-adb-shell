@@ -1011,9 +1011,22 @@ print_system_status() {
 # ============================================================================
 # FUNCTION: normalize_package_list()
 # Purpose: Stage 1 - normalize raw Package Manager output into trusted records.
-# Params:
-#   $1 = Raw Package Manager package list
-#   $2 = Reserved output file for package|path|versionCode records
+#
+# Input:
+#
+#   package:/path/to/base.apk=com.example.app versionCode:12345
+#
+# Output:
+#
+#   com.example.app|/path/to/base.apk|12345
+#
+# Prof. Tolkien's warning: one does not simply split on the first "=".
+# Android /data/app paths may contain "=" padding themselves, so the
+# package separator is the LAST "=".
+#
+# The versionCode suffix is parsed from the right edge first.
+# The remaining payload is then split on its final "=".
+# From this point forward, "|" separates package|path|versionCode.
 # ============================================================================
 normalize_package_list() {
     stage1_raw_pkg_list="$1"
@@ -1029,26 +1042,6 @@ normalize_package_list() {
         report_error "    [!] ERROR: Stage 1 output staging file is unavailable."
         return 1
     fi
-
-    # ========================================================================
-    # STAGE 1: NORMALIZE PACKAGE MANAGER OUTPUT
-    # ========================================================================
-    #
-    # Input:
-    #
-    #   package:/path/to/base.apk=com.example.app versionCode:12345
-    #
-    # Output:
-    #
-    #   com.example.app|/path/to/base.apk|12345
-    #
-    # Prof. Tolkien's warning: one does not simply split on the first "=".
-    # Android /data/app paths may contain "=" padding themselves, so the
-    # package separator is the LAST "=".
-    #
-    # The versionCode suffix is parsed from the right-hand side.
-    # From this point forward, "|" separates package|path|versionCode.
-    # ========================================================================
 
     debug_print "Running STAGE 1: Normalizing package list to package|path|versionCode format..."
     # Feed raw Package Manager records directly to the Stage 1 parser.
@@ -1143,9 +1136,17 @@ normalize_package_list() {
 # ============================================================================
 # FUNCTION: extract_package_paths()
 # Purpose: Stage 2 - extract unique APK and parent-directory filesystem paths.
-# Params:
-#   $1 = Stage 1 package-record input file
-#   $2 = Reserved output file for unique filesystem paths
+#
+# Input:
+#
+#   package|/path/to/base.apk|versionCode
+#
+# Output:
+#
+#   /path/to/base.apk
+#   /path/to/parent/directory
+#
+# Prof. TEM+P's rule: only filesystem paths reach stat.
 # ============================================================================
 extract_package_paths() {
     stage2_input_packages="$1"
@@ -1163,23 +1164,7 @@ extract_package_paths() {
         return 1
     fi
 
-    # ========================================================================
-    # STAGE 2: EXTRACT FILESYSTEM PATHS
-    # ========================================================================
-
     debug_print "Running STAGE 2: Extracting filesystem paths..."
-
-    # Input:
-    #
-    #   package|/path/to/base.apk|versionCode
-    #
-    # Output:
-    #
-    #   /path/to/base.apk
-    #   /path/to/parent/directory
-    #
-    # Prof. TEM+P's rule: only filesystem paths reach stat.
-    # ========================================================================
 
     awk -F '|' '
         {
@@ -1235,9 +1220,19 @@ extract_package_paths() {
 # ============================================================================
 # FUNCTION: collect_path_stats()
 # Purpose: Stage 3 - collect filesystem metadata for the Stage 2 path catalog.
-# Params:
-#   $1 = Stage 2 filesystem-path input file
-#   $2 = Reserved output file for path=mtime:size:inode records
+#
+# Input:
+#
+#   /path/to/base.apk
+#   /path/to/parent/directory
+#
+# Output:
+#
+#   /path/to/base.apk=mtime:size:inode
+#   /path/to/parent/directory=mtime:size:inode
+#
+# Missing or unreadable paths may produce no stat record; Stage 4 resolves
+# missing APK metadata through the parent-directory fallback when possible.
 # ============================================================================
 collect_path_stats() {
     stage3_input_paths="$1"
@@ -1255,14 +1250,6 @@ collect_path_stats() {
         report_error "    [!] ERROR: Stage 3 output staging file is unavailable."
         return 1
     fi
-
-    # ========================================================================
-    # STAGE 3: COLLECT STAT METADATA
-    # ========================================================================
-    #
-    # The input is path-only; keep stat failures visible in debug rather than
-    # hiding evidence.
-    # ========================================================================
 
     debug_print "Running STAGE 3: Collecting stat metadata from unique paths..."
 
@@ -1303,15 +1290,32 @@ collect_path_stats() {
 # ============================================================================
 # FUNCTION: merge_package_metadata()
 # Purpose: Stage 4 - resolve normalized packages against collected filesystem metadata.
-# Params:
-#   $1 = Stage 1 package-record input file
-#   $2 = Stage 3 stat-catalog input file
-#   $3 = Reserved output file for package|path|versionCode|metadata records
+#
+# Package input:
+#
+#   package|path|versionCode
+#
+# Stat input:
+#
+#   path=mtime:size:inode
+#
+# Output:
+#
+#   package|path|versionCode|mtime:size:inode
+#   package|path|versionCode|UNAVAILABLE
+#
+# Exact APK metadata is preferred. If unavailable, the APK parent directory
+# supplies fallback mtime/inode metadata when possible. Otherwise metadata is
+# marked UNAVAILABLE so Stage 5 recompiles conservatively without persisting
+# an untrustworthy fingerprint.
+#
+# Stage 4 fails closed on malformed records, duplicate stat paths, or broken
+# merge accounting.
 # ============================================================================
 merge_package_metadata() {
-    stage4_input_packages="$1"
-    stage4_input_stats="$2"
-    stage4_output_merged="$3"
+    stage4_input_packages="$1" # Stage 1 package-record input file
+    stage4_input_stats="$2"    # Stage 3 stat-catalog input file
+    stage4_output_merged="$3"  # Reserved output file for package|path|versionCode|metadata records
     stage4_exit=0
     stage4_merged_count=0
 
@@ -1330,24 +1334,7 @@ merge_package_metadata() {
         return 1
     fi
 
-    # ========================================================================
-    # STAGE 4: Match packages to stat metadata
-    # ========================================================================
-
     debug_print "Running STAGE 4: Matching packages to stat metadata..."
-
-    # Input:
-    #
-    #   package|path|versionCode
-    #
-    # Stat cache:
-    #
-    #   path=mtime:size:inode
-    #
-    # Output:
-    #
-    #   package|path|versionCode|mtime:size:inode
-    # ========================================================================
 
     awk -F '|' -v OFS='|' -v sf="$stage4_input_stats" -v debug="$DEBUG" '
         BEGIN {
@@ -1591,18 +1578,22 @@ merge_package_metadata() {
 # ============================================================================
 # FUNCTION: process_package_compilations()
 # Purpose: Stage 5 - evaluate fingerprints, selectively invoke ART, and record state.
-# Params:
-#   $1 = Stage 4 merged-record input file
-#   $2 = Default compile mode (system, speed-profile)
-#   $3 = Total package count for this realm
-# Updates:
-#   CURRENT_RUN_STATE
-#   TOTAL_COMPILED
-#   TOTAL_ART_SKIPPED
-#   TOTAL_WOULD_COMPILE
-#   TOTAL_SKIPPED
-#   TOTAL_FAILED
-#   TOTAL_INVALID
+#
+# Input:
+#
+#   package|path|versionCode|metadata
+#
+# State output:
+#
+#   package|path|versionCode|metadata
+#
+# Exact trustworthy fingerprints may skip ART. Changed or unverifiable
+# fingerprints reach ART; only trustworthy successful outcomes earn state.
+# UNAVAILABLE metadata is never persisted as a current fingerprint.
+#
+# Stage 5 fails closed on malformed records or broken package accounting.
+# Failed, cancelled, storage-deferred, or unverifiable ART outcomes are
+# omitted from state so the next run retries them.
 # ============================================================================
 process_package_compilations() {
     stage5_input_merged="$1"
@@ -1652,11 +1643,6 @@ process_package_compilations() {
             return 1
         fi
     fi
-
-    # Stage 5 input format:
-    #
-    #   package|path|versionCode|metadata
-    #
 
     while IFS='|' read -r stage5_pkg_name stage5_apk_path stage5_version_code stage5_file_meta; do
         stage5_current=$((stage5_current + 1))
@@ -1729,7 +1715,7 @@ process_package_compilations() {
             # Never write an UNAVAILABLE fingerprint to persistent state.
             #
             # If a previous trustworthy fingerprint exists for this exact
-            # package/path/versionCode, carry it forward only after successful
+            # package|path|versionCode, carry it forward only after successful
             # compilation. A different versionCode must never inherit an older
             # package version's fingerprint.
 
@@ -2132,14 +2118,8 @@ process_packages() {
 
     # Setup owns artifact creation; cleanup owns destruction; this conductor owns
     # the per-realm content lifecycle and is the only code that wires stages together.
-    if [ -z "${STAGE1_PACKAGES:-}" ] ||
-        [ -z "${STAGE2_PATHS:-}" ] ||
-        [ -z "${STAGE3_STATS:-}" ] ||
-        [ -z "${STAGE4_MERGED:-}" ] ||
-        [ ! -f "$STAGE1_PACKAGES" ] ||
-        [ ! -f "$STAGE2_PATHS" ] ||
-        [ ! -f "$STAGE3_STATS" ] ||
-        [ ! -f "$STAGE4_MERGED" ]; then
+    if [ -z "${STAGE1_PACKAGES:-}" ] || [ -z "${STAGE2_PATHS:-}" ] || [ -z "${STAGE3_STATS:-}" ] || [ -z "${STAGE4_MERGED:-}" ] ||
+        [ ! -f "$STAGE1_PACKAGES" ] || [ ! -f "$STAGE2_PATHS" ] || [ ! -f "$STAGE3_STATS" ] || [ ! -f "$STAGE4_MERGED" ]; then
 
         report_error "    [!] ERROR: Package-pipeline staging files are unavailable."
         return 1
@@ -2324,7 +2304,7 @@ runtime_setup() {
     LOCK_OWNER_FILE=""
     LOCK_HELD=0
 
-    # Literal carriage return for PM output normalization.
+    # Literal carriage return for command-output transport normalization.
     CR=$'\r'
     readonly CR
 }
