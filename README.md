@@ -144,8 +144,8 @@ Environment variables:
     TMPDIR=/path/to/writable/temp/directory'
 }
 debug_print(){
-if [ "$DEBUG" -eq 1 ];then
-echo "[DEBUG] $1" >&2
+if [ "${DEBUG:-0}" = "1" ];then
+print -r -- "[DEBUG] $1" >&2
 fi
 }
 report_error(){
@@ -170,7 +170,12 @@ return 0
 }
 check_deps(){
 missing=""
-for req in awk cmd cmp cp df dumpsys getprop head mkdir mktemp mv pm rm rmdir service sleep stat tr wc xargs;do
+if [ "$HEALTH_ONLY" -eq 1 ];then
+set -- awk df dumpsys getprop sleep
+else
+set -- awk cmd cmp cp df dumpsys getprop head mkdir mktemp mv pm rm rmdir service sleep stat tr wc xargs
+fi
+for req in "$@";do
 if ! command -v "$req" >/dev/null 2>&1;then
 missing="$missing$req "
 debug_print "Missing required dependency: $req"
@@ -289,12 +294,8 @@ fi
 fi
 fi
 for tmpfile in \
-"${CURRENT_RUN_STATE:-}" \
-"${STATE_STAGE_TMP:-}" \
-"${STAGE_PATHS:-}" \
-"${STAGE_STATS:-}" \
-"${STAGE_MERGED:-}" \
-"${ERROR_TMPFILE:-}";do
+"${CURRENT_RUN_STATE:-}" "${STATE_STAGE_TMP:-}" "${STAGE1_PACKAGES:-}" \
+"${STAGE2_PATHS:-}" "${STAGE3_STATS:-}" "${STAGE4_MERGED:-}" "${ERROR_TMPFILE:-}";do
 if [ -n "$tmpfile" ]&&[ -e "$tmpfile" ];then
 debug_print "Cleaning up temporary file: $tmpfile"
 if ! rm -f "$tmpfile" 2>/dev/null;then
@@ -368,7 +369,7 @@ temp=$(print -r -- "$out"|awk '
                     max_t = 0
 
                     for (i = 1; i <= n; i++) {
-                        if (temps[i] ~ /^[0-9]+$/) {
+                        if (temps[i] ~ /^[0-9]+([.][0-9]+)?$/) {
                             t = temps[i] + 0
                             if (t > max_t && t < 120)
                                 max_t = t
@@ -376,7 +377,7 @@ temp=$(print -r -- "$out"|awk '
                     }
 
                     if (max_t > 0) {
-                        printf "%d", max_t
+                        printf "%.0f", max_t
                         exit
                     }
                 }
@@ -385,14 +386,20 @@ temp=$(print -r -- "$out"|awk '
             /Skin temperatures:/ {
                 if (match($0, /\[[^]]*\]/)) {
                     line = substr($0, RSTART + 1, RLENGTH - 2)
+                    n = split(line, temps, ",[ ]*")
+                    max_t = 0
 
-                    if (line ~ /^[0-9]+$/) {
-                        t = line + 0
-
-                        if (t > 0 && t < 120) {
-                            printf "%d", t
-                            exit
+                    for (i = 1; i <= n; i++) {
+                        if (temps[i] ~ /^[0-9]+([.][0-9]+)?$/) {
+                            t = temps[i] + 0
+                            if (t > max_t && t < 120)
+                                max_t = t
                         }
+                    }
+
+                    if (max_t > 0) {
+                        printf "%.0f", max_t
+                        exit
                     }
                 }
             }
@@ -634,10 +641,12 @@ json_scope="full"
 fi
 if [ "$DRY_RUN" -eq 1 ];then
 json_state="not-modified"
-elif [ "$STATE_COMMIT_SAFE" -eq 1 ];then
-json_state="current"
-else
+elif [ "$STATE_COMMIT_SAFE" -ne 1 ];then
 json_state="incomplete"
+elif [ "${TOTAL_FAILED:-0}" -gt 0 ];then
+json_state="partial"
+else
+json_state="current"
 fi
 fi
 json_dry_run=false
@@ -737,193 +746,219 @@ print -r -- '    ─────────────────────
 print -r -- ''
 return 0
 }
-process_packages(){
-pkg_list="$1"
-default_mode="$2"
-if [ -z "$pkg_list" ];then
-if [ "$default_mode" = "speed-profile" ];then
-USER_PKGS_COUNT=0
-debug_print "No user/third-party packages found; user stage completed with 0 packages."
+normalize_package_list(){
+stage1_raw_pkg_list="$1"
+stage1_output_packages="$2"
+stage1_exit=0
+if [ -z "$stage1_raw_pkg_list" ];then
+report_error "    [!] ERROR: Stage 1 received an empty package list."
+return 1
+fi
+if [ -z "$stage1_output_packages" ]||[ ! -f "$stage1_output_packages" ];then
+report_error "    [!] ERROR: Stage 1 output staging file is unavailable."
+return 1
+fi
+debug_print "Running STAGE 1: Normalizing package list to package|path|versionCode format..."
+print -r -- "$stage1_raw_pkg_list"|awk '
+        {
+            line = $0
+            sub(/\r$/, "", line)
+
+            # Validate Package Manager syntax before transforming the record.
+            if (substr(line, 1, 8) != "package:") {
+                invalid_records++
+                next
+            }
+
+            # --show-versioncode appends exactly:
+            #
+            #   " versionCode:<digits>"
+            #
+            # Parse and remove this known suffix from the right first.
+            if (!match(line, / versionCode:[0-9]+$/)) {
+                invalid_records++
+                next
+            }
+
+            version = substr(line, RSTART + 13)
+            core = substr(line, 1, RSTART - 1)
+
+            # "package:" is Package Manager syntax, not part of package identity.
+            # Derive the payload only after the raw record and suffix are validated.
+            payload = substr(core, 9)
+            idx = 0
+
+            # Since Android paths can contain "=" themselves,
+            # use the LAST "=" rather than the first one.
+            for (i = 1; i <= length(payload); i++) {
+                if (substr(payload, i, 1) == "=")
+                    idx = i
+            }
+
+            if (idx <= 0) {
+                invalid_records++
+                next
+            }
+
+            path = substr(payload, 1, idx - 1)
+            pkg = substr(payload, idx + 1)
+
+            # Admit only a valid internal package record.
+            if (pkg == "" || path !~ /^\// || index(path, "|") != 0 || index(pkg, "|") != 0 || pkg ~ /[[:space:]]/) {
+
+                invalid_records++
+                next
+            }
+
+            identity = pkg "|" path
+
+            if (identity in seen_version) {
+                if (seen_version[identity] != version)
+                    invalid_records++
+                next
+            }
+
+            seen_version[identity] = version
+            print identity "|" version
+        }
+
+        END {
+            # versionCode is part of the trusted fingerprint.
+            # Any malformed PM record fails normalization closed.
+            if (invalid_records > 0)
+                exit 2
+        }
+        ' >"$stage1_output_packages"
+stage1_exit=$?
+if [ "$stage1_exit" -ne 0 ];then
+report_error "    [!] ERROR: Package normalization failed in Stage 1 (Exit Code: $stage1_exit)."
+return 1
+fi
+if [ ! -s "$stage1_output_packages" ];then
+report_error "    [!] ERROR: Stage 1 produced no normalized package records."
+return 1
+fi
 return 0
-fi
-report_error "    [!] ERROR: Package list for mode '$default_mode' is unexpectedly empty."
+}
+extract_package_paths(){
+stage2_input_packages="$1"
+stage2_output_paths="$2"
+stage2_exit=0
+stage2_path_count=0
+if [ -z "$stage2_input_packages" ]||[ ! -s "$stage2_input_packages" ];then
+report_error "    [!] ERROR: Stage 2 received no normalized package records."
 return 1
 fi
-debug_print "Normalizing package list to package|path|versionCode format..."
-pkg_list="${pkg_list//package:/}"
-pkg_list="${pkg_list//$CR/}"
-normalized_pkg_list=$(print -r -- "$pkg_list"|awk '
-            {
-                line = $0
-                idx = 0
-
-                # Since Android paths can contain "=" themselves,
-                # use the LAST "=" rather than the first one.
-                for (i = 1; i <= length(line); i++) {
-                    if (substr(line, i, 1) == "=")
-                        idx = i
-                }
-
-                if (idx <= 0) {
-                    invalid_records++
-                    next
-                }
-
-                path = substr(line, 1, idx - 1)
-                rhs  = substr(line, idx + 1)
-
-                # --show-versioncode appends exactly:
-                #
-                #   " versionCode:<digits>"
-                #
-                # Parse it from the end so package-name handling stays simple.
-                if (!match(rhs, / versionCode:[0-9]+$/)) {
-                    invalid_records++
-                    next
-                }
-
-                pkg = substr(rhs, 1, RSTART - 1)
-                version = substr(rhs, RSTART + 13)
-
-                # Admit only a valid internal package record.
-                # The versionCode regex above has already guaranteed that
-                # version contains one or more decimal digits.
-                if (pkg == "" ||
-                    path !~ /^\// ||
-                    index(path, "|") != 0 ||
-                    index(pkg, "|") != 0 ||
-                    pkg ~ /[[:space:]]/) {
-
-                    invalid_records++
-                    next
-                }
-
-                identity = pkg "|" path
-
-                if (identity in seen_version) {
-                    if (seen_version[identity] != version)
-                        invalid_records++
-                    next
-                }
-
-                seen_version[identity] = version
-                print identity "|" version
-            }
-
-            END {
-                # A requested versionCode is part of the trusted fingerprint.
-                # If any PM record lacks a valid one, fail the entire
-                # normalization step rather than silently dropping a package.
-                if (invalid_records > 0)
-                    exit 2
-            }
-        ')
-normalize_exit=$?
-if [ "$normalize_exit" -ne 0 ];then
-report_error "    [!] ERROR: Package normalization failed (Exit Code: $normalize_exit)."
+if [ -z "$stage2_output_paths" ]||[ ! -f "$stage2_output_paths" ];then
+report_error "    [!] ERROR: Stage 2 output staging file is unavailable."
 return 1
 fi
-pkg_list="$normalized_pkg_list"
-if [ -z "$pkg_list" ];then
-report_error "    [!] ERROR: Package list became empty during normalization."
-return 1
-fi
-total_pkgs=0
-OLD_IFS="$IFS"
-IFS='
-'
-case "$-" in
-*f*)package_noglob_was_set=1;;
-*)package_noglob_was_set=0
-esac
-set -f
-for item in $pkg_list;do
-[ -n "$item" ]&&total_pkgs=$((total_pkgs+1))
-done
-if [ "$package_noglob_was_set" -eq 0 ];then
-set +f
-fi
-IFS="$OLD_IFS"
-if [ "$DEBUG" -eq 1 ];then
-debug_print "===== DEBUG NORMALIZED PACKAGE LIST ====="
-debug_print "Total packages parsed for '$default_mode': $total_pkgs"
-debug_print "--- first 10 records ---"
-echo "$pkg_list"|head -n 10 >&2
-debug_print "--- end DEBUG NORMALIZED PACKAGE LIST ---"
-fi
-if [ "$default_mode" = "system" ];then
-SYSTEM_PKGS_COUNT="$total_pkgs"
-else
-USER_PKGS_COUNT="$total_pkgs"
-fi
-debug_print "Running STAGE 1: Extracting file paths..."
-print -r -- "$pkg_list"|awk -F '|' '
+debug_print "Running STAGE 2: Extracting filesystem paths..."
+awk -F '|' '
         {
             if (NF != 3)
                 next
 
             path = $2
 
-            # Basic sanity checks
+            # Basic sanity checks.
             if (path == "" || length(path) > 1024)
                 next
 
-            # Deduplicate APK/file paths
+            # Deduplicate APK/file paths.
             if (!seen[path]++) {
                 print path
             }
 
-            # Extract parent directory
+            # Extract parent directory.
             if (match(path, /.*\//)) {
                 dir = substr(path, 1, RLENGTH - 1)
 
-                if (dir != "" &&
-                    length(dir) <= 1024 &&
-                    !seen[dir]++) {
+                if (dir != "" && length(dir) <= 1024 && !seen[dir]++) {
                     print dir
                 }
             }
         }
-    ' >"$STAGE_PATHS"
-stage1_exit=$?
-if [ "$stage1_exit" -ne 0 ];then
-report_error "    [!] ERROR: Stage 1 path extraction failed (Exit Code: $stage1_exit)."
+        ' "$stage2_input_packages" >"$stage2_output_paths"
+stage2_exit=$?
+if [ "$stage2_exit" -ne 0 ];then
+report_error "    [!] ERROR: Stage 2 path extraction failed (Exit Code: $stage2_exit)."
+return 1
+fi
+if [ ! -s "$stage2_output_paths" ];then
+report_error "    [!] ERROR: Stage 2 produced no filesystem paths."
 return 1
 fi
 if [ "$DEBUG" -eq 1 ];then
-STAGE_PATH_COUNT=$(wc -l <"$STAGE_PATHS")
-debug_print "===== DEBUG STAGE 1 PATHS ====="
-debug_print "Paths: $STAGE_PATH_COUNT"
+stage2_path_count=$(wc -l <"$stage2_output_paths")
+debug_print "===== DEBUG STAGE 2: PATHS ====="
+debug_print "Paths: $stage2_path_count"
 debug_print "--- first 20 paths ---"
-head -n 20 "$STAGE_PATHS" >&2
-debug_print "--- end DEBUG STAGE 1 PATHS ---"
+head -n 20 "$stage2_output_paths" >&2
+debug_print "--- end DEBUG STAGE 2 PATHS ---"
 fi
-debug_print "Running stat on unique paths..."
-tr '\n' '\0' <"$STAGE_PATHS"|xargs -0 -r stat -c '%n=%Y:%s:%i' > \
-"$STAGE_STATS"
-stage1b_exit=$?
-if [ "$stage1b_exit" -ne 0 ];then
-debug_print "Stage 1b stat completed with missing/unreadable paths (Exit Code: $stage1b_exit)."
+return 0
+}
+collect_path_stats(){
+stage3_input_paths="$1"
+stage3_output_stats="$2"
+stage3_exit=0
+stage3_path_count=0
+stage3_stat_count=0
+if [ -z "$stage3_input_paths" ]||[ ! -s "$stage3_input_paths" ];then
+report_error "    [!] ERROR: Stage 3 received no filesystem paths."
+return 1
 fi
-if [ ! -s "$STAGE_STATS" ];then
-report_error "    [!] ERROR: stat produced no output. Persistent state will not be updated."
+if [ -z "$stage3_output_stats" ]||[ ! -f "$stage3_output_stats" ];then
+report_error "    [!] ERROR: Stage 3 output staging file is unavailable."
+return 1
+fi
+debug_print "Running STAGE 3: Collecting stat metadata from unique paths..."
+tr '\n' '\0' <"$stage3_input_paths"|xargs -0 -r stat -c '%n=%Y:%s:%i' >"$stage3_output_stats"
+stage3_exit=$?
+if [ "$stage3_exit" -ne 0 ];then
+debug_print "Stage 3 stat collection completed with missing/unreadable paths (Exit Code: $stage3_exit)."
+fi
+if [ ! -s "$stage3_output_stats" ];then
+report_error "    [!] ERROR: Stage 3 stat collection produced no metadata. Persistent state will not be updated."
 return 1
 fi
 if [ "$DEBUG" -eq 1 ];then
-STAGE_STAT_COUNT=$(wc -l <"$STAGE_STATS")
-debug_print "===== DEBUG STAGE 1b: STAT ACCOUNTING ====="
-debug_print "Unique paths submitted to stat: $STAGE_PATH_COUNT"
-debug_print "Stat records produced:          $STAGE_STAT_COUNT"
-if [ "$STAGE_STAT_COUNT" -ne "$STAGE_PATH_COUNT" ];then
+stage3_path_count=$(wc -l <"$stage3_input_paths")
+stage3_stat_count=$(wc -l <"$stage3_output_stats")
+debug_print "===== DEBUG STAGE 3: STAT ACCOUNTING ====="
+debug_print "Unique paths submitted to stat: $stage3_path_count"
+debug_print "Stat records produced:          $stage3_stat_count"
+if [ "$stage3_stat_count" -ne "$stage3_path_count" ];then
 debug_print "[!] WARNING: stat record count differs from path count."
-debug_print "    Missing/failed stat records: $((STAGE_PATH_COUNT-STAGE_STAT_COUNT))"
+debug_print "    Missing/failed stat records: $((stage3_path_count-stage3_stat_count))"
 else
 debug_print "[+] Stat accounting: path count matches stat count."
 fi
-debug_print "--- end DEBUG STAGE 1b ACCOUNTING ---"
+debug_print "--- end DEBUG STAGE 3 ACCOUNTING ---"
 fi
-debug_print "Running STAGE 2: Matching packages to stat metadata..."
-print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DEBUG" '
+return 0
+}
+merge_package_metadata(){
+stage4_input_packages="$1"
+stage4_input_stats="$2"
+stage4_output_merged="$3"
+stage4_exit=0
+stage4_merged_count=0
+if [ -z "$stage4_input_packages" ]||[ ! -s "$stage4_input_packages" ];then
+report_error "    [!] ERROR: Metadata merge received no normalized package records."
+return 1
+fi
+if [ -z "$stage4_input_stats" ]||[ ! -s "$stage4_input_stats" ];then
+report_error "    [!] ERROR: Metadata merge received no stat catalog."
+return 1
+fi
+if [ -z "$stage4_output_merged" ]||[ ! -f "$stage4_output_merged" ];then
+report_error "    [!] ERROR: Merged-package staging file is unavailable."
+return 1
+fi
+debug_print "Running STAGE 4: Matching packages to stat metadata..."
+awk -F '|' -v OFS='|' -v sf="$stage4_input_stats" -v debug="$DEBUG" '
         BEGIN {
             # Load stat cache into memory.
             #
@@ -954,11 +989,7 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
                     # the Unix epoch. Size and inode must be non-negative.
                     n = split(m, stat_meta, ":")
 
-                    if (p != "" &&
-                        n == 3 &&
-                        stat_meta[1] ~ /^-?[0-9]+$/ &&
-                        stat_meta[2] ~ /^[0-9]+$/ &&
-                        stat_meta[3] ~ /^[0-9]+$/) {
+                    if (p != "" && n == 3 && stat_meta[1] ~ /^-?[0-9]+$/ && stat_meta[2] ~ /^[0-9]+$/ && stat_meta[3] ~ /^[0-9]+$/) {
 
                         if (p in stats)
                             duplicate_stat_paths++
@@ -988,9 +1019,8 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
             path    = $2
             version = $3
 
-            if (pkg == "" ||
-                path == "" ||
-                version !~ /^[0-9]+$/) {
+            if (pkg == "" || path == "" || version !~ /^[0-9]+$/) {
+
                 invalid_package_records++
                 next
             }
@@ -1005,8 +1035,8 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
             } else {
                 # APK metadata unavailable.
                 #
-                # Prof. JWST fallback: if the APK itself is absent from the catalog, consult
-                # its parent directory so split/partial installation changes remain detectable.
+                # Prof. JWST fallback: consult the APK parent directory so
+                # split/partial installation changes remain detectable.
 
                 dir = path
                 sub("/[^/]+/?$", "", dir)
@@ -1016,14 +1046,11 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
                 if (d_meta != "") {
                     n = split(d_meta, dir_meta, ":")
 
-                    if (n == 3 &&
-                        dir_meta[1] ~ /^-?[0-9]+$/ &&
-                        dir_meta[2] ~ /^[0-9]+$/ &&
-                        dir_meta[3] ~ /^[0-9]+$/) {
+                    if (n == 3 && dir_meta[1] ~ /^-?[0-9]+$/ && dir_meta[2] ~ /^[0-9]+$/ && dir_meta[3] ~ /^[0-9]+$/) {
 
                         # Preserve directory mtime and inode.
-                        # Use zero for size because this is directory
-                        # fallback metadata.
+                        # Use zero for size because this is directory fallback
+                        # metadata.
                         meta = dir_meta[1] ":0:" dir_meta[3]
                         directory_fallbacks++
                     } else {
@@ -1041,12 +1068,26 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
         }
 
         END {
+            resolved_packages = direct_matches + directory_fallbacks + unavailable
+            stage4_integrity_error = 0
+
+            if (stat_records != valid_stat_records + invalid_stat_records ||
+                input_records != accepted_packages + invalid_package_records ||
+                invalid_stat_records > 0 ||
+                duplicate_stat_paths > 0 ||
+                invalid_package_records > 0 ||
+                accepted_packages != resolved_packages ||
+                accepted_packages != merged_records) {
+
+                stage4_integrity_error = 1
+            }
+
             # Debug diagnostics go to stderr so they never contaminate
-            # STAGE_MERGED, which receives stdout.
+            # the Stage 4 output file, which receives stdout.
 
             if (debug == 1) {
                 print "" > "/dev/stderr"
-                print "===== DEBUG STAGE 2: MATCH ACCOUNTING =====" > "/dev/stderr"
+                print "===== DEBUG STAGE 4: MATCH ACCOUNTING =====" > "/dev/stderr"
 
                 printf "Stat records read:          %d\n", stat_records > "/dev/stderr"
                 printf "Valid stat records:         %d\n", valid_stat_records > "/dev/stderr"
@@ -1068,6 +1109,7 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
                 # ------------------------------------------------------------
                 # Verify stat accounting
                 # ------------------------------------------------------------
+
                 if (stat_records == valid_stat_records + invalid_stat_records) {
                     print "[+] Stat accounting verified." > "/dev/stderr"
                 } else {
@@ -1080,6 +1122,7 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
                 # ------------------------------------------------------------
                 # Verify package-input accounting
                 # ------------------------------------------------------------
+
                 if (input_records == accepted_packages + invalid_package_records) {
                     print "[+] Package-input accounting verified." > "/dev/stderr"
                 } else {
@@ -1092,7 +1135,6 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
                 # ------------------------------------------------------------
                 # Verify metadata-resolution accounting
                 # ------------------------------------------------------------
-                resolved_packages = direct_matches + directory_fallbacks + unavailable
 
                 if (accepted_packages == resolved_packages) {
                     print "[+] Metadata-resolution accounting verified." > "/dev/stderr"
@@ -1105,6 +1147,7 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
                 # ------------------------------------------------------------
                 # Verify merge accounting
                 # ------------------------------------------------------------
+
                 if (accepted_packages == merged_records) {
                     print "[+] Merge accounting verified." > "/dev/stderr"
                 } else {
@@ -1113,137 +1156,163 @@ print -r -- "$pkg_list"|awk -F '|' -v OFS='|' -v sf="$STAGE_STATS" -v debug="$DE
                         merged_records > "/dev/stderr"
                 }
 
-                print "===== END DEBUG STAGE 2 ACCOUNTING =====" > "/dev/stderr"
+                if (stage4_integrity_error != 0)
+                    print "[!] ERROR: Stage 4 integrity checks failed." > "/dev/stderr"
+
+                print "===== END DEBUG STAGE 4 ACCOUNTING =====" > "/dev/stderr"
                 print "" > "/dev/stderr"
             }
+
+            if (stage4_integrity_error != 0)
+                exit 3
         }
-    ' >"$STAGE_MERGED"
-stage2_exit=$?
-if [ "$stage2_exit" -ne 0 ];then
-report_error "    [!] ERROR: Stage 2 metadata merge failed (Exit Code: $stage2_exit)."
+        ' "$stage4_input_packages" >"$stage4_output_merged"
+stage4_exit=$?
+if [ "$stage4_exit" -ne 0 ];then
+report_error "    [!] ERROR: Stage 4 metadata merge failed (Exit Code: $stage4_exit)."
 return 1
 fi
-if [ ! -s "$STAGE_MERGED" ];then
-report_error "    [!] ERROR: Stage 2 produced no merged package records."
+if [ ! -s "$stage4_output_merged" ];then
+report_error "    [!] ERROR: Stage 4 produced no merged package records."
 return 1
 fi
 if [ "$DEBUG" -eq 1 ];then
-MERGED_LINE_COUNT=$(wc -l <"$STAGE_MERGED")
-debug_print "===== DEBUG STAGE 2: STAGE_MERGED ====="
-debug_print "STAGE_MERGED: $STAGE_MERGED"
-debug_print "Merged: $MERGED_LINE_COUNT"
+stage4_merged_count=$(wc -l <"$stage4_output_merged")
+debug_print "===== DEBUG STAGE 4: MERGED OUTPUT ====="
+debug_print "Merged output: $stage4_output_merged"
+debug_print "Merged: $stage4_merged_count"
 debug_print "--- first 10 records ---"
-head -n 10 "$STAGE_MERGED" >&2
-debug_print "--- end DEBUG STAGE_MERGED ---"
+head -n 10 "$stage4_output_merged" >&2
+debug_print "--- end DEBUG STAGE 4 MERGED OUTPUT ---"
 fi
-debug_print "Running STAGE 3: Processing package compilation sequence..."
-current=0
-stage3_skipped=0
-stage3_art_skipped=0
-stage3_compiled=0
-stage3_failed=0
-stage3_unverified=0
-stage3_invalid=0
-stage3_would_compile=0
-stage3_state_error=0
+return 0
+}
+process_package_compilations(){
+stage5_input_merged="$1"
+stage5_default_mode="$2"
+stage5_total_pkgs="$3"
+case "$stage5_default_mode" in
+system|speed-profile)
+;;
+*)report_error "    [!] ERROR: Invalid compilation mode: $stage5_default_mode"
+return 1
+esac
+case "$stage5_total_pkgs" in
+''|*[!0-9]*|0)report_error "    [!] ERROR: Compilation stage received an invalid package count."
+return 1
+esac
+if [ -z "$stage5_input_merged" ]||[ ! -s "$stage5_input_merged" ];then
+report_error "    [!] ERROR: Compilation stage received no merged package records."
+return 1
+fi
+debug_print "Running STAGE 5: Processing package compilation sequence..."
+stage5_current=0
+stage5_skipped=0
+stage5_art_skipped=0
+stage5_compiled=0
+stage5_failed=0
+stage5_unverified=0
+stage5_invalid=0
+stage5_would_compile=0
+stage5_state_error=0
 if [ "$DRY_RUN" -eq 0 ];then
 if ! exec 3>>"$CURRENT_RUN_STATE";then
 report_error "    [!] ERROR: Unable to open current-run state file for writing."
 return 1
 fi
 fi
-while IFS='|' read -r pkg_name apk_path version_code file_meta;do
-current=$((current+1))
-if [ -z "$pkg_name" ]||[ -z "$apk_path" ];then
-stage3_invalid=$((stage3_invalid+1))
+while IFS='|' read -r stage5_pkg_name stage5_apk_path stage5_version_code stage5_file_meta;do
+stage5_current=$((stage5_current+1))
+if [ -z "$stage5_pkg_name" ]||[ -z "$stage5_apk_path" ];then
+stage5_invalid=$((stage5_invalid+1))
 continue
 fi
-case "$version_code" in
-''|*[!0-9]*)echo "    [!] Skipping package with invalid versionCode: $pkg_name" >&2
-stage3_invalid=$((stage3_invalid+1))
+case "$stage5_version_code" in
+''|*[!0-9]*)echo "    [!] Skipping package with invalid versionCode: $stage5_pkg_name" >&2
+stage5_invalid=$((stage5_invalid+1))
 continue
 esac
-case "$pkg_name" in
-*[[:space:]]*)echo "    [!] Skipping package with whitespace in name: $pkg_name" >&2
-stage3_invalid=$((stage3_invalid+1))
+case "$stage5_pkg_name" in
+*[[:space:]]*)echo "    [!] Skipping package with whitespace in name: $stage5_pkg_name" >&2
+stage5_invalid=$((stage5_invalid+1))
 continue
 esac
-compile_mode="$default_mode"
-if [ "$default_mode" = "system" ];then
-if [ "$apk_path" != "${apk_path#/data/}" ];then
-compile_mode="speed-profile"
+stage5_compile_mode="$stage5_default_mode"
+if [ "$stage5_default_mode" = "system" ];then
+if [ "$stage5_apk_path" != "${stage5_apk_path#/data/}" ];then
+stage5_compile_mode="speed-profile"
 else
-compile_mode="speed"
+stage5_compile_mode="speed"
 fi
 fi
-state_writable=1
-preserved_fingerprint=""
-fingerprint="$pkg_name|$apk_path|$version_code|$file_meta"
-case "$file_meta" in
-UNAVAILABLE)echo "    [!] ($current/$total_pkgs) Unable to verify metadata: $pkg_name" >&2
-echo "    [+] ($current/$total_pkgs) Treating as changed: $pkg_name" >&2
-stage3_unverified=$((stage3_unverified+1))
-state_writable=0
-state_key="$pkg_name|$apk_path|$version_code|"
-state_old_ifs="$IFS"
+stage5_state_writable=1
+stage5_preserved_fingerprint=""
+stage5_fingerprint="$stage5_pkg_name|$stage5_apk_path|$stage5_version_code|$stage5_file_meta"
+case "$stage5_file_meta" in
+UNAVAILABLE)echo "    [!] ($stage5_current/$stage5_total_pkgs) Unable to verify metadata: $stage5_pkg_name" >&2
+echo "    [+] ($stage5_current/$stage5_total_pkgs) Treating as changed: $stage5_pkg_name" >&2
+stage5_unverified=$((stage5_unverified+1))
+stage5_state_writable=0
+stage5_state_key="$stage5_pkg_name|$stage5_apk_path|$stage5_version_code|"
+stage5_state_old_ifs="$IFS"
 IFS='
 '
 case "$-" in
-*f*)state_noglob_was_set=1;;
-*)state_noglob_was_set=0
+*f*)stage5_state_noglob_was_set=1;;
+*)stage5_state_noglob_was_set=0
 esac
 set -f
-for prev_fingerprint in $PREV_STATE;do
-case "$prev_fingerprint" in
-"$state_key"*)case "$prev_fingerprint" in
+for stage5_prev_fingerprint in $PREV_STATE;do
+case "$stage5_prev_fingerprint" in
+"$stage5_state_key"*)case "$stage5_prev_fingerprint" in
 *"|UNAVAILABLE")
 ;;
-*)preserved_fingerprint="$prev_fingerprint"
-debug_print "Found previous trustworthy fingerprint for [$pkg_name]; preserving only after successful compilation."
+*)stage5_preserved_fingerprint="$stage5_prev_fingerprint"
+debug_print "Found previous trustworthy fingerprint for [$stage5_pkg_name]; preserving only after successful compilation."
 esac
 break
 esac
 done
-if [ "$state_noglob_was_set" -eq 0 ];then
+if [ "$stage5_state_noglob_was_set" -eq 0 ];then
 set +f
 fi
-IFS="$state_old_ifs"
+IFS="$stage5_state_old_ifs"
 ;;
-*)debug_print "Fingerprint evaluation for [$pkg_name]: $fingerprint"
+*)debug_print "Fingerprint evaluation for [$stage5_pkg_name]: $stage5_fingerprint"
 if [ "$FORCE" -eq 0 ];then
 case "$PREV_STATE" in
 *"
-$fingerprint
-"*)stage3_skipped=$((stage3_skipped+1))
+$stage5_fingerprint
+"*)stage5_skipped=$((stage5_skipped+1))
 if [ "$DRY_RUN" -eq 0 ];then
-if ! print -r -- "$fingerprint" >&3;then
-report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
-stage3_state_error=1
+if ! print -r -- "$stage5_fingerprint" >&3;then
+report_error "    [!] ERROR: Failed to write current-run state for $stage5_pkg_name."
+stage5_state_error=1
 break
 fi
 fi
 if [ "$QUIET" -eq 0 ];then
-echo "    [~] ($current/$total_pkgs) Skipping unchanged: $pkg_name"
+echo "    [~] ($stage5_current/$stage5_total_pkgs) Skipping unchanged: $stage5_pkg_name"
 fi
 continue
 esac
 else
-debug_print "Force mode bypassing cached fingerprint for [$pkg_name]."
+debug_print "Force mode bypassing cached fingerprint for [$stage5_pkg_name]."
 fi
 esac
 if [ "$DRY_RUN" -eq 1 ];then
 if [ "$QUIET" -eq 0 ];then
-print -r -- "    [DRY-RUN] ($current/$total_pkgs) Would compile (-m $compile_mode): $pkg_name"
+print -r -- "    [DRY-RUN] ($stage5_current/$stage5_total_pkgs) Would compile (-m $stage5_compile_mode): $stage5_pkg_name"
 fi
-stage3_would_compile=$((stage3_would_compile+1))
+stage5_would_compile=$((stage5_would_compile+1))
 else
 if [ "$QUIET" -eq 0 ];then
-if [ "$compile_mode" = "speed" ];then
-print -r -- "    [+] ($current/$total_pkgs) Core system compile (-m speed): $pkg_name"
-elif [ "$default_mode" = "system" ];then
-print -r -- "    [-] ($current/$total_pkgs) Updated system app compile (-m speed-profile): $pkg_name"
+if [ "$stage5_compile_mode" = "speed" ];then
+print -r -- "    [+] ($stage5_current/$stage5_total_pkgs) Core system compile (-m speed): $stage5_pkg_name"
+elif [ "$stage5_default_mode" = "system" ];then
+print -r -- "    [-] ($stage5_current/$stage5_total_pkgs) Updated system app compile (-m speed-profile): $stage5_pkg_name"
 else
-print -r -- "    [+] ($current/$total_pkgs) User app compile (-m speed-profile): $pkg_name"
+print -r -- "    [+] ($stage5_current/$stage5_total_pkgs) User app compile (-m speed-profile): $stage5_pkg_name"
 fi
 fi
 if [ "$ART_RESULT_MODE" = "not-determined" ];then
@@ -1251,163 +1320,245 @@ debug_print "First package requires ART; determining result-reporting capability
 detect_art_result_reporting
 fi
 if [ "$ART_VERBOSE_RESULTS" -eq 1 ];then
-debug_print "Executing command: cmd package compile -v -m $compile_mode -f $pkg_name"
-err_output=$(cmd package compile -v -m "$compile_mode" -f "$pkg_name" 2>&1 3>&-)
+debug_print "Executing command: cmd package compile -v -m $stage5_compile_mode -f $stage5_pkg_name"
+stage5_compile_output=$(cmd package compile -v -m "$stage5_compile_mode" -f "$stage5_pkg_name" 2>&1 3>&-)
 else
-debug_print "Executing command: cmd package compile -m $compile_mode -f $pkg_name (legacy result mode)"
-err_output=$(cmd package compile -m "$compile_mode" -f "$pkg_name" 2>&1 3>&-)
+debug_print "Executing command: cmd package compile -m $stage5_compile_mode -f $stage5_pkg_name (legacy result mode)"
+stage5_compile_output=$(cmd package compile -m "$stage5_compile_mode" -f "$stage5_pkg_name" 2>&1 3>&-)
 fi
-compile_exit=$?
-compile_outcome="FAILED"
-compile_failure_reason=""
-art_parse_exit=0
+stage5_compile_exit=$?
+stage5_compile_outcome="FAILED"
+stage5_compile_failure_reason=""
+stage5_art_parse_exit=0
 ART_FINAL_STATUS="N/A"
 ART_FINAL_STATUS_RAW=""
 ART_FINAL_STATUS_COUNT=0
 ART_SKIPPED_STORAGE_LOW=0
 if [ "$ART_VERBOSE_RESULTS" -eq 1 ];then
-parse_art_compile_result "$err_output"
-art_parse_exit=$?
-debug_print "ART result for [$pkg_name]: exit=$compile_exit final=$ART_FINAL_STATUS count=$ART_FINAL_STATUS_COUNT storage_low=$ART_SKIPPED_STORAGE_LOW"
+parse_art_compile_result "$stage5_compile_output"
+stage5_art_parse_exit=$?
+debug_print "ART result for [$stage5_pkg_name]: exit=$stage5_compile_exit final=$ART_FINAL_STATUS count=$ART_FINAL_STATUS_COUNT storage_low=$ART_SKIPPED_STORAGE_LOW"
 fi
-if [ "$compile_exit" -ne 0 ];then
-compile_failure_reason="command exit $compile_exit"
+if [ "$stage5_compile_exit" -ne 0 ];then
+stage5_compile_failure_reason="command exit $stage5_compile_exit"
 elif [ "$ART_VERBOSE_RESULTS" -eq 0 ];then
-compile_outcome="LEGACY_SUCCESS"
-elif [ "$art_parse_exit" -ne 0 ];then
+stage5_compile_outcome="LEGACY_SUCCESS"
+elif [ "$stage5_art_parse_exit" -ne 0 ];then
 if [ "$ART_FINAL_STATUS_COUNT" -eq 0 ];then
-compile_failure_reason="missing ART Final Status"
+stage5_compile_failure_reason="missing ART Final Status"
 elif [ "$ART_FINAL_STATUS_COUNT" -gt 1 ];then
-compile_failure_reason="multiple ART Final Status records ($ART_FINAL_STATUS_COUNT)"
+stage5_compile_failure_reason="multiple ART Final Status records ($ART_FINAL_STATUS_COUNT)"
 elif [ -n "$ART_FINAL_STATUS_RAW" ];then
-compile_failure_reason="unknown ART Final Status: $ART_FINAL_STATUS_RAW"
+stage5_compile_failure_reason="unknown ART Final Status: $ART_FINAL_STATUS_RAW"
 else
-compile_failure_reason="invalid ART Final Status"
+stage5_compile_failure_reason="invalid ART Final Status"
 fi
 else
 case "$ART_FINAL_STATUS" in
-PERFORMED)compile_outcome="PERFORMED"
+PERFORMED)stage5_compile_outcome="PERFORMED"
 ;;
 SKIPPED)if
 [ "$ART_SKIPPED_STORAGE_LOW" -eq 1 ]
 then
-compile_failure_reason="ART Final Status: SKIPPED (storage low; retry required)"
+stage5_compile_failure_reason="ART Final Status: SKIPPED (storage low; retry required)"
 else
-compile_outcome="SKIPPED"
+stage5_compile_outcome="SKIPPED"
 fi
 ;;
-FAILED|CANCELLED)compile_failure_reason="ART Final Status: $ART_FINAL_STATUS"
+FAILED|CANCELLED)stage5_compile_failure_reason="ART Final Status: $ART_FINAL_STATUS"
 ;;
-*)compile_failure_reason="unexpected ART Final Status: $ART_FINAL_STATUS"
+*)stage5_compile_failure_reason="unexpected ART Final Status: $ART_FINAL_STATUS"
 esac
 fi
-case "$compile_outcome" in
+case "$stage5_compile_outcome" in
 PERFORMED)if
 [ "$QUIET" -eq 0 ]
 then
-print -r -- "    [+] ($current/$total_pkgs) ART performed compilation: $pkg_name"
+print -r -- "    [+] ($stage5_current/$stage5_total_pkgs) ART performed compilation: $stage5_pkg_name"
 fi
-stage3_compiled=$((stage3_compiled+1))
+stage5_compiled=$((stage5_compiled+1))
 ;;
 SKIPPED)if
 [ "$QUIET" -eq 0 ]
 then
-print -r -- "    [~] ($current/$total_pkgs) ART skipped compilation (already satisfied/no work): $pkg_name"
+print -r -- "    [~] ($stage5_current/$stage5_total_pkgs) ART skipped compilation (already satisfied/no work): $stage5_pkg_name"
 fi
-stage3_art_skipped=$((stage3_art_skipped+1))
+stage5_art_skipped=$((stage5_art_skipped+1))
 ;;
 LEGACY_SUCCESS)if
 [ "$QUIET" -eq 0 ]
 then
-print -r -- "    [+] ($current/$total_pkgs) Compile command succeeded (legacy result mode): $pkg_name"
+print -r -- "    [+] ($stage5_current/$stage5_total_pkgs) Compile command succeeded (legacy result mode): $stage5_pkg_name"
 fi
-stage3_compiled=$((stage3_compiled+1))
+stage5_compiled=$((stage5_compiled+1))
 ;;
-*)print -r -- "    [!] ($current/$total_pkgs) Failed: $pkg_name ($compile_failure_reason)" >&2
-stage3_failed=$((stage3_failed+1))
+*)print -r -- "    [!] ($stage5_current/$stage5_total_pkgs) Failed: $stage5_pkg_name ($stage5_compile_failure_reason)" >&2
+stage5_failed=$((stage5_failed+1))
 if [ -z "$ERROR_TMPFILE" ];then
 ERROR_TMPFILE=$(mktemp "$TMPDIR/errors.$$.XXXXXX")
-error_tmp_exit=$?
-if [ "$error_tmp_exit" -ne 0 ]||[ -z "$ERROR_TMPFILE" ]||[ ! -f "$ERROR_TMPFILE" ];then
+stage5_error_tmp_exit=$?
+if [ "$stage5_error_tmp_exit" -ne 0 ]||[ -z "$ERROR_TMPFILE" ]||[ ! -f "$ERROR_TMPFILE" ];then
 ERROR_TMPFILE=""
 report_error "    [!] CRITICAL: Failed to create compile error tempfile in $TMPDIR."
-if [ -n "$err_output" ];then
-report_error "        Compile output: $err_output"
+if [ -n "$stage5_compile_output" ];then
+report_error "        Compile output: $stage5_compile_output"
 fi
 else
 debug_print "Created compile error tempfile: $ERROR_TMPFILE"
 fi
 fi
 if [ -n "$ERROR_TMPFILE" ];then
-if ! print -r -- "FAIL (exit=$compile_exit; result=${ART_FINAL_STATUS:-N/A}; reason=$compile_failure_reason): $pkg_name
-$err_output" >>"$ERROR_TMPFILE" 2>/dev/null;then
+if ! print -r -- "FAIL (exit=$stage5_compile_exit; result=${ART_FINAL_STATUS:-N/A}; reason=$stage5_compile_failure_reason): $stage5_pkg_name
+$stage5_compile_output" >>"$ERROR_TMPFILE" 2>/dev/null;then
 report_error "    [!] CRITICAL: Failed to write to compile error log! Storage may be full."
 fi
 fi
 esac
-if [ "$compile_outcome" != "FAILED" ];then
-if [ "$state_writable" -eq 1 ];then
-if ! print -r -- "$fingerprint" >&3;then
-report_error "    [!] ERROR: Failed to write current-run state for $pkg_name."
-stage3_state_error=1
+if [ "$stage5_compile_outcome" != "FAILED" ];then
+if [ "$stage5_state_writable" -eq 1 ];then
+if ! print -r -- "$stage5_fingerprint" >&3;then
+report_error "    [!] ERROR: Failed to write current-run state for $stage5_pkg_name."
+stage5_state_error=1
 break
 fi
-elif [ -n "$preserved_fingerprint" ];then
-if ! print -r -- "$preserved_fingerprint" >&3;then
-report_error "    [!] ERROR: Failed to preserve current-run state for $pkg_name."
-stage3_state_error=1
+elif [ -n "$stage5_preserved_fingerprint" ];then
+if ! print -r -- "$stage5_preserved_fingerprint" >&3;then
+report_error "    [!] ERROR: Failed to preserve current-run state for $stage5_pkg_name."
+stage5_state_error=1
 break
 fi
-debug_print "Preserved previous trustworthy fingerprint for [$pkg_name] after trustworthy ART outcome."
+debug_print "Preserved previous trustworthy fingerprint for [$stage5_pkg_name] after trustworthy ART outcome."
 fi
 fi
 fi
-done <"$STAGE_MERGED"
+done <"$stage5_input_merged"
+if [ "$DRY_RUN" -eq 1 ];then
+stage5_accounted=$((stage5_skipped+stage5_would_compile+stage5_invalid))
+else
+stage5_accounted=$((stage5_skipped+stage5_art_skipped+stage5_compiled+stage5_failed+stage5_invalid))
+fi
+if [ "$stage5_current" -ne "$stage5_total_pkgs" ]||[ "$stage5_current" -ne "$stage5_accounted" ]||[ "$stage5_invalid" -ne 0 ];then
+report_error "    [!] ERROR: Stage 5 package accounting failed (expected=$stage5_total_pkgs, read=$stage5_current, accounted=$stage5_accounted, invalid=$stage5_invalid)."
+stage5_state_error=1
+fi
 if [ "$DEBUG" -eq 1 ];then
-debug_print "===== DEBUG STAGE 3: COMPILATION ====="
-debug_print "Stage 3 input records: $current"
-debug_print "Skipped unchanged:     $stage3_skipped"
+debug_print "===== DEBUG STAGE 5: COMPILATION ====="
+debug_print "Stage 5 expected records: $stage5_total_pkgs"
+debug_print "Stage 5 input records:    $stage5_current"
+debug_print "Skipped unchanged:        $stage5_skipped"
 if [ "$DRY_RUN" -eq 1 ];then
-debug_print "Would compile:          $stage3_would_compile"
+debug_print "Would compile:             $stage5_would_compile"
+debug_print "Accounting check:          $stage5_skipped + $stage5_would_compile + $stage5_invalid = $stage5_accounted"
 else
-debug_print "ART performed/legacy success: $stage3_compiled"
-debug_print "ART skipped:                  $stage3_art_skipped"
-debug_print "Compilation failures:         $stage3_failed"
+debug_print "ART performed/legacy success: $stage5_compiled"
+debug_print "ART skipped:                  $stage5_art_skipped"
+debug_print "Compilation failures:         $stage5_failed"
+debug_print "Accounting check:             $stage5_skipped + $stage5_art_skipped + $stage5_compiled + $stage5_failed + $stage5_invalid = $stage5_accounted"
 fi
-debug_print "Metadata unavailable:  $stage3_unverified"
-debug_print "Invalid records:        $stage3_invalid"
-if [ "$DRY_RUN" -eq 1 ];then
-stage3_accounted=$((stage3_skipped+stage3_would_compile+stage3_invalid))
-debug_print "Accounting check:      $stage3_skipped + $stage3_would_compile + $stage3_invalid = $stage3_accounted"
-if [ "$current" -eq "$stage3_accounted" ];then
-debug_print "[+] Stage 3 accounting verified."
+debug_print "Metadata unavailable:     $stage5_unverified"
+debug_print "Invalid records:           $stage5_invalid"
+if [ "$stage5_current" -eq "$stage5_total_pkgs" ]&&[ "$stage5_current" -eq "$stage5_accounted" ]&&[ "$stage5_invalid" -eq 0 ];then
+debug_print "[+] Stage 5 accounting verified."
 else
-debug_print "[!] WARNING: Stage 3 accounting mismatch."
+debug_print "[!] ERROR: Stage 5 accounting mismatch."
 fi
-else
-stage3_accounted=$((stage3_skipped+stage3_art_skipped+stage3_compiled+stage3_failed+stage3_invalid))
-debug_print "Accounting check:      $stage3_skipped + $stage3_art_skipped + $stage3_compiled + $stage3_failed + $stage3_invalid = $stage3_accounted"
-if [ "$current" -eq "$stage3_accounted" ];then
-debug_print "[+] Stage 3 accounting verified."
-else
-debug_print "[!] WARNING: Stage 3 accounting mismatch."
-fi
-fi
-debug_print "--- end DEBUG STAGE 3 ---"
+debug_print "--- end DEBUG STAGE 5 ---"
 fi
 if [ "$DRY_RUN" -eq 0 ];then
 if ! exec 3>&-;then
 report_error "    [!] ERROR: Failed to close current-run state file."
-stage3_state_error=1
+stage5_state_error=1
 fi
 fi
-TOTAL_COMPILED=$((TOTAL_COMPILED+stage3_compiled))
-TOTAL_ART_SKIPPED=$((TOTAL_ART_SKIPPED+stage3_art_skipped))
-TOTAL_WOULD_COMPILE=$((TOTAL_WOULD_COMPILE+stage3_would_compile))
-TOTAL_SKIPPED=$((TOTAL_SKIPPED+stage3_skipped))
-TOTAL_FAILED=$((TOTAL_FAILED+stage3_failed))
-TOTAL_INVALID=$((TOTAL_INVALID+stage3_invalid))
-if [ "$stage3_state_error" -ne 0 ];then
+TOTAL_COMPILED=$((TOTAL_COMPILED+stage5_compiled))
+TOTAL_ART_SKIPPED=$((TOTAL_ART_SKIPPED+stage5_art_skipped))
+TOTAL_WOULD_COMPILE=$((TOTAL_WOULD_COMPILE+stage5_would_compile))
+TOTAL_SKIPPED=$((TOTAL_SKIPPED+stage5_skipped))
+TOTAL_FAILED=$((TOTAL_FAILED+stage5_failed))
+TOTAL_INVALID=$((TOTAL_INVALID+stage5_invalid))
+if [ "$stage5_state_error" -ne 0 ];then
+return 1
+fi
+return 0
+}
+process_packages(){
+pipeline_raw_pkg_list="$1"
+pipeline_default_mode="$2"
+pipeline_package_count=0
+pipeline_item=""
+case "$pipeline_default_mode" in
+system|speed-profile)
+;;
+*)report_error "    [!] ERROR: Invalid package processing mode: $pipeline_default_mode"
+return 1
+esac
+if [ -z "$pipeline_raw_pkg_list" ];then
+if [ "$pipeline_default_mode" = "speed-profile" ];then
+USER_PKGS_COUNT=0
+debug_print "No user/third-party packages found; user stage completed with 0 packages."
+return 0
+fi
+report_error "    [!] ERROR: Package list for mode '$pipeline_default_mode' is unexpectedly empty."
+return 1
+fi
+if [ -z "${STAGE1_PACKAGES:-}" ]||[ -z "${STAGE2_PATHS:-}" ]||[ -z "${STAGE3_STATS:-}" ]||[ -z "${STAGE4_MERGED:-}" ]||[ ! -f "$STAGE1_PACKAGES" ]||[ ! -f "$STAGE2_PATHS" ]||[ ! -f "$STAGE3_STATS" ]||[ ! -f "$STAGE4_MERGED" ];then
+report_error "    [!] ERROR: Package-pipeline staging files are unavailable."
+return 1
+fi
+for pipeline_artifact in "$STAGE1_PACKAGES" "$STAGE2_PATHS" "$STAGE3_STATS" "$STAGE4_MERGED";do
+if ! : >"$pipeline_artifact";then
+report_error "    [!] ERROR: Unable to reset package-pipeline staging file: $pipeline_artifact"
+return 1
+fi
+done
+if ! normalize_package_list "$pipeline_raw_pkg_list" "$STAGE1_PACKAGES";then
+return 1
+fi
+if [ ! -s "$STAGE1_PACKAGES" ];then
+report_error "    [!] ERROR: Stage 1 reported success but produced no normalized package records."
+return 1
+fi
+while IFS= read -r pipeline_item;do
+[ -n "$pipeline_item" ]&&pipeline_package_count=$((pipeline_package_count+1))
+done <"$STAGE1_PACKAGES"
+case "$pipeline_package_count" in
+''|*[!0-9]*|0)report_error "    [!] ERROR: Stage 1 produced an invalid package count."
+return 1
+esac
+if [ "$DEBUG" -eq 1 ];then
+debug_print "===== DEBUG STAGE 1: NORMALIZED PACKAGES ====="
+debug_print "Total packages parsed for '$pipeline_default_mode': $pipeline_package_count"
+debug_print "--- first 10 records ---"
+head -n 10 "$STAGE1_PACKAGES" >&2
+debug_print "--- end DEBUG STAGE 1 PACKAGES ---"
+fi
+if [ "$pipeline_default_mode" = "system" ];then
+SYSTEM_PKGS_COUNT="$pipeline_package_count"
+else
+USER_PKGS_COUNT="$pipeline_package_count"
+fi
+if ! extract_package_paths "$STAGE1_PACKAGES" "$STAGE2_PATHS";then
+return 1
+fi
+if [ ! -s "$STAGE2_PATHS" ];then
+report_error "    [!] ERROR: Stage 2 reported success but produced no filesystem paths."
+return 1
+fi
+if ! collect_path_stats "$STAGE2_PATHS" "$STAGE3_STATS";then
+return 1
+fi
+if [ ! -s "$STAGE3_STATS" ];then
+report_error "    [!] ERROR: Stage 3 reported success but produced no stat metadata."
+return 1
+fi
+if ! merge_package_metadata "$STAGE1_PACKAGES" "$STAGE3_STATS" "$STAGE4_MERGED";then
+return 1
+fi
+if [ ! -s "$STAGE4_MERGED" ];then
+report_error "    [!] ERROR: Stage 4 reported success but produced no merged package records."
+return 1
+fi
+if ! process_package_compilations "$STAGE4_MERGED" "$pipeline_default_mode" "$pipeline_package_count";then
 return 1
 fi
 return 0
@@ -1457,9 +1608,10 @@ ART_FINAL_STATUS_COUNT=0
 ART_SKIPPED_STORAGE_LOW=0
 PREV_STATE=""
 CURRENT_RUN_STATE=""
-STAGE_PATHS=""
-STAGE_STATS=""
-STAGE_MERGED=""
+STAGE1_PACKAGES=""
+STAGE2_PATHS=""
+STAGE3_STATS=""
+STAGE4_MERGED=""
 ERROR_TMPFILE=""
 RUN_ERROR_TMPFILE=""
 STATE_STAGE_TMP=""
@@ -1481,19 +1633,20 @@ fi
 if [ "$DRY_RUN" -eq 0 ];then
 CURRENT_RUN_STATE=$(mktemp "$TMPDIR/opt_state.$$.XXXXXX")
 fi
-STAGE_PATHS=$(mktemp "$TMPDIR/opt_paths.$$.XXXXXX")
-STAGE_STATS=$(mktemp "$TMPDIR/opt_stats.$$.XXXXXX")
-STAGE_MERGED=$(mktemp "$TMPDIR/opt_merged.$$.XXXXXX")
+STAGE1_PACKAGES=$(mktemp "$TMPDIR/opt_packages.$$.XXXXXX")
+STAGE2_PATHS=$(mktemp "$TMPDIR/opt_paths.$$.XXXXXX")
+STAGE3_STATS=$(mktemp "$TMPDIR/opt_stats.$$.XXXXXX")
+STAGE4_MERGED=$(mktemp "$TMPDIR/opt_merged.$$.XXXXXX")
 if [ "$DRY_RUN" -eq 0 ];then
-debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, paths=$STAGE_PATHS, stats=$STAGE_STATS, merged=$STAGE_MERGED"
+debug_print "Created package-pipeline temp files: state=$CURRENT_RUN_STATE, stage1_packages=$STAGE1_PACKAGES, stage2_paths=$STAGE2_PATHS, stage3_stats=$STAGE3_STATS, stage4_merged=$STAGE4_MERGED"
 else
-debug_print "Created dry-run package-pipeline temp files: paths=$STAGE_PATHS, stats=$STAGE_STATS, merged=$STAGE_MERGED"
+debug_print "Created dry-run package-pipeline temp files: stage1_packages=$STAGE1_PACKAGES, stage2_paths=$STAGE2_PATHS, stage3_stats=$STAGE3_STATS, stage4_merged=$STAGE4_MERGED"
 fi
-if [ -z "$STAGE_PATHS" ]||[ -z "$STAGE_STATS" ]||[ -z "$STAGE_MERGED" ];then
+if [ -z "$STAGE1_PACKAGES" ]||[ -z "$STAGE2_PATHS" ]||[ -z "$STAGE3_STATS" ]||[ -z "$STAGE4_MERGED" ];then
 report_error "[!] FATAL: One or more package-pipeline temporary file paths are empty."
 return 1
 fi
-if [ ! -f "$STAGE_PATHS" ]||[ ! -f "$STAGE_STATS" ]||[ ! -f "$STAGE_MERGED" ];then
+if [ ! -f "$STAGE1_PACKAGES" ]||[ ! -f "$STAGE2_PATHS" ]||[ ! -f "$STAGE3_STATS" ]||[ ! -f "$STAGE4_MERGED" ];then
 report_error "[!] FATAL: Failed to create one or more package-pipeline temporary files in $TMPDIR."
 return 1
 fi
@@ -1751,8 +1904,6 @@ ERROR_LOG="$SCRIPT_DIR/compile_errors.log"
 readonly ERROR_LOG
 RUN_ERROR_LOG="$SCRIPT_DIR/maintenance_errors.log"
 readonly RUN_ERROR_LOG
-trap 'report_error "    [!] Interrupted by user (SIGINT). Cleaning up..."; exit 130' INT
-trap 'report_error "    [!] Terminated by system (SIGTERM). Cleaning up..."; exit 143' TERM
 LOCK_DIR="$TMPDIR/art_maintenance.lock"
 LOCK_OWNER_FILE="$LOCK_DIR/owner.pid"
 debug_print "Acquiring concurrency lock at $LOCK_DIR (PID $$)"
@@ -1762,16 +1913,16 @@ if [ -r "$LOCK_OWNER_FILE" ];then
 read -r lock_owner <"$LOCK_OWNER_FILE"
 fi
 case "$lock_owner" in
-''|*[!0-9]*)print -r -- \
-'[!] FATAL: Maintenance lock is already held (owner PID unavailable). Aborting.' >&2
+''|*[!0-9]*)print -r -- '[!] FATAL: Maintenance lock is already held (owner PID unavailable). Aborting.' >&2
 ;;
-*)print -r -- \
-"[!] FATAL: Maintenance lock is already held (recorded owner PID: $lock_owner). Aborting." >&2
+*)print -r -- "[!] FATAL: Maintenance lock is already held (recorded owner PID: $lock_owner). Aborting." >&2
 esac
 exit 1
 fi
 LOCK_HELD=1
 trap 'cleanup' EXIT
+trap 'report_error "    [!] Interrupted by user (SIGINT). Cleaning up..."; exit 130' INT
+trap 'report_error "    [!] Terminated by system (SIGTERM). Cleaning up..."; exit 143' TERM
 if ! print -r -- "$$" >"$LOCK_OWNER_FILE" 2>/dev/null;then
 report_error "    [!] FATAL: Acquired concurrency lock but could not record owner PID."
 exit 1
@@ -1796,12 +1947,16 @@ if ! package_pipeline_setup;then
 exit 1
 fi
 STATE_READ_FILE="$STATE_FILE"
-if [ "$NO_USER" -eq 1 ]&&[ ! -r "$NO_USER_STATE_FILE" ];then
-STATE_READ_FILE="$FULL_STATE_FILE"
-elif [ "$USER_ONLY" -eq 1 ]&&[ ! -r "$USER_ONLY_STATE_FILE" ];then
+if [ "$NO_USER" -eq 1 ];then
+if [ ! -f "$NO_USER_STATE_FILE" ]||[ ! -r "$NO_USER_STATE_FILE" ];then
 STATE_READ_FILE="$FULL_STATE_FILE"
 fi
-if [ -r "$STATE_READ_FILE" ];then
+elif [ "$USER_ONLY" -eq 1 ];then
+if [ ! -f "$USER_ONLY_STATE_FILE" ]||[ ! -r "$USER_ONLY_STATE_FILE" ];then
+STATE_READ_FILE="$FULL_STATE_FILE"
+fi
+fi
+if [ -f "$STATE_READ_FILE" ]&&[ -r "$STATE_READ_FILE" ];then
 debug_print "Loading persistent state baseline from $STATE_READ_FILE"
 PREV_STATE="
 $(<"$STATE_READ_FILE")
@@ -1822,7 +1977,7 @@ else
 print -r -- '[+] Step 1: Trimming system and app caches...'
 trim_out=$(pm trim-caches 99999999999 2>&1)
 trim_exit=$?
-if [ $trim_exit -ne 0 ];then
+if [ "$trim_exit" -ne 0 ];then
 report_error "    [!] WARNING: Cache trim failed (Exit Code: $trim_exit)."
 if [ -n "$trim_out" ];then
 report_error "        Output: $trim_out"
@@ -1848,7 +2003,7 @@ print -r -- '[+] Step 2: (DRY RUN) Smart-optimizing system packages...'
 else
 print -r -- '[+] Step 2: Smart-optimizing system packages...'
 fi
-debug_print "Querying system packages via pm list packages -f -s..."
+debug_print "Querying system packages via pm list packages -f -s --show-versioncode..."
 system_package_list=$(pm list packages -f -s --show-versioncode 2>&1)
 sys_exit=$?
 if [ "$sys_exit" -ne 0 ];then
@@ -1883,7 +2038,7 @@ print -r -- '[+] Step 3: (DRY RUN) Smart-optimizing user apps...'
 else
 print -r -- '[+] Step 3: Smart-optimizing user apps...'
 fi
-debug_print "Querying user packages via pm list packages -f -3..."
+debug_print "Querying user packages via pm list packages -f -3 --show-versioncode..."
 user_package_list=$(pm list packages -f -3 --show-versioncode 2>&1)
 user_exit=$?
 if [ "$user_exit" -ne 0 ];then
@@ -2094,6 +2249,8 @@ print -r -- "    - Minimum battery:           $MIN_BATTERY% (satisfied)"
 fi
 if [ "$STATE_COMMIT_SAFE" -ne 1 ];then
 print -r -- '    - [!] Run incomplete: trusted persistent state was not updated.'
+elif [ "$DRY_RUN" -eq 0 ]&&[ "$TOTAL_FAILED" -gt 0 ];then
+print -r -- '    - Persistent state:          Trusted partial state current; failed packages omitted.'
 elif [ "$DRY_RUN" -eq 0 ];then
 if [ "$NO_USER" -eq 1 ];then
 print -r -- '    - Persistent state:          System-only state current.'
