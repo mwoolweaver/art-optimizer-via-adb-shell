@@ -252,9 +252,10 @@ check_deps() {
 #
 # Timing contract:
 #   - Real runs call this lazily, immediately before the first package that
-#     actually reaches ART. A fully cached real run therefore remains ignorant.
-#   - Dry runs call this proactively because capability discovery is part of
-#     rehearsing the execution path they would use.
+#     actually reaches ART.
+#   - Dry runs call this lazily at the equivalent decision point: immediately
+#     before the first package that would reach ART.
+#   - Fully cached real and dry runs therefore remain ignorant.
 #   - Health-only mode never calls this function.
 # ============================================================================
 detect_art_result_reporting() {
@@ -1899,6 +1900,28 @@ $stage5_fingerprint
         esac
 
         # ====================================================================
+        # ART-bound package
+        # ====================================================================
+
+        # A package reaching this point requires ART in a real run.
+        # Discover ART's result interface lazily at this same decision point
+        # for both real execution and dry-run rehearsal.
+        #
+        # Prof. TEM+P's rule:
+        #
+        #   No ART-bound package means no ART interrogation.
+
+        if [ "$ART_RESULT_MODE" = "not-determined" ]; then
+            if [ "$DRY_RUN" -eq 1 ]; then
+                debug_print "First package would require ART; determining result-reporting capability now."
+            else
+                debug_print "First package requires ART; determining result-reporting capability now."
+            fi
+
+            detect_art_result_reporting
+        fi
+
+        # ====================================================================
         # Execute compilation
         # ====================================================================
 
@@ -1921,18 +1944,6 @@ $stage5_fingerprint
                 else
                     print -r -- "    [+] ($stage5_current/$stage5_total_pkgs) User app compile (-m speed-profile): $stage5_pkg_name"
                 fi
-            fi
-
-            # A real run earns the right to know ART's result interface only
-            # when a package survives fingerprint filtering and reaches ART.
-            #
-            # Prof. TEM+P's rule:
-            #
-            #   No ART work means no ART interrogation.
-
-            if [ "$ART_RESULT_MODE" = "not-determined" ]; then
-                debug_print "First package requires ART; determining result-reporting capability now."
-                detect_art_result_reporting
             fi
 
             if [ "$ART_VERBOSE_RESULTS" -eq 1 ]; then
@@ -2690,13 +2701,6 @@ main() {
     if [ "$sdk_version" -lt "$MIN_SDK" ]; then
         echo "[!] FATAL: Android 7.0 (API $MIN_SDK) or higher required. Current API: $sdk_version" >&2
         exit 1
-    fi
-
-    # Dry-run is the deliberate exception to lazy capability discovery: rehearsal
-    # should know which ART result path a real compile would use. Real runs defer this
-    # probe until the first package actually reaches ART; health-only never probes.
-    if [ "$DRY_RUN" -eq 1 ] && [ "$HEALTH_ONLY" -eq 0 ]; then
-        detect_art_result_reporting
     fi
 
     if [ "$HEALTH_ONLY" -eq 1 ]; then
